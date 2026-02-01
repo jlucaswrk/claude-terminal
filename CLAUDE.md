@@ -1,32 +1,54 @@
 # Claude Terminal
 
-WhatsApp as a terminal for Claude Code. Send messages, get responses. That's it.
+WhatsApp como terminal para o Claude Code. Envia mensagem, recebe resposta. Simples assim.
 
-## Architecture
+## Contexto
+
+Este projeto nasceu de uma necessidade: controlar o Claude Code rodando no Mac local via WhatsApp, como um terminal remoto puro - não um assistente elaborado.
+
+Inspirado no [Telminal](https://github.com/fristhon/telminal) que faz isso para Telegram.
+
+## Arquitetura
 
 ```
-WhatsApp → Kapso → Tailscale Funnel → Local server → Claude Code CLI
-                                                           ↓
-WhatsApp ← Kapso ← ─────────────────────────────── Output ─┘
+WhatsApp → Kapso → Tailscale Funnel → Servidor local → Claude Code CLI
+                                                             ↓
+WhatsApp ← Kapso ← ──────────────────────────────── Output ──┘
 ```
 
-## Commands
+**Decisões importantes:**
+- **Tailscale Funnel** em vez de ngrok (URL fixa, mais estável)
+- **Sem banco de dados** - é um terminal, não precisa persistir
+- **Sem filas** - um processo Claude por vez
+- **Kapso** para WhatsApp API (já estava configurado)
+
+## Comandos
 
 ```bash
-bun install          # Install dependencies
-bun run dev          # Start with hot reload
-bun run start        # Production start
+bun install          # Instalar dependências
+bun run dev          # Rodar com hot reload
+bun run start        # Produção
 ```
 
 ## Setup
 
-1. Copy `.env.example` to `.env` and fill in values
-2. Run `tailscale funnel 3000` to expose locally
-3. Configure Kapso webhook to your Tailscale Funnel URL
-4. Start the server: `bun run dev`
+1. Copiar `.env.example` para `.env` e preencher
+2. Rodar `tailscale funnel 3000` para expor localmente
+3. Configurar webhook do Kapso para a URL do Tailscale Funnel
+4. Iniciar servidor: `bun run dev`
 
-## Files
+## Estrutura
 
-- `src/index.ts` - HTTP server, webhook handler
-- `src/terminal.ts` - Claude Code process wrapper
-- `src/whatsapp.ts` - Kapso API client
+```
+src/
+├── index.ts      # Servidor HTTP, handler do webhook Kapso
+├── terminal.ts   # Wrapper do processo Claude Code CLI
+└── whatsapp.ts   # Cliente da API do Kapso
+```
+
+## TODO
+
+- [ ] Testar integração Kapso com Tailscale Funnel
+- [ ] Ajustar timeout do terminal.ts para comandos longos
+- [ ] Adicionar comando especial para matar/reiniciar Claude
+- [ ] Suporte a envio de arquivos (screenshots, logs)
