@@ -1,13 +1,22 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { uploadBase64Image } from './storage';
+import { uploadBase64Image, uploadFileToKapso, getWhatsAppMediaType } from './storage';
 import { TitleExtractor } from './title-extractor';
 
 export type Model = 'haiku' | 'opus';
 
+export type CreatedFile = {
+  path: string;
+  mediaId: string;
+  filename: string;
+  mimeType: string;
+  mediaType: 'image' | 'video' | 'audio' | 'document';
+};
+
 export type ClaudeResponse = {
   text: string;
-  images: string[]; // URLs of uploaded images
+  images: string[]; // URLs of uploaded images (legacy, for screenshots)
+  files: CreatedFile[]; // Files created by Claude via Write tool
   title?: string;   // Auto-extracted title from response
 };
 
@@ -141,6 +150,7 @@ export class ClaudeTerminal {
     let response = '';
     let newSessionId: string | undefined;
     const images: string[] = [];
+    const createdFilePaths: string[] = [];
 
     for await (const event of result) {
       // Capture session ID from init event
@@ -148,11 +158,20 @@ export class ClaudeTerminal {
         newSessionId = event.session_id as string;
       }
 
-      // Capture tool results with images (screenshots)
+      // Capture tool_use events for Write tool to track created files
       if (event.type === 'assistant' && (event as any).message?.content) {
         const content = (event as any).message.content;
         for (const block of content) {
-          // Check for tool_result with image
+          // Check for tool_use with Write tool
+          if (block.type === 'tool_use' && block.name === 'Write' && block.input?.file_path) {
+            const filePath = block.input.file_path as string;
+            if (!createdFilePaths.includes(filePath)) {
+              createdFilePaths.push(filePath);
+              console.log(`[file] Detected file creation: ${filePath}`);
+            }
+          }
+
+          // Check for tool_result with image (screenshots)
           if (block.type === 'tool_result' && Array.isArray(block.content)) {
             for (const item of block.content) {
               if (item.type === 'image' && item.source?.type === 'base64') {
@@ -180,6 +199,23 @@ export class ClaudeTerminal {
       }
     }
 
+    // Upload created files to Kapso
+    const files: CreatedFile[] = [];
+    for (const filePath of createdFilePaths) {
+      try {
+        if (existsSync(filePath)) {
+          const { mediaId, filename, mimeType } = await uploadFileToKapso(filePath);
+          const mediaType = getWhatsAppMediaType(mimeType);
+          files.push({ path: filePath, mediaId, filename, mimeType, mediaType });
+          console.log(`[file] Uploaded ${filename} (${mediaType})`);
+        } else {
+          console.warn(`[file] File not found after creation: ${filePath}`);
+        }
+      } catch (err) {
+        console.error(`Failed to upload file ${filePath}:`, err);
+      }
+    }
+
     // Store session ID for future messages (and persist to disk)
     if (newSessionId) {
       sessions.set(sessionKey, newSessionId);
@@ -194,9 +230,12 @@ export class ClaudeTerminal {
     if (images.length > 0) {
       console.log(`[images] ${images.length} image(s) captured`);
     }
+    if (files.length > 0) {
+      console.log(`[files] ${files.length} file(s) created and uploaded`);
+    }
     console.log(`[title] ${title}`);
 
-    return { text: response, images, title };
+    return { text: response, images, files, title };
   }
 
   // Clear session for a user/agent

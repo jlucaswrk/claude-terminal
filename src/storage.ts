@@ -1,13 +1,64 @@
+import { readFileSync, existsSync } from 'fs';
+import { basename, extname } from 'path';
+
 const KAPSO_API_KEY = process.env.KAPSO_API_KEY!;
 const KAPSO_PHONE_NUMBER_ID = process.env.KAPSO_PHONE_NUMBER_ID!;
 
+// MIME type mapping for common file extensions
+const MIME_TYPES: Record<string, string> = {
+  // Documents
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.csv': 'text/csv',
+  '.txt': 'text/plain',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.zip': 'application/zip',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  // Images
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  // Audio
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  // Video
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+};
+
 /**
- * Upload an image to Kapso Media Storage and return the media_id
+ * Get MIME type from file extension
  */
-export async function uploadImageToKapso(
+export function getMimeType(filename: string): string {
+  const ext = extname(filename).toLowerCase();
+  return MIME_TYPES[ext] || 'application/octet-stream';
+}
+
+/**
+ * Determine WhatsApp media type from MIME type
+ */
+export function getWhatsAppMediaType(mimeType: string): 'image' | 'video' | 'audio' | 'document' {
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('video/')) return 'video';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  return 'document';
+}
+
+/**
+ * Upload a file to Kapso Media Storage and return the media_id
+ */
+export async function uploadToKapso(
   buffer: Buffer,
   filename: string,
-  mimeType: string = 'image/png'
+  mimeType: string
 ): Promise<string> {
   const formData = new FormData();
   formData.append('file', new Blob([buffer], { type: mimeType }), filename);
@@ -30,8 +81,36 @@ export async function uploadImageToKapso(
   }
 
   const data = await response.json();
-  console.log(`Uploaded to Kapso: ${data.id}`);
+  console.log(`Uploaded to Kapso: ${data.id} (${mimeType})`);
   return data.id;
+}
+
+/**
+ * Upload a file from filesystem to Kapso
+ */
+export async function uploadFileToKapso(filePath: string): Promise<{ mediaId: string; filename: string; mimeType: string }> {
+  if (!existsSync(filePath)) {
+    throw new Error(`File not found: ${filePath}`);
+  }
+
+  const buffer = readFileSync(filePath);
+  const filename = basename(filePath);
+  const mimeType = getMimeType(filename);
+  const mediaId = await uploadToKapso(buffer, filename, mimeType);
+
+  return { mediaId, filename, mimeType };
+}
+
+/**
+ * Upload an image to Kapso Media Storage and return the media_id
+ * @deprecated Use uploadToKapso instead
+ */
+export async function uploadImageToKapso(
+  buffer: Buffer,
+  filename: string,
+  mimeType: string = 'image/png'
+): Promise<string> {
+  return uploadToKapso(buffer, filename, mimeType);
 }
 
 /**

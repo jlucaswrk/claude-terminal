@@ -4,6 +4,7 @@ import { ClaudeTerminal, detectOldSessions, migrateOldSessions, type Model } fro
 import {
   sendWhatsApp,
   sendWhatsAppImage,
+  sendWhatsAppMedia,
   sendModelSelector,
   sendCommandsList,
   sendAgentsList,
@@ -53,8 +54,8 @@ const semaphore = new Semaphore(agentManager.getConfig().maxConcurrent ?? DEFAUL
 // Claude terminal
 const terminal = new ClaudeTerminal();
 
-// Queue manager (with image and error recovery support)
-const queueManager = new QueueManager(semaphore, agentManager, terminal, sendWhatsApp, sendWhatsAppImage, sendErrorWithActions);
+// Queue manager (with image, file, and error recovery support)
+const queueManager = new QueueManager(semaphore, agentManager, terminal, sendWhatsApp, sendWhatsAppImage, sendErrorWithActions, sendWhatsAppMedia);
 
 // User context manager (in-memory, not persisted)
 const userContextManager = new UserContextManager();

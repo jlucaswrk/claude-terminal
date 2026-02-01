@@ -15,6 +15,17 @@ export type SendWhatsAppFn = (to: string, text: string) => Promise<void>;
 export type SendWhatsAppImageFn = (to: string, imageUrl: string, caption?: string) => Promise<void>;
 
 /**
+ * Type for WhatsApp media send function (generic for images, documents, audio, video)
+ */
+export type SendWhatsAppMediaFn = (
+  to: string,
+  mediaId: string,
+  mediaType: 'image' | 'video' | 'audio' | 'document',
+  filename?: string,
+  caption?: string
+) => Promise<void>;
+
+/**
  * Type for WhatsApp error with actions function
  */
 export type SendErrorWithActionsFn = (to: string, agentName: string, error: string) => Promise<void>;
@@ -127,6 +138,7 @@ export class QueueManager {
   private readonly terminal: ClaudeTerminal;
   private readonly sendWhatsApp: SendWhatsAppFn;
   private readonly sendWhatsAppImage?: SendWhatsAppImageFn;
+  private readonly sendWhatsAppMedia?: SendWhatsAppMediaFn;
   private readonly sendErrorWithActions?: SendErrorWithActionsFn;
   private activeCount: number = 0;
 
@@ -139,7 +151,8 @@ export class QueueManager {
     terminal: ClaudeTerminal,
     sendWhatsApp: SendWhatsAppFn,
     sendWhatsAppImage?: SendWhatsAppImageFn,
-    sendErrorWithActions?: SendErrorWithActionsFn
+    sendErrorWithActions?: SendErrorWithActionsFn,
+    sendWhatsAppMedia?: SendWhatsAppMediaFn
   ) {
     this.queue = new PriorityQueue();
     this.semaphore = semaphore;
@@ -148,6 +161,7 @@ export class QueueManager {
     this.sendWhatsApp = sendWhatsApp;
     this.sendWhatsAppImage = sendWhatsAppImage;
     this.sendErrorWithActions = sendErrorWithActions;
+    this.sendWhatsAppMedia = sendWhatsAppMedia;
   }
 
   /**
@@ -259,7 +273,7 @@ export class QueueManager {
       // Execute the prompt via ClaudeTerminal (with agentId and workspace)
       const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace);
 
-      // Send images first (if any)
+      // Send images first (if any) - these are screenshots captured from tool_result
       if (response.images.length > 0 && this.sendWhatsAppImage) {
         for (const imageUrl of response.images) {
           try {
@@ -274,6 +288,24 @@ export class QueueManager {
       // Send the text response
       if (response.text) {
         await this.sendWhatsApp(userId, response.text);
+      }
+
+      // Send created files (documents, spreadsheets, etc.)
+      if (response.files && response.files.length > 0 && this.sendWhatsAppMedia) {
+        for (const file of response.files) {
+          try {
+            await this.sendWhatsAppMedia(
+              userId,
+              file.mediaId,
+              file.mediaType,
+              file.filename,
+              `📎 ${file.filename}`
+            );
+            console.log(`[file] Sent ${file.filename} to user`);
+          } catch (err) {
+            console.error(`Failed to send file ${file.filename}:`, err);
+          }
+        }
       }
 
       // Create output record

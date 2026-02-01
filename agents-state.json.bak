@@ -10,10 +10,10 @@
       "userId": "558197969570",
       "name": "General",
       "title": "Pesquise variacoes do dolar durante...",
-      "status": "processing",
-      "statusDetails": "processando - pesquise variacoes do dolar du...",
+      "status": "idle",
+      "statusDetails": "Aguardando prompt",
       "priority": "medium",
-      "lastActivity": "2026-02-01T13:50:20.505Z",
+      "lastActivity": "2026-02-01T13:50:20.506Z",
       "messageCount": 1,
       "outputs": [
         {
@@ -27,6 +27,19 @@
         }
       ],
       "createdAt": "2026-02-01T13:48:13.768Z"
+    },
+    {
+      "id": "a7b48601-d5de-4d73-803b-12d18b11c5a8",
+      "userId": "5581999999999",
+      "name": "General",
+      "title": "",
+      "status": "idle",
+      "statusDetails": "Aguardando prompt",
+      "priority": "medium",
+      "lastActivity": "2026-02-01T13:56:58.135Z",
+      "messageCount": 0,
+      "outputs": [],
+      "createdAt": "2026-02-01T13:56:58.135Z"
     }
   ]
 }

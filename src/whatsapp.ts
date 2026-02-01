@@ -84,6 +84,87 @@ export async function sendWhatsAppImage(to: string, mediaId: string, caption?: s
   }
 }
 
+export async function sendWhatsAppDocument(to: string, mediaId: string, filename: string, caption?: string): Promise<void> {
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'document',
+        document: {
+          id: mediaId,
+          filename,
+          ...(caption && { caption }),
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp document send error:', await response.text());
+  }
+}
+
+export async function sendWhatsAppMedia(
+  to: string,
+  mediaId: string,
+  mediaType: 'image' | 'video' | 'audio' | 'document',
+  filename?: string,
+  caption?: string
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: mediaType,
+  };
+
+  if (mediaType === 'document') {
+    body.document = {
+      id: mediaId,
+      ...(filename && { filename }),
+      ...(caption && { caption }),
+    };
+  } else if (mediaType === 'image') {
+    body.image = {
+      id: mediaId,
+      ...(caption && { caption }),
+    };
+  } else if (mediaType === 'video') {
+    body.video = {
+      id: mediaId,
+      ...(caption && { caption }),
+    };
+  } else if (mediaType === 'audio') {
+    body.audio = {
+      id: mediaId,
+    };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error(`WhatsApp ${mediaType} send error:`, await response.text());
+  }
+}
+
 export async function sendWhatsApp(to: string, text: string): Promise<void> {
   // Split long messages
   const chunks = splitMessage(text, MAX_MESSAGE_LENGTH);
