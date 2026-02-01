@@ -4,5 +4,19 @@
     "maxConcurrent": 5,
     "version": "1.0"
   },
-  "agents": []
+  "agents": [
+    {
+      "id": "b7dbeac8-85ec-4d3b-93cf-d7641d6cc329",
+      "userId": "558197969570",
+      "name": "General",
+      "title": "",
+      "status": "idle",
+      "statusDetails": "Aguardando prompt",
+      "priority": "medium",
+      "lastActivity": "2026-02-01T13:48:13.768Z",
+      "messageCount": 0,
+      "outputs": [],
+      "createdAt": "2026-02-01T13:48:13.768Z"
+    }
+  ]
 }
