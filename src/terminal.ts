@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { uploadBase64Image, uploadFileToKapso, getWhatsAppMediaType } from './storage';
 import { TitleExtractor } from './title-extractor';
 
-export type Model = 'haiku' | 'opus';
+export type Model = 'haiku' | 'sonnet' | 'opus';
 
 export type CreatedFile = {
   path: string;
@@ -13,11 +13,19 @@ export type CreatedFile = {
   mediaType: 'image' | 'video' | 'audio' | 'document';
 };
 
+export type ToolUsage = {
+  name: string;
+  input?: Record<string, unknown>;
+};
+
+export type ProgressCallback = (toolName: string, toolInput?: Record<string, unknown>) => void;
+
 export type ClaudeResponse = {
   text: string;
   images: string[]; // URLs of uploaded images (legacy, for screenshots)
   files: CreatedFile[]; // Files created by Claude via Write tool
   title?: string;   // Auto-extracted title from response
+  toolsUsed: ToolUsage[]; // Tools used during processing
 };
 
 // Session persistence file
@@ -103,7 +111,8 @@ export class ClaudeTerminal {
     model: Model,
     userId: string,
     agentId: string,
-    workspace?: string
+    workspace?: string,
+    onProgress?: ProgressCallback
   ): Promise<ClaudeResponse> {
     const sessionKey = getSessionKey(userId, agentId);
     const existingSessionId = sessions.get(sessionKey);
@@ -151,6 +160,7 @@ export class ClaudeTerminal {
     let newSessionId: string | undefined;
     const images: string[] = [];
     const createdFilePaths: string[] = [];
+    const toolsUsed: ToolUsage[] = [];
 
     for await (const event of result) {
       // Debug: log all event types
@@ -168,12 +178,27 @@ export class ClaudeTerminal {
           // Debug: log all content blocks
           console.log(`[block] type=${block.type}${block.name ? ` name=${block.name}` : ''}`);
 
-          // Check for tool_use with Write tool
-          if (block.type === 'tool_use' && block.name === 'Write' && block.input?.file_path) {
-            const filePath = block.input.file_path as string;
-            if (!createdFilePaths.includes(filePath)) {
-              createdFilePaths.push(filePath);
-              console.log(`[file] Detected file creation: ${filePath}`);
+          // Track all tool usage
+          if (block.type === 'tool_use' && block.name) {
+            const toolInput = block.input as Record<string, unknown>;
+            toolsUsed.push({
+              name: block.name,
+              input: toolInput,
+            });
+            console.log(`[tool] ${block.name}`);
+
+            // Notify progress callback
+            if (onProgress) {
+              onProgress(block.name, toolInput);
+            }
+
+            // Special handling for Write tool to track created files
+            if (block.name === 'Write' && block.input?.file_path) {
+              const filePath = block.input.file_path as string;
+              if (!createdFilePaths.includes(filePath)) {
+                createdFilePaths.push(filePath);
+                console.log(`[file] Detected file creation: ${filePath}`);
+              }
             }
           }
 
@@ -241,7 +266,7 @@ export class ClaudeTerminal {
     }
     console.log(`[title] ${title}`);
 
-    return { text: response, images, files, title };
+    return { text: response, images, files, title, toolsUsed };
   }
 
   // Clear session for a user/agent

@@ -10,7 +10,7 @@ export interface Output {
   summary: string;              // Summary of the action (e.g., "Created 3 files")
   prompt: string;               // Original user prompt
   response: string;             // Complete Claude response
-  model: 'haiku' | 'opus';      // Model used
+  model: 'haiku' | 'sonnet' | 'opus';  // Model used
   status: 'success' | 'warning' | 'error';
   timestamp: Date;
 }
@@ -61,7 +61,7 @@ export interface QueueTask {
   id: string;
   agentId: string;
   prompt: string;
-  model: 'haiku' | 'opus';
+  model: 'haiku' | 'sonnet' | 'opus';
   priority: number;             // 0-2 (high=0, medium=1, low=2)
   timestamp: Date;
   userId: string;
@@ -115,7 +115,7 @@ export interface SerializedOutput {
   summary: string;
   prompt: string;
   response: string;
-  model: 'haiku' | 'opus';
+  model: 'haiku' | 'sonnet' | 'opus';
   status: 'success' | 'warning' | 'error';
   timestamp: string;            // ISO date string
 }

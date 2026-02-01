@@ -116,15 +116,22 @@ src/
 ### Fluxo de Uso
 
 1. **Primeiro uso**: envie qualquer mensagem → agente "General" criado automaticamente
-2. **Enviar prompt**: digite mensagem → selecione agente → escolha modelo (Haiku/Opus)
+2. **Enviar prompt**: digite mensagem → selecione agente → escolha modelo (Haiku/Sonnet/Opus)
 3. **Gerenciar**: use `/` para criar agentes, configurar prioridades, ver histórico
 
 ### Menus Interativos
 
-- Lista de agentes com status e última atividade
+- Lista de agentes com status e última ação (ex: "Criou 3 arquivos")
 - Menu de ações por agente (prompt, histórico, prioridade, reset, deletar)
-- Seletor de modelo (Haiku/Opus)
+- Seletor de modelo (Haiku/Sonnet/Opus)
 - Confirmações para ações destrutivas
+
+### Updates de Progresso
+
+Durante o processamento, o sistema envia atualizações a cada 30 segundos:
+- Formato: `🔧 Agente X: Lendo arquivo.ts... (45s)`
+- Mostra qual ferramenta está sendo usada
+- Inclui tempo decorrido desde o início
 
 ## Modelos de Dados
 
@@ -137,7 +144,7 @@ interface Agent {
   sessionId?: string;       // ID da sessão Claude SDK
   title: string;            // Título auto-gerado
   status: 'idle' | 'processing' | 'error';
-  statusDetails: string;    // Detalhes do status atual
+  statusDetails: string;    // Última ação realizada (ex: "Criou 3 arquivos")
   priority: 'high' | 'medium' | 'low';
   messageCount: number;
   outputs: Output[];        // Últimas 10 respostas
@@ -150,7 +157,7 @@ interface Output {
   summary: string;          // Resumo da ação
   prompt: string;           // Prompt original
   response: string;         // Resposta completa
-  model: 'haiku' | 'opus';
+  model: 'haiku' | 'sonnet' | 'opus';
   status: 'success' | 'warning' | 'error';
   timestamp: Date;
 }

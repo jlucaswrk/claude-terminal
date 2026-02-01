@@ -194,7 +194,7 @@ describe('sendAgentMenu', () => {
     const agent = createTestAgent({
       id: 'agent-123',
       name: 'My Agent',
-      title: 'Building API',
+      statusDetails: 'Criou 3 arquivos',
       status: 'processing',
       priority: 'high',
     });
@@ -208,7 +208,7 @@ describe('sendAgentMenu', () => {
     expect(body.type).toBe('interactive');
     expect(body.interactive.type).toBe('list');
     expect(body.interactive.body.text).toContain('*My Agent*');
-    expect(body.interactive.body.text).toContain('Building API');
+    expect(body.interactive.body.text).toContain('Criou 3 arquivos');
     expect(body.interactive.body.text).toContain('Alta');
   });
 
@@ -232,15 +232,15 @@ describe('sendAgentMenu', () => {
     ]);
   });
 
-  test('shows default title for new agent', async () => {
-    const agent = createTestAgent({ title: '' });
+  test('shows default status for new agent', async () => {
+    const agent = createTestAgent({ statusDetails: '' });
 
     await sendAgentMenu('5511999999999', agent);
 
     const call = mockFetch.mock.calls[0];
     const body = JSON.parse(call[1].body);
 
-    expect(body.interactive.body.text).toContain('Nova conversa');
+    expect(body.interactive.body.text).toContain('Aguardando prompt');
   });
 });
 

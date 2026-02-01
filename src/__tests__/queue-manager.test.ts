@@ -8,7 +8,7 @@ import type { Agent } from '../types';
 
 // Mock ClaudeTerminal
 class MockClaudeTerminal {
-  responses: Map<string, { text: string; images: string[]; title?: string }> = new Map();
+  responses: Map<string, { text: string; images: string[]; title?: string; files?: any[]; toolsUsed?: any[] }> = new Map();
   delays: Map<string, number> = new Map();
   callCount = 0;
   calls: Array<{ prompt: string; model: string; userId: string }> = [];
@@ -22,13 +22,13 @@ class MockClaudeTerminal {
       await new Promise((r) => setTimeout(r, delay));
     }
 
-    const response = this.responses.get(prompt) || { text: 'Mock response', images: [] };
-    return response;
+    const response = this.responses.get(prompt) || { text: 'Mock response', images: [], files: [], toolsUsed: [] };
+    return { ...response, files: response.files || [], toolsUsed: response.toolsUsed || [] };
   }
 
   clearSession() {}
 
-  setResponse(prompt: string, response: { text: string; images: string[]; title?: string }) {
+  setResponse(prompt: string, response: { text: string; images: string[]; title?: string; files?: any[]; toolsUsed?: any[] }) {
     this.responses.set(prompt, response);
   }
 
@@ -458,7 +458,8 @@ describe('QueueManager', () => {
 
       const updatedAgent = agentManager.getAgent(agent.id)!;
       expect(updatedAgent.status).toBe('idle');
-      expect(updatedAgent.statusDetails).toBe('Aguardando prompt');
+      // When no tools are used, the action summary is 'Processou prompt'
+      expect(updatedAgent.statusDetails).toBe('Processou prompt');
     });
 
     test('adds output to agent after processing', async () => {
@@ -710,7 +711,7 @@ describe('QueueManager', () => {
           if (prompt === 'will fail') {
             throw new Error('Error');
           }
-          return { text: 'Success', images: [] };
+          return { text: 'Success', images: [], files: [], toolsUsed: [] };
         },
         clearSession: () => {},
       };

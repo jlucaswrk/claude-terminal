@@ -376,6 +376,7 @@ async function handleHelpCommand(userId: string): Promise<{ status: string }> {
       'Agentes de alta prioridade são processados primeiro.\n\n' +
       '*Modelos:*\n' +
       'Haiku - Rápido e econômico\n' +
+      'Sonnet - Equilibrado\n' +
       'Opus - Mais capaz e detalhado'
   );
   return { status: 'help_shown' };
@@ -497,7 +498,11 @@ async function handleModelSelection(
   userId: string,
   buttonId: string
 ): Promise<{ status: string }> {
-  const model: Model = buttonId.startsWith('model_opus') ? 'opus' : 'haiku';
+  const model: Model = buttonId.startsWith('model_opus')
+    ? 'opus'
+    : buttonId.startsWith('model_sonnet')
+      ? 'sonnet'
+      : 'haiku';
   const pending = userContextManager.getPendingPrompt(userId);
   const agentId = pendingAgentSelection.get(userId);
 

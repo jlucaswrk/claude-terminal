@@ -256,6 +256,13 @@ export async function sendModelSelector(to: string, messageId?: string): Promise
           {
             type: 'reply',
             reply: {
+              id: `model_sonnet_${Date.now()}`,
+              title: 'Sonnet',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
               id: `model_opus_${Date.now()}`,
               title: 'Opus',
             },
@@ -295,16 +302,22 @@ export async function sendAgentWithModelSelector(
   agents: Agent[],
   messageId?: string
 ): Promise<void> {
-  // Create rows for each agent with both model options
+  // Create rows for each agent with all model options
   const agentRows: any[] = [];
 
-  for (const agent of agents.slice(0, 5)) { // Max 5 agents to fit 10 rows (2 per agent)
+  for (const agent of agents.slice(0, 3)) { // Max 3 agents to fit 9 rows (3 per agent)
     const emoji = STATUS_EMOJI[agent.status];
     const time = formatTimestamp(agent.lastActivity);
 
     agentRows.push({
       id: `agentmodel_${agent.id}_haiku`,
       title: truncate(`${agent.name} (Haiku)`, 24),
+      description: truncate(`${emoji} ${agent.status} - ${time}`, 72),
+    });
+
+    agentRows.push({
+      id: `agentmodel_${agent.id}_sonnet`,
+      title: truncate(`${agent.name} (Sonnet)`, 24),
       description: truncate(`${emoji} ${agent.status} - ${time}`, 72),
     });
 
@@ -431,12 +444,13 @@ export async function sendAgentsList(
   const agentRows = agents.slice(0, 10).map((agent) => {
     const emoji = STATUS_EMOJI[agent.status];
     const time = formatTimestamp(agent.lastActivity);
-    const title = agent.title || 'Nova conversa';
+    // Show last action (statusDetails) instead of title
+    const lastAction = agent.statusDetails || 'Aguardando prompt';
 
     return {
       id: `agent_${agent.id}`,
       title: truncate(agent.name, 24),
-      description: truncate(`${emoji} ${title} - ${agent.status} - ${time}`, 72),
+      description: truncate(`${emoji} ${lastAction} - ${time}`, 72),
     };
   });
 
@@ -544,7 +558,7 @@ export async function sendAgentMenu(
 ): Promise<void> {
   const emoji = STATUS_EMOJI[agent.status];
   const time = formatTimestamp(agent.lastActivity);
-  const title = agent.title || 'Nova conversa';
+  const lastAction = agent.statusDetails || 'Aguardando prompt';
 
   const body: any = {
     messaging_product: 'whatsapp',
@@ -554,7 +568,7 @@ export async function sendAgentMenu(
     interactive: {
       type: 'list',
       body: {
-        text: `${emoji} *${agent.name}*\n${title}\nStatus: ${agent.status} - ${time}\nPrioridade: ${PRIORITY_LABEL[agent.priority]}`,
+        text: `${emoji} *${agent.name}*\n${lastAction}\nStatus: ${agent.status} - ${time}\nPrioridade: ${PRIORITY_LABEL[agent.priority]}`,
       },
       action: {
         button: 'Ações',

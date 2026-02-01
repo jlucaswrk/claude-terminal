@@ -1,6 +1,6 @@
 import { Semaphore } from './semaphore';
 import { AgentManager } from './agent-manager';
-import { ClaudeTerminal, type ClaudeResponse } from './terminal';
+import { ClaudeTerminal, type ClaudeResponse, type ToolUsage } from './terminal';
 import type { QueueTask, Output } from './types';
 import { PRIORITY_VALUES, DEFAULTS } from './types';
 
@@ -252,6 +252,12 @@ export class QueueManager {
   private async processTask(task: QueueTask): Promise<ProcessingResult> {
     const { agentId, prompt, model, userId } = task;
 
+    // Progress tracking state
+    let lastToolName = '';
+    let lastToolInput: Record<string, unknown> | undefined;
+    let progressInterval: ReturnType<typeof setInterval> | null = null;
+    const startTime = Date.now();
+
     try {
       // Get agent info for notification
       const agent = this.agentManager.getAgent(agentId);
@@ -270,8 +276,28 @@ export class QueueManager {
       // Notify user that task is starting
       await this.notifyTaskStart(userId, agent.name, model, prompt);
 
-      // Execute the prompt via ClaudeTerminal (with agentId and workspace)
-      const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace);
+      // Start progress update interval (every 30 seconds)
+      progressInterval = setInterval(async () => {
+        if (lastToolName) {
+          const elapsed = this.formatElapsed(Date.now() - startTime);
+          const toolDesc = this.describeToolAction(lastToolName, lastToolInput);
+          const message = `🔧 ${agent.name}: ${toolDesc} (${elapsed})`;
+          try {
+            await this.sendWhatsApp(userId, message);
+          } catch (err) {
+            console.error('Failed to send progress update:', err);
+          }
+        }
+      }, 30000);
+
+      // Progress callback to track current tool
+      const onProgress = (toolName: string, toolInput?: Record<string, unknown>) => {
+        lastToolName = toolName;
+        lastToolInput = toolInput;
+      };
+
+      // Execute the prompt via ClaudeTerminal (with agentId, workspace, and progress callback)
+      const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace, onProgress);
 
       // Send images first (if any) - these are screenshots captured from tool_result
       if (response.images.length > 0 && this.sendWhatsAppImage) {
@@ -333,8 +359,11 @@ export class QueueManager {
         this.agentManager.updateAgentTitle(agentId, response.title);
       }
 
-      // Update agent status back to idle
-      this.agentManager.updateAgentStatus(agentId, 'idle', 'Aguardando prompt');
+      // Generate action summary from tools used
+      const actionSummary = this.generateActionSummary(response.toolsUsed);
+
+      // Update agent status back to idle with action summary
+      this.agentManager.updateAgentStatus(agentId, 'idle', actionSummary);
 
       return {
         taskId: task.id,
@@ -363,6 +392,11 @@ export class QueueManager {
         success: false,
         error: error instanceof Error ? error : new Error(errorMessage),
       };
+    } finally {
+      // Clear progress interval
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
     }
   }
 
@@ -442,5 +476,101 @@ export class QueueManager {
       return text;
     }
     return text.substring(0, maxLength);
+  }
+
+  /**
+   * Format elapsed time in human readable format
+   */
+  private formatElapsed(ms: number): string {
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+
+    if (minutes > 0) {
+      return `${minutes}m ${remainingSeconds}s`;
+    }
+    return `${seconds}s`;
+  }
+
+  /**
+   * Describe what a tool is doing based on its name and input
+   */
+  private describeToolAction(toolName: string, input?: Record<string, unknown>): string {
+    switch (toolName) {
+      case 'Read': {
+        const filePath = input?.file_path as string | undefined;
+        if (filePath) {
+          const fileName = filePath.split('/').pop() || filePath;
+          return `Lendo ${fileName}...`;
+        }
+        return 'Lendo arquivo...';
+      }
+      case 'Write': {
+        const filePath = input?.file_path as string | undefined;
+        if (filePath) {
+          const fileName = filePath.split('/').pop() || filePath;
+          return `Escrevendo ${fileName}...`;
+        }
+        return 'Escrevendo arquivo...';
+      }
+      case 'Edit': {
+        const filePath = input?.file_path as string | undefined;
+        if (filePath) {
+          const fileName = filePath.split('/').pop() || filePath;
+          return `Editando ${fileName}...`;
+        }
+        return 'Editando arquivo...';
+      }
+      case 'Bash': {
+        const command = input?.command as string | undefined;
+        if (command) {
+          const shortCmd = command.split(' ')[0].split('/').pop() || command;
+          return `Executando ${this.truncatePrompt(shortCmd, 20)}...`;
+        }
+        return 'Executando comando...';
+      }
+      case 'Glob':
+        return 'Buscando arquivos...';
+      case 'Grep':
+        return 'Pesquisando código...';
+      default:
+        return `Usando ${toolName}...`;
+    }
+  }
+
+  /**
+   * Generate a summary of actions based on tools used
+   */
+  private generateActionSummary(tools: ToolUsage[]): string {
+    const writes = tools.filter(t => t.name === 'Write').length;
+    const edits = tools.filter(t => t.name === 'Edit').length;
+    const reads = tools.filter(t => t.name === 'Read').length;
+    const bashes = tools.filter(t => t.name === 'Bash').length;
+    const globs = tools.filter(t => t.name === 'Glob').length;
+    const greps = tools.filter(t => t.name === 'Grep').length;
+
+    // Priority: writes > edits > bashes > reads/searches
+    if (writes > 0) {
+      return `Criou ${writes} arquivo${writes > 1 ? 's' : ''}`;
+    }
+    if (edits > 0) {
+      return `Editou ${edits} arquivo${edits > 1 ? 's' : ''}`;
+    }
+    if (bashes > 0) {
+      // Try to get the command from the last bash
+      const lastBash = tools.filter(t => t.name === 'Bash').pop();
+      const cmd = lastBash?.input?.command as string | undefined;
+      if (cmd) {
+        const shortCmd = cmd.split(' ')[0].split('/').pop() || cmd;
+        return `Executou ${shortCmd}`;
+      }
+      return `Executou ${bashes} comando${bashes > 1 ? 's' : ''}`;
+    }
+    if (reads > 0 || globs > 0 || greps > 0) {
+      const total = reads + globs + greps;
+      return `Analisou ${total} arquivo${total > 1 ? 's' : ''}`;
+    }
+
+    return 'Processou prompt';
   }
 }
