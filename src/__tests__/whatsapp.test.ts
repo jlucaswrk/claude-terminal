@@ -124,7 +124,7 @@ describe('sendAgentsList', () => {
     expect(body.type).toBe('interactive');
     expect(body.interactive.type).toBe('list');
     expect(body.interactive.body.text).toContain('Agentes disponíveis (2)');
-    expect(body.interactive.action.sections).toHaveLength(3); // Agents, Manage, Commands
+    expect(body.interactive.action.sections).toHaveLength(2); // Agents, Manage (Commands removed)
     expect(body.interactive.action.sections[0].title).toBe('🤖 Agentes');
     expect(body.interactive.action.sections[0].rows).toHaveLength(2);
   });
@@ -137,11 +137,11 @@ describe('sendAgentsList', () => {
     const body = JSON.parse(call[1].body);
 
     expect(body.interactive.body.text).toContain('Nenhum agente criado');
-    // Should have Management and Commands sections only
-    expect(body.interactive.action.sections).toHaveLength(2);
+    // Should have Management section only (no agents, no commands)
+    expect(body.interactive.action.sections).toHaveLength(1);
   });
 
-  test('limits agents to 10', async () => {
+  test('limits agents to 8 (WhatsApp 10 row limit minus management)', async () => {
     const agents = Array.from({ length: 15 }, (_, i) =>
       createTestAgent({ name: `Agent ${i + 1}` })
     );
@@ -152,7 +152,7 @@ describe('sendAgentsList', () => {
     const body = JSON.parse(call[1].body);
     const agentRows = body.interactive.action.sections[0].rows;
 
-    expect(agentRows).toHaveLength(10);
+    expect(agentRows).toHaveLength(8);
   });
 
   test('includes messageId as context when provided', async () => {
@@ -170,13 +170,12 @@ describe('sendAgentsList', () => {
     const call = mockFetch.mock.calls[0];
     const body = JSON.parse(call[1].body);
     const manageSection = body.interactive.action.sections.find(
-      (s: any) => s.title === '➕ Gerenciar'
+      (s: any) => s.title === '⚙️ Gerenciar'
     );
 
-    expect(manageSection.rows).toHaveLength(3);
+    // Only create option when no agents (delete not shown)
+    expect(manageSection.rows).toHaveLength(1);
     expect(manageSection.rows[0].id).toBe('action_create_agent');
-    expect(manageSection.rows[1].id).toBe('action_configure_limit');
-    expect(manageSection.rows[2].id).toBe('action_configure_priority');
   });
 });
 

@@ -8,7 +8,8 @@ import {
   sendModelSelector,
   sendCommandsList,
   sendAgentsList,
-  sendAgentWithModelSelector,
+  sendAgentSelector,
+  sendModelSelectorList,
   sendContinueWithLastChoice,
   sendAgentMenu,
   sendHistoryList,
@@ -271,8 +272,8 @@ async function handleSendPrompt(
     );
   }
 
-  // Show agent + model selection list (combined)
-  await sendAgentWithModelSelector(userId, agents, messageId);
+  // Show agent selection list (first step)
+  await sendAgentSelector(userId, agents, messageId);
 
   // Show "Continue with last choice" button if user has a previous selection
   const lastChoice = userContextManager.getLastChoice(userId);
@@ -287,7 +288,7 @@ async function handleSendPrompt(
     }
   }
 
-  return { status: 'awaiting_agent_model_selection' };
+  return { status: 'awaiting_agent_selection' };
 }
 
 /**
@@ -961,12 +962,16 @@ async function handleListReply(
     return handleWorkspaceSelection(userId, listId, messageId);
   }
 
-  // Combined agent + model selection for prompt
-  if (listId.startsWith('agentmodel_')) {
-    const parts = listId.split('_');
-    const agentId = parts.slice(1, -1).join('_'); // Handle agent IDs with underscores
-    const model = parts[parts.length - 1] as Model;
-    return handleAgentModelSelection(userId, agentId, model, messageId);
+  // Agent selection for prompt (step 1)
+  if (listId.startsWith('selectagent_')) {
+    const agentId = listId.replace('selectagent_', '');
+    return handleAgentSelectionForPrompt(userId, agentId, messageId);
+  }
+
+  // Model selection for prompt (step 2)
+  if (listId.startsWith('selectmodel_')) {
+    const model = listId.replace('selectmodel_', '') as Model;
+    return handleModelSelectionForPrompt(userId, model, messageId);
   }
 
   // Agent selection for prompt (legacy, used in other flows)
@@ -1083,8 +1088,105 @@ async function handleAgentSelection(
 }
 
 /**
+ * Handle agent selection for prompt (step 1 of 2)
+ */
+async function handleAgentSelectionForPrompt(
+  userId: string,
+  agentId: string,
+  messageId?: string
+): Promise<{ status: string }> {
+  const pending = userContextManager.getPendingPrompt(userId);
+  if (!pending) {
+    await sendWhatsApp(userId, 'Nenhum prompt pendente. Envie uma mensagem primeiro.');
+    return { status: 'no_pending' };
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    await sendWhatsApp(userId, '❌ Agente não encontrado.');
+    return { status: 'agent_not_found' };
+  }
+
+  // Store selected agent
+  pendingAgentSelection.set(userId, agentId);
+
+  // Send model selector (step 2)
+  await sendModelSelectorList(userId, agent.name, messageId);
+
+  return { status: 'awaiting_model_selection' };
+}
+
+/**
+ * Handle model selection for prompt (step 2 of 2)
+ */
+async function handleModelSelectionForPrompt(
+  userId: string,
+  model: Model,
+  messageId?: string
+): Promise<{ status: string }> {
+  const pending = userContextManager.getPendingPrompt(userId);
+  const agentId = pendingAgentSelection.get(userId);
+
+  if (!pending || !agentId) {
+    await sendWhatsApp(userId, 'Nenhum prompt pendente. Envie uma mensagem primeiro.');
+    return { status: 'no_pending' };
+  }
+
+  // Clear pending state
+  userContextManager.clearPendingPrompt(userId);
+  pendingAgentSelection.delete(userId);
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    await sendWhatsApp(userId, '❌ Agente não encontrado.');
+    return { status: 'agent_not_found' };
+  }
+
+  console.log(`> [${model}] Agent: ${agent.name}, Prompt: ${pending.text}`);
+
+  // Store last choice for quick repeat
+  userContextManager.setLastChoice(userId, agentId, agent.name, model);
+
+  // Check if agent is busy
+  if (agent.status === 'processing') {
+    await sendWhatsApp(
+      userId,
+      `⏳ Agente *${agent.name}* ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
+    );
+  } else {
+    await sendWhatsApp(userId, `Processando com ${model}...`);
+  }
+
+  // Enqueue task
+  const task = queueManager.enqueue({
+    agentId,
+    prompt: pending.text,
+    model,
+    userId,
+  });
+
+  console.log(`Task ${task.id} enqueued for agent ${agent.name}`);
+
+  return { status: 'task_enqueued' };
+}
+
+/**
  * Handle emoji selection during agent creation
  */
+// Emoji key to character mapping
+const EMOJI_MAP: Record<string, string> = {
+  robo: '🤖',
+  ferramentas: '🔧',
+  graficos: '📊',
+  ideia: '💡',
+  alvo: '🎯',
+  notas: '📝',
+  foguete: '🚀',
+  raio: '⚡',
+  busca: '🔍',
+  computador: '💻',
+};
+
 async function handleEmojiSelection(
   userId: string,
   listId: string,
@@ -1095,8 +1197,9 @@ async function handleEmojiSelection(
     return { status: 'unexpected_emoji_selection' };
   }
 
-  // Extract emoji from listId (format: emoji_🤖)
-  const emoji = listId.replace('emoji_', '');
+  // Extract key from listId (format: emoji_robo) and map to emoji
+  const key = listId.replace('emoji_', '');
+  const emoji = EMOJI_MAP[key] || '🤖';
 
   userContextManager.setAgentEmoji(userId, emoji);
   await sendWorkspaceSelector(userId, messageId);

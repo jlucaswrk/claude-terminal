@@ -353,37 +353,23 @@ export async function sendContinueWithLastChoice(
   }
 }
 
-export async function sendAgentWithModelSelector(
+export async function sendAgentSelector(
   to: string,
   agents: Agent[],
   messageId?: string
 ): Promise<void> {
-  // Create rows for each agent with all model options
-  const agentRows: any[] = [];
-
-  for (const agent of agents.slice(0, 3)) { // Max 3 agents to fit 9 rows (3 per agent)
+  // Max 10 agents to fit WhatsApp's row limit
+  const agentRows = agents.slice(0, 10).map((agent) => {
     const agentEmoji = agent.emoji || '🤖';
     const statusEmoji = STATUS_EMOJI[agent.status];
     const time = formatTimestamp(agent.lastActivity);
 
-    agentRows.push({
-      id: `agentmodel_${agent.id}_haiku`,
-      title: truncate(`${agentEmoji} ${agent.name} (Haiku)`, 24),
+    return {
+      id: `selectagent_${agent.id}`,
+      title: truncate(`${agentEmoji} ${agent.name}`, 24),
       description: truncate(`${statusEmoji} ${agent.status} - ${time}`, 72),
-    });
-
-    agentRows.push({
-      id: `agentmodel_${agent.id}_sonnet`,
-      title: truncate(`${agentEmoji} ${agent.name} (Sonnet)`, 24),
-      description: truncate(`${statusEmoji} ${agent.status} - ${time}`, 72),
-    });
-
-    agentRows.push({
-      id: `agentmodel_${agent.id}_opus`,
-      title: truncate(`${agentEmoji} ${agent.name} (Opus)`, 24),
-      description: truncate(`${statusEmoji} ${agent.status} - ${time}`, 72),
-    });
-  }
+    };
+  });
 
   const body: any = {
     messaging_product: 'whatsapp',
@@ -393,14 +379,80 @@ export async function sendAgentWithModelSelector(
     interactive: {
       type: 'list',
       body: {
-        text: 'Selecione um agente para executar essa task:',
+        text: '1️⃣ Selecione o agente:',
       },
       action: {
-        button: 'Selecionar',
+        button: 'Escolher agente',
         sections: [
           {
             title: '🤖 Agentes',
             rows: agentRows,
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+export async function sendModelSelectorList(
+  to: string,
+  agentName: string,
+  messageId?: string
+): Promise<void> {
+  const modelRows = [
+    {
+      id: 'selectmodel_haiku',
+      title: '⚡ Haiku',
+      description: 'Rápido e econômico',
+    },
+    {
+      id: 'selectmodel_sonnet',
+      title: '🎭 Sonnet',
+      description: 'Equilibrado',
+    },
+    {
+      id: 'selectmodel_opus',
+      title: '🎼 Opus',
+      description: 'Mais capaz e detalhado',
+    },
+  ];
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: {
+        text: `2️⃣ Selecione o modelo para *${agentName}*:`,
+      },
+      action: {
+        button: 'Escolher modelo',
+        sections: [
+          {
+            title: '🧠 Modelos',
+            rows: modelRows,
           },
         ],
       },
@@ -498,7 +550,11 @@ export async function sendAgentsList(
   agents: Agent[],
   messageId?: string
 ): Promise<void> {
-  const agentRows = agents.slice(0, 10).map((agent) => {
+  // WhatsApp limit: max 10 rows total across all sections
+  // Reserve 2 rows for management (create + delete)
+  // So max 8 agents can be shown
+  const maxAgents = Math.min(agents.length, 8);
+  const agentRows = agents.slice(0, maxAgents).map((agent) => {
     const agentEmoji = agent.emoji || '🤖';
     const statusEmoji = STATUS_EMOJI[agent.status];
     const time = formatTimestamp(agent.lastActivity);
@@ -522,22 +578,12 @@ export async function sendAgentsList(
     });
   }
 
-  // Management section
+  // Management section - condensed to fit WhatsApp's 10 row limit
   const managementRows = [
     {
       id: 'action_create_agent',
-      title: 'Criar novo agente',
-      description: 'Criar um agente com nome e workspace',
-    },
-    {
-      id: 'action_configure_limit',
-      title: 'Configurar execução',
-      description: 'Limite de agentes simultâneos',
-    },
-    {
-      id: 'action_configure_priority',
-      title: 'Configurar prioridade',
-      description: 'Alterar prioridade de um agente',
+      title: '➕ Criar agente',
+      description: 'Novo agente com emoji e workspace',
     },
   ];
 
@@ -545,37 +591,18 @@ export async function sendAgentsList(
   if (agentRows.length > 0) {
     managementRows.push({
       id: 'action_delete_agents',
-      title: 'Remover agente(s)',
-      description: 'Deletar um ou todos os agentes',
+      title: '🗑️ Remover agentes',
+      description: 'Deletar um ou todos',
     });
   }
 
   sections.push({
-    title: '➕ Gerenciar',
+    title: '⚙️ Gerenciar',
     rows: managementRows,
   });
 
-  // Commands section
-  sections.push({
-    title: '🔧 Comandos',
-    rows: [
-      {
-        id: 'cmd_reset',
-        title: '/reset',
-        description: 'Limpar sessão e iniciar nova conversa',
-      },
-      {
-        id: 'cmd_compact',
-        title: '/compact',
-        description: 'Compactar contexto da conversa',
-      },
-      {
-        id: 'cmd_help',
-        title: '/help',
-        description: 'Mostrar ajuda',
-      },
-    ],
-  });
+  // Note: Commands like /reset, /help are accessible via text
+  // Removed from menu to respect WhatsApp's 10 row limit
 
   const body: any = {
     messaging_product: 'whatsapp',
@@ -1303,20 +1330,20 @@ export async function sendEmojiSelector(
   messageId?: string
 ): Promise<void> {
   const emojis = [
-    { emoji: '🤖', label: 'Robô' },
-    { emoji: '🔧', label: 'Ferramentas' },
-    { emoji: '📊', label: 'Gráficos' },
-    { emoji: '💡', label: 'Ideia' },
-    { emoji: '🎯', label: 'Alvo' },
-    { emoji: '📝', label: 'Notas' },
-    { emoji: '🚀', label: 'Foguete' },
-    { emoji: '⚡', label: 'Raio' },
-    { emoji: '🔍', label: 'Busca' },
-    { emoji: '💻', label: 'Computador' },
+    { emoji: '🤖', key: 'robo', label: 'Robô' },
+    { emoji: '🔧', key: 'ferramentas', label: 'Ferramentas' },
+    { emoji: '📊', key: 'graficos', label: 'Gráficos' },
+    { emoji: '💡', key: 'ideia', label: 'Ideia' },
+    { emoji: '🎯', key: 'alvo', label: 'Alvo' },
+    { emoji: '📝', key: 'notas', label: 'Notas' },
+    { emoji: '🚀', key: 'foguete', label: 'Foguete' },
+    { emoji: '⚡', key: 'raio', label: 'Raio' },
+    { emoji: '🔍', key: 'busca', label: 'Busca' },
+    { emoji: '💻', key: 'computador', label: 'Computador' },
   ];
 
   const rows = emojis.map((e) => ({
-    id: `emoji_${e.emoji}`,
+    id: `emoji_${e.key}`,
     title: `${e.emoji} ${e.label}`,
     description: '',
   }));

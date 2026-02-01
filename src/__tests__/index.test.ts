@@ -172,7 +172,7 @@ describe('Webhook Integration Tests', () => {
       const payload = createTextPayload(userId, 'What is 2+2?');
       const result = await postWebhook(payload);
 
-      expect(result.json.status).toBe('awaiting_agent_model_selection');
+      expect(result.json.status).toBe('awaiting_agent_selection');
 
       // Should have sent agent + model selection list
       const listCall = whatsappCalls.find(c => c.body.interactive?.type === 'list');
@@ -395,7 +395,7 @@ describe('Webhook Integration Tests', () => {
 
       // Select emoji
       whatsappCalls.length = 0;
-      const emojiResult = await postWebhook(createListPayload(userId, 'emoji_🚀'));
+      const emojiResult = await postWebhook(createListPayload(userId, 'emoji_foguete'));
       expect(emojiResult.json.status).toBe('awaiting_workspace_choice');
 
       // Skip workspace
