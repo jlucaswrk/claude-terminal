@@ -5,6 +5,21 @@ import type { QueueTask, Output } from './types';
 import { PRIORITY_VALUES, DEFAULTS } from './types';
 
 /**
+ * Tool-specific emojis for progress messages
+ */
+const TOOL_EMOJI: Record<string, string> = {
+  Read: '📄',
+  Write: '✏️',
+  Edit: '📝',
+  Bash: '⚙️',
+  Glob: '🔍',
+  Grep: '🔎',
+  Task: '🤖',
+  WebFetch: '🌐',
+  WebSearch: '🔎',
+};
+
+/**
  * Type for WhatsApp send function
  */
 export type SendWhatsAppFn = (to: string, text: string) => Promise<void>;
@@ -281,7 +296,8 @@ export class QueueManager {
         if (lastToolName) {
           const elapsed = this.formatElapsed(Date.now() - startTime);
           const toolDesc = this.describeToolAction(lastToolName, lastToolInput);
-          const message = `🔧 ${agent.name}: ${toolDesc} (${elapsed})`;
+          const emoji = TOOL_EMOJI[lastToolName] || '🌐';
+          const message = `${emoji} *${agent.name}*: _${toolDesc}_ (${elapsed})`;
           try {
             await this.sendWhatsApp(userId, message);
           } catch (err) {
@@ -410,7 +426,7 @@ export class QueueManager {
     prompt: string
   ): Promise<void> {
     const truncatedPrompt = this.truncatePrompt(prompt, 30);
-    const message = `🔔 Agente ${agentName} iniciou seu prompt: '${truncatedPrompt}...' (${model})`;
+    const message = `🔔 Agente *${agentName}* iniciou seu prompt: '${truncatedPrompt}...' (${model})`;
 
     try {
       await this.sendWhatsApp(userId, message);
@@ -446,7 +462,7 @@ export class QueueManager {
     }
 
     // Fallback to plain text message
-    const message = `❌ Erro no agente ${agentName}: ${this.truncatePrompt(errorMessage, 100)}`;
+    const message = `❌ Erro no agente *${agentName}*: ${this.truncatePrompt(errorMessage, 100)}`;
     try {
       await this.sendWhatsApp(userId, message);
     } catch (error) {

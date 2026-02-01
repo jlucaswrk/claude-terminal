@@ -269,7 +269,7 @@ describe('sendHistoryList', () => {
 
     expect(body.type).toBe('interactive');
     expect(body.interactive.type).toBe('list');
-    expect(body.interactive.body.text).toContain('📋 Histórico - Backend API');
+    expect(body.interactive.body.text).toContain('📋 Histórico - *Backend API*');
     expect(body.interactive.body.text).toContain('3 interações');
   });
 
@@ -352,7 +352,7 @@ describe('sendErrorWithActions', () => {
 
     expect(body.type).toBe('interactive');
     expect(body.interactive.type).toBe('button');
-    expect(body.interactive.body.text).toContain("❌ Erro no agente 'Backend API'");
+    expect(body.interactive.body.text).toContain('❌ Erro no agente *Backend API*');
     expect(body.interactive.body.text).toContain('Permission denied');
   });
 
@@ -461,7 +461,7 @@ describe('sendConfigurePriorityMenu', () => {
 
     expect(body.type).toBe('interactive');
     expect(body.interactive.type).toBe('list');
-    expect(body.interactive.body.text).toContain('Agente: Backend API');
+    expect(body.interactive.body.text).toContain('Agente: *Backend API*');
     expect(body.interactive.body.text).toContain('Prioridade atual: Média');
   });
 

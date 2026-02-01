@@ -9,6 +9,7 @@ import {
   sendCommandsList,
   sendAgentsList,
   sendAgentWithModelSelector,
+  sendContinueWithLastChoice,
   sendAgentMenu,
   sendHistoryList,
   sendErrorWithActions,
@@ -260,7 +261,7 @@ async function handleSendPrompt(
   // Flow 3: Check if any agents are processing
   const activeAgents = agents.filter((a) => a.status === 'processing');
   if (activeAgents.length > 0) {
-    const names = activeAgents.map((a) => a.name).join(', ');
+    const names = activeAgents.map((a) => `*${a.name}*`).join(', ');
     await sendWhatsApp(
       userId,
       `⚠️ Agentes em execução: ${names}. Seu prompt será enfileirado se selecionar agente ocupado.`
@@ -269,6 +270,19 @@ async function handleSendPrompt(
 
   // Show agent + model selection list (combined)
   await sendAgentWithModelSelector(userId, agents, messageId);
+
+  // Show "Continue with last choice" button if user has a previous selection
+  const lastChoice = userContextManager.getLastChoice(userId);
+  if (lastChoice) {
+    // Verify the agent still exists
+    const lastAgent = agentManager.getAgent(lastChoice.agentId);
+    if (lastAgent) {
+      await sendContinueWithLastChoice(userId, lastChoice.agentName, lastChoice.model, messageId);
+    } else {
+      // Clear invalid last choice
+      userContextManager.clearLastChoice(userId);
+    }
+  }
 
   return { status: 'awaiting_agent_model_selection' };
 }
@@ -426,7 +440,7 @@ async function handleFlowTextInput(
 
         userContextManager.completeFlow(userId);
 
-        await sendWhatsApp(userId, `✅ Agente '${agent.name}' criado!`);
+        await sendWhatsApp(userId, `✅ Agente *${agent.name}* criado!`);
         await sendButtons(userId, 'Enviar prompt agora?', [
           { id: `newagent_prompt_${agent.id}`, title: 'Enviar prompt' },
           { id: 'newagent_later', title: 'Depois' },
@@ -457,6 +471,11 @@ async function handleButtonReply(
   buttonId: string
 ): Promise<{ status: string }> {
   console.log(`> Button: ${buttonId}`);
+
+  // Continue with last choice
+  if (buttonId.startsWith('continue_last_choice_')) {
+    return handleContinueWithLastChoice(userId);
+  }
 
   // Model selection
   if (buttonId.startsWith('model_')) {
@@ -492,6 +511,35 @@ async function handleButtonReply(
 }
 
 /**
+ * Handle "Continue with last choice" button
+ */
+async function handleContinueWithLastChoice(userId: string): Promise<{ status: string }> {
+  const lastChoice = userContextManager.getLastChoice(userId);
+  const pending = userContextManager.getPendingPrompt(userId);
+
+  if (!lastChoice) {
+    await sendWhatsApp(userId, 'Nenhuma escolha anterior encontrada.');
+    return { status: 'no_last_choice' };
+  }
+
+  if (!pending) {
+    await sendWhatsApp(userId, 'Nenhum prompt pendente. Envie uma mensagem primeiro.');
+    return { status: 'no_pending' };
+  }
+
+  // Verify agent still exists
+  const agent = agentManager.getAgent(lastChoice.agentId);
+  if (!agent) {
+    userContextManager.clearLastChoice(userId);
+    await sendWhatsApp(userId, '❌ Agente anterior não encontrado. Selecione outro.');
+    return { status: 'agent_not_found' };
+  }
+
+  // Use handleAgentModelSelection to process with the stored choice
+  return handleAgentModelSelection(userId, lastChoice.agentId, lastChoice.model);
+}
+
+/**
  * Handle model selection (Haiku/Opus)
  */
 async function handleModelSelection(
@@ -523,13 +571,16 @@ async function handleModelSelection(
 
   console.log(`> [${model}] Agent: ${agent.name}, Prompt: ${pending.text}`);
 
+  // Store last choice for quick repeat
+  userContextManager.setLastChoice(userId, agentId, agent.name, model);
+
   // Note: Error context is stored by QueueManager when errors occur (Flow 11)
 
   // Check if agent is busy
   if (agent.status === 'processing') {
     await sendWhatsApp(
       userId,
-      `⏳ Agente ${agent.name} ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
+      `⏳ Agente *${agent.name}* ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
     );
   } else {
     await sendWhatsApp(userId, `Processando com ${model}...`);
@@ -576,11 +627,14 @@ async function handleAgentModelSelection(
 
   console.log(`> [${model}] Agent: ${agent.name}, Prompt: ${pending.text}`);
 
+  // Store last choice for quick repeat
+  userContextManager.setLastChoice(userId, agentId, agent.name, model);
+
   // Check if agent is busy
   if (agent.status === 'processing') {
     await sendWhatsApp(
       userId,
-      `⏳ Agente ${agent.name} ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
+      `⏳ Agente *${agent.name}* ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
     );
   } else {
     await sendWhatsApp(userId, `Processando com ${model}...`);
@@ -755,7 +809,7 @@ async function handleConfirmation(
     terminal.clearSession(userId, agentId);
     agentManager.deleteAgent(agentId);
 
-    await sendWhatsApp(userId, `✅ Agente '${agentName}' deletado.`);
+    await sendWhatsApp(userId, `✅ Agente *${agentName}* deletado.`);
     return { status: 'deleted' };
   }
 
@@ -976,7 +1030,7 @@ async function handleAgentMenuAction(
 
       await sendConfirmation(
         userId,
-        `⚠️ Limpar sessão do agente '${agent.name}'?\n\nIsso apagará todo o contexto da conversa.`,
+        `⚠️ Limpar sessão do agente *${agent.name}*?\n\nIsso apagará todo o contexto da conversa.`,
         [
           { id: `confirm_reset_${agentId}`, title: 'Confirmar' },
           { id: 'confirm_cancel', title: 'Cancelar' },
@@ -995,7 +1049,7 @@ async function handleAgentMenuAction(
 
       await sendConfirmation(
         userId,
-        `⚠️ Deletar agente '${agent.name}'?\n\nIsso é irreversível.`,
+        `⚠️ Deletar agente *${agent.name}*?\n\nIsso é irreversível.`,
         [
           { id: `confirm_delete_${agentId}`, title: 'Confirmar' },
           { id: 'confirm_cancel', title: 'Cancelar' },
@@ -1128,7 +1182,7 @@ async function handleResetSelection(
 
   await sendConfirmation(
     userId,
-    `⚠️ Limpar sessão do agente '${agent.name}'?\n\nIsso apagará todo o contexto da conversa.`,
+    `⚠️ Limpar sessão do agente *${agent.name}*?\n\nIsso apagará todo o contexto da conversa.`,
     [
       { id: `confirm_reset_${selection}`, title: 'Confirmar' },
       { id: 'confirm_cancel', title: 'Cancelar' },
@@ -1185,7 +1239,7 @@ async function handlePrioritySelection(
   userContextManager.completeFlow(userId);
 
   const priorityLabel = { high: 'Alta', medium: 'Média', low: 'Baixa' }[priority];
-  await sendWhatsApp(userId, `✅ Prioridade do agente '${agent.name}' atualizada para ${priorityLabel}.`);
+  await sendWhatsApp(userId, `✅ Prioridade do agente *${agent.name}* atualizada para ${priorityLabel}.`);
 
   return { status: 'priority_updated' };
 }

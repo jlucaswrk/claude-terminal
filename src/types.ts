@@ -52,6 +52,11 @@ export interface UserContext {
     text: string;
     messageId?: string;
   };
+  lastChoice?: {
+    agentId: string;
+    agentName: string;
+    model: 'haiku' | 'sonnet' | 'opus';
+  };
 }
 
 /**

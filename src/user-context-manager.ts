@@ -356,6 +356,49 @@ export class UserContextManager {
   }
 
   // ============================================
+  // Last Choice Management
+  // ============================================
+
+  /**
+   * Store the user's last agent+model choice
+   */
+  setLastChoice(
+    userId: string,
+    agentId: string,
+    agentName: string,
+    model: 'haiku' | 'sonnet' | 'opus'
+  ): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.lastChoice = { agentId, agentName, model };
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the user's last agent+model choice
+   */
+  getLastChoice(userId: string): { agentId: string; agentName: string; model: 'haiku' | 'sonnet' | 'opus' } | undefined {
+    return this.contexts.get(userId)?.lastChoice;
+  }
+
+  /**
+   * Check if user has a last choice stored
+   */
+  hasLastChoice(userId: string): boolean {
+    return this.contexts.get(userId)?.lastChoice !== undefined;
+  }
+
+  /**
+   * Clear the last choice for a user
+   */
+  clearLastChoice(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context) {
+      delete context.lastChoice;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  // ============================================
   // Utility Methods
   // ============================================
 

@@ -297,6 +297,62 @@ export async function sendModelSelector(to: string, messageId?: string): Promise
 /**
  * Sends an interactive list of agents with model selection (Haiku/Opus for each agent)
  */
+/**
+ * Sends a "Continue with last choice" button for quick repeat interactions
+ */
+export async function sendContinueWithLastChoice(
+  to: string,
+  agentName: string,
+  model: string,
+  messageId?: string
+): Promise<void> {
+  const modelDisplay = model.charAt(0).toUpperCase() + model.slice(1);
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: `Ou continuar com última escolha:`,
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: `continue_last_choice_${Date.now()}`,
+              title: `${agentName} (${modelDisplay})`,
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
 export async function sendAgentWithModelSelector(
   to: string,
   agents: Agent[],
@@ -667,8 +723,8 @@ export async function sendHistoryList(
       type: 'list',
       body: {
         text: outputs.length > 0
-          ? `📋 Histórico - ${agentName}\n\nÚltimas ${recentOutputs.length} interações:`
-          : `📋 Histórico - ${agentName}\n\nNenhuma interação ainda.`,
+          ? `📋 Histórico - *${agentName}*\n\nÚltimas ${recentOutputs.length} interações:`
+          : `📋 Histórico - *${agentName}*\n\nNenhuma interação ainda.`,
       },
       action: {
         button: 'Ver histórico',
@@ -728,7 +784,7 @@ export async function sendErrorWithActions(
     interactive: {
       type: 'button',
       body: {
-        text: `❌ Erro no agente '${agentName}'\n\n${truncate(error, 500)}`,
+        text: `❌ Erro no agente *${agentName}*\n\n${truncate(error, 500)}`,
       },
       action: {
         buttons: [
@@ -878,7 +934,7 @@ export async function sendConfigurePriorityMenu(
     interactive: {
       type: 'list',
       body: {
-        text: `⚙️ Configurar prioridade\n\nAgente: ${agentName}\nPrioridade atual: ${PRIORITY_LABEL[currentPriority]}\n\nAgentes com alta prioridade são processados primeiro.`,
+        text: `⚙️ Configurar prioridade\n\nAgente: *${agentName}*\nPrioridade atual: ${PRIORITY_LABEL[currentPriority]}\n\nAgentes com alta prioridade são processados primeiro.`,
       },
       action: {
         button: 'Escolher',
