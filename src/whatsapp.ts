@@ -242,7 +242,7 @@ export async function sendModelSelector(to: string, messageId?: string): Promise
     interactive: {
       type: 'button',
       body: {
-        text: 'Modelo:',
+        text: 'Selecione um modelo para executar essa task:',
       },
       action: {
         buttons: [
@@ -266,6 +266,77 @@ export async function sendModelSelector(to: string, messageId?: string): Promise
   };
 
   // Reply to original message if we have the ID
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends an interactive list of agents with model selection (Haiku/Opus for each agent)
+ */
+export async function sendAgentWithModelSelector(
+  to: string,
+  agents: Agent[],
+  messageId?: string
+): Promise<void> {
+  // Create rows for each agent with both model options
+  const agentRows: any[] = [];
+
+  for (const agent of agents.slice(0, 5)) { // Max 5 agents to fit 10 rows (2 per agent)
+    const emoji = STATUS_EMOJI[agent.status];
+    const time = formatTimestamp(agent.lastActivity);
+
+    agentRows.push({
+      id: `agentmodel_${agent.id}_haiku`,
+      title: truncate(`${agent.name} (Haiku)`, 24),
+      description: truncate(`${emoji} ${agent.status} - ${time}`, 72),
+    });
+
+    agentRows.push({
+      id: `agentmodel_${agent.id}_opus`,
+      title: truncate(`${agent.name} (Opus)`, 24),
+      description: truncate(`${emoji} ${agent.status} - ${time}`, 72),
+    });
+  }
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: {
+        text: 'Selecione um agente para executar essa task:',
+      },
+      action: {
+        button: 'Selecionar',
+        sections: [
+          {
+            title: '🤖 Agentes',
+            rows: agentRows,
+          },
+        ],
+      },
+    },
+  };
+
   if (messageId) {
     body.context = { message_id: messageId };
   }

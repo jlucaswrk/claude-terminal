@@ -8,6 +8,7 @@ import {
   sendModelSelector,
   sendCommandsList,
   sendAgentsList,
+  sendAgentWithModelSelector,
   sendAgentMenu,
   sendHistoryList,
   sendErrorWithActions,
@@ -266,10 +267,10 @@ async function handleSendPrompt(
     );
   }
 
-  // Show agent selection list
-  await sendAgentsList(userId, agents, messageId);
+  // Show agent + model selection list (combined)
+  await sendAgentWithModelSelector(userId, agents, messageId);
 
-  return { status: 'awaiting_agent_selection' };
+  return { status: 'awaiting_agent_model_selection' };
 }
 
 /**
@@ -543,6 +544,57 @@ async function handleModelSelection(
 }
 
 /**
+ * Handle combined agent + model selection
+ */
+async function handleAgentModelSelection(
+  userId: string,
+  agentId: string,
+  model: Model,
+  messageId?: string
+): Promise<{ status: string }> {
+  const pending = userContextManager.getPendingPrompt(userId);
+
+  if (!pending) {
+    await sendWhatsApp(userId, 'Nenhum prompt pendente. Envie uma mensagem primeiro.');
+    return { status: 'no_pending' };
+  }
+
+  // Clear pending state
+  userContextManager.clearPendingPrompt(userId);
+  pendingAgentSelection.delete(userId);
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    await sendWhatsApp(userId, '❌ Agente não encontrado.');
+    return { status: 'agent_not_found' };
+  }
+
+  console.log(`> [${model}] Agent: ${agent.name}, Prompt: ${pending.text}`);
+
+  // Check if agent is busy
+  if (agent.status === 'processing') {
+    await sendWhatsApp(
+      userId,
+      `⏳ Agente ${agent.name} ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
+    );
+  } else {
+    await sendWhatsApp(userId, `Processando com ${model}...`);
+  }
+
+  // Enqueue task
+  const task = queueManager.enqueue({
+    agentId,
+    prompt: pending.text,
+    model,
+    userId,
+  });
+
+  console.log(`Task ${task.id} enqueued for agent ${agent.name}`);
+
+  return { status: 'task_enqueued' };
+}
+
+/**
  * Handle session migration choice
  */
 async function handleMigrationChoice(
@@ -760,7 +812,15 @@ async function handleListReply(
 ): Promise<{ status: string }> {
   console.log(`> List: ${listId}`);
 
-  // Agent selection for prompt
+  // Combined agent + model selection for prompt
+  if (listId.startsWith('agentmodel_')) {
+    const parts = listId.split('_');
+    const agentId = parts.slice(1, -1).join('_'); // Handle agent IDs with underscores
+    const model = parts[parts.length - 1] as Model;
+    return handleAgentModelSelection(userId, agentId, model, messageId);
+  }
+
+  // Agent selection for prompt (legacy, used in other flows)
   if (listId.startsWith('agent_')) {
     const agentId = listId.replace('agent_', '');
     return handleAgentSelection(userId, agentId, messageId);

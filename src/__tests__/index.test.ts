@@ -172,9 +172,9 @@ describe('Webhook Integration Tests', () => {
       const payload = createTextPayload(userId, 'What is 2+2?');
       const result = await postWebhook(payload);
 
-      expect(result.json.status).toBe('awaiting_agent_selection');
+      expect(result.json.status).toBe('awaiting_agent_model_selection');
 
-      // Should have sent agent list
+      // Should have sent agent + model selection list
       const listCall = whatsappCalls.find(c => c.body.interactive?.type === 'list');
       expect(listCall).toBeDefined();
       expect(listCall?.body.interactive.action.sections).toBeDefined();
