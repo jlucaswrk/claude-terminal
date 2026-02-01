@@ -154,12 +154,17 @@ export class PersistenceService {
 
     const a = agent as Partial<SerializedAgent>;
 
-    // Required string fields
+    // Required string fields (userId is optional for backward compatibility)
     const requiredStrings = ['id', 'name', 'title', 'status', 'statusDetails', 'priority', 'lastActivity', 'createdAt'];
     for (const field of requiredStrings) {
       if (typeof (a as Record<string, unknown>)[field] !== 'string') {
         return false;
       }
+    }
+
+    // userId can be missing in old data (backward compatibility)
+    if (a.userId !== undefined && typeof a.userId !== 'string') {
+      return false;
     }
 
     // Required number fields
@@ -194,6 +199,7 @@ export class PersistenceService {
       config: state.config,
       agents: state.agents.map((agent): SerializedAgent => ({
         id: agent.id,
+        userId: agent.userId,
         name: agent.name,
         workspace: agent.workspace,
         sessionId: agent.sessionId,
@@ -225,6 +231,8 @@ export class PersistenceService {
       config: data.config,
       agents: data.agents.map((agent): Agent => ({
         id: agent.id,
+        // Backward compatibility: use 'default' for old agents without userId
+        userId: agent.userId || 'default',
         name: agent.name,
         workspace: agent.workspace,
         sessionId: agent.sessionId,

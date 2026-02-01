@@ -20,6 +20,7 @@ export interface Output {
  */
 export interface Agent {
   id: string;                   // UUID
+  userId: string;               // Owning user ID (phone number)
   name: string;                 // User-provided name
   workspace?: string;           // Absolute path (optional, immutable)
   sessionId?: string;           // Claude session ID (managed by SDK)
@@ -95,6 +96,7 @@ export interface SerializedAgentsState {
 
 export interface SerializedAgent {
   id: string;
+  userId: string;               // Owning user ID (phone number)
   name: string;
   workspace?: string;
   sessionId?: string;

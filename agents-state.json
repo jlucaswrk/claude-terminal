@@ -1,0 +1,8 @@
+{
+  "version": "1.0",
+  "config": {
+    "maxConcurrent": 5,
+    "version": "1.0"
+  },
+  "agents": []
+}

@@ -1,4 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { uploadBase64Image } from './storage';
 import { TitleExtractor } from './title-extractor';
 
@@ -10,11 +11,50 @@ export type ClaudeResponse = {
   title?: string;   // Auto-extracted title from response
 };
 
+// Session persistence file
+const SESSIONS_FILE = './.claude-terminal-sessions.json';
+
 // Store session IDs per user per agent
 const sessions = new Map<string, string>();
 
 // Title extractor instance
 const titleExtractor = new TitleExtractor();
+
+/**
+ * Load sessions from disk on startup
+ */
+function loadSessionsFromDisk(): void {
+  try {
+    if (existsSync(SESSIONS_FILE)) {
+      const data = readFileSync(SESSIONS_FILE, 'utf-8');
+      const parsed = JSON.parse(data) as Record<string, string>;
+      for (const [key, value] of Object.entries(parsed)) {
+        sessions.set(key, value);
+      }
+      console.log(`Loaded ${sessions.size} sessions from disk`);
+    }
+  } catch (err) {
+    console.error('Failed to load sessions from disk:', err);
+  }
+}
+
+/**
+ * Save sessions to disk
+ */
+function saveSessionsToDisk(): void {
+  try {
+    const data: Record<string, string> = {};
+    for (const [key, value] of sessions) {
+      data[key] = value;
+    }
+    writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error('Failed to save sessions to disk:', err);
+  }
+}
+
+// Load sessions on module initialization
+loadSessionsFromDisk();
 
 function getSessionKey(userId: string, agentId: string): string {
   return `${userId}_${agentId}`;
@@ -30,15 +70,20 @@ export function detectOldSessions(userId: string): boolean {
 
 /**
  * Migrate old-style sessions and return their session IDs
- * Removes the old sessions from the map
+ * Removes the old sessions from the map and persists the change
  */
 export function migrateOldSessions(userId: string): { haiku?: string; opus?: string } {
   const haiku = sessions.get(`${userId}_haiku`);
   const opus = sessions.get(`${userId}_opus`);
 
-  // Remove old sessions
+  // Remove old sessions and persist
+  const hadOldSessions = haiku || opus;
   sessions.delete(`${userId}_haiku`);
   sessions.delete(`${userId}_opus`);
+
+  if (hadOldSessions) {
+    saveSessionsToDisk();
+  }
 
   return { haiku, opus };
 }
@@ -135,9 +180,10 @@ export class ClaudeTerminal {
       }
     }
 
-    // Store session ID for future messages
+    // Store session ID for future messages (and persist to disk)
     if (newSessionId) {
       sessions.set(sessionKey, newSessionId);
+      saveSessionsToDisk();
       console.log(`Session stored: ${newSessionId.substring(0, 8)}...`);
     }
 
@@ -156,6 +202,7 @@ export class ClaudeTerminal {
   // Clear session for a user/agent
   clearSession(userId: string, agentId: string): void {
     sessions.delete(getSessionKey(userId, agentId));
+    saveSessionsToDisk();
     console.log(`Session cleared for ${userId}/${agentId}`);
   }
 
@@ -170,6 +217,9 @@ export class ClaudeTerminal {
     for (const key of keysToDelete) {
       sessions.delete(key);
     }
+    if (keysToDelete.length > 0) {
+      saveSessionsToDisk();
+    }
     console.log(`All sessions cleared for ${userId} (${keysToDelete.length} sessions)`);
   }
 
@@ -177,6 +227,7 @@ export class ClaudeTerminal {
   setSession(userId: string, agentId: string, sessionId: string): void {
     const sessionKey = getSessionKey(userId, agentId);
     sessions.set(sessionKey, sessionId);
+    saveSessionsToDisk();
     console.log(`Session set for ${userId}/${agentId}: ${sessionId.substring(0, 8)}...`);
   }
 }

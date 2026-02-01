@@ -47,7 +47,8 @@ export class AgentManager {
       this.config = state.config;
       for (const agent of state.agents) {
         this.agents.set(agent.id, agent);
-        this.trackAgentForUser(this.extractUserId(agent), agent.id);
+        // Rebuild agentsByUser from the persisted userId field
+        this.trackAgentForUser(agent.userId, agent.id);
       }
     }
   }
@@ -76,6 +77,7 @@ export class AgentManager {
     const now = new Date();
     const agent: Agent = {
       id: crypto.randomUUID(),
+      userId,
       name: name.trim(),
       workspace,
       title: '',
@@ -88,9 +90,6 @@ export class AgentManager {
       createdAt: now,
     };
 
-    // Store with userId embedded in a way we can extract later
-    // We'll use a simple convention: store userId in a custom property via the name prefix
-    // Actually, let's just maintain the mapping separately
     this.agents.set(agent.id, agent);
     this.trackAgentForUser(userId, agent.id);
 
@@ -198,6 +197,19 @@ export class AgentManager {
 
     agent.priority = priority;
     agent.lastActivity = new Date();
+    this.persist();
+  }
+
+  /**
+   * Update agent session ID (used during migration)
+   */
+  updateSessionId(agentId: string, sessionId: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new AgentValidationError(`Agent not found: ${agentId}`);
+    }
+
+    agent.sessionId = sessionId;
     this.persist();
   }
 
@@ -347,17 +359,6 @@ export class AgentManager {
       this.agentsByUser.set(userId, new Set());
     }
     this.agentsByUser.get(userId)!.add(agentId);
-  }
-
-  /**
-   * Extract userId from agent (placeholder - in real implementation,
-   * this would be stored differently)
-   */
-  private extractUserId(_agent: Agent): string {
-    // For loaded agents, we don't have userId stored
-    // This is a limitation we'll need to address in the data model
-    // For now, return a default user
-    return 'default';
   }
 
   /**

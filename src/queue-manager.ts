@@ -1,13 +1,23 @@
 import { Semaphore } from './semaphore';
 import { AgentManager } from './agent-manager';
-import { ClaudeTerminal, ClaudeResponse } from './terminal';
+import { ClaudeTerminal, type ClaudeResponse } from './terminal';
 import type { QueueTask, Output } from './types';
-import { PRIORITY_VALUES } from './types';
+import { PRIORITY_VALUES, DEFAULTS } from './types';
 
 /**
  * Type for WhatsApp send function
  */
 export type SendWhatsAppFn = (to: string, text: string) => Promise<void>;
+
+/**
+ * Type for WhatsApp image send function
+ */
+export type SendWhatsAppImageFn = (to: string, imageUrl: string, caption?: string) => Promise<void>;
+
+/**
+ * Type for WhatsApp error with actions function
+ */
+export type SendErrorWithActionsFn = (to: string, agentName: string, error: string) => Promise<void>;
 
 /**
  * Result of task processing
@@ -116,19 +126,28 @@ export class QueueManager {
   private readonly agentManager: AgentManager;
   private readonly terminal: ClaudeTerminal;
   private readonly sendWhatsApp: SendWhatsAppFn;
+  private readonly sendWhatsAppImage?: SendWhatsAppImageFn;
+  private readonly sendErrorWithActions?: SendErrorWithActionsFn;
   private activeCount: number = 0;
+
+  // Store last errors for retry functionality
+  private lastErrors = new Map<string, { agentId: string; prompt: string; model: 'haiku' | 'opus' }>();
 
   constructor(
     semaphore: Semaphore,
     agentManager: AgentManager,
     terminal: ClaudeTerminal,
-    sendWhatsApp: SendWhatsAppFn
+    sendWhatsApp: SendWhatsAppFn,
+    sendWhatsAppImage?: SendWhatsAppImageFn,
+    sendErrorWithActions?: SendErrorWithActionsFn
   ) {
     this.queue = new PriorityQueue();
     this.semaphore = semaphore;
     this.agentManager = agentManager;
     this.terminal = terminal;
     this.sendWhatsApp = sendWhatsApp;
+    this.sendWhatsAppImage = sendWhatsAppImage;
+    this.sendErrorWithActions = sendErrorWithActions;
   }
 
   /**
@@ -237,13 +256,30 @@ export class QueueManager {
       // Notify user that task is starting
       await this.notifyTaskStart(userId, agent.name, model, prompt);
 
-      // Execute the prompt via ClaudeTerminal
-      const response = await this.terminal.send(prompt, model, userId);
+      // Execute the prompt via ClaudeTerminal (with agentId and workspace)
+      const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace);
+
+      // Send images first (if any)
+      if (response.images.length > 0 && this.sendWhatsAppImage) {
+        for (const imageUrl of response.images) {
+          try {
+            await this.sendWhatsAppImage(userId, imageUrl);
+            console.log(`[image] Sent to user`);
+          } catch (err) {
+            console.error('Failed to send image:', err);
+          }
+        }
+      }
+
+      // Send the text response
+      if (response.text) {
+        await this.sendWhatsApp(userId, response.text);
+      }
 
       // Create output record
       const output: Output = {
         id: crypto.randomUUID(),
-        summary: '',
+        summary: response.title || '',
         prompt,
         response: response.text,
         model,
@@ -253,6 +289,11 @@ export class QueueManager {
 
       // Add output to agent
       this.agentManager.addOutput(agentId, output);
+
+      // Update title if this is the first message or every TITLE_UPDATE_INTERVAL messages
+      if (response.title && (agent.messageCount === 0 || agent.messageCount % DEFAULTS.TITLE_UPDATE_INTERVAL === 0)) {
+        this.agentManager.updateAgentTitle(agentId, response.title);
+      }
 
       // Update agent status back to idle
       this.agentManager.updateAgentStatus(agentId, 'idle', 'Aguardando prompt');
@@ -275,8 +316,8 @@ export class QueueManager {
         `erro - ${this.truncatePrompt(errorMessage, 50)}`
       );
 
-      // Notify user of error
-      await this.notifyTaskError(userId, agentId, errorMessage);
+      // Notify user of error (with recovery buttons)
+      await this.notifyTaskError(userId, agentId, errorMessage, prompt, model);
 
       return {
         taskId: task.id,
@@ -307,22 +348,52 @@ export class QueueManager {
   }
 
   /**
-   * Notify user when a task fails
+   * Notify user when a task fails (with recovery buttons)
    */
   private async notifyTaskError(
     userId: string,
     agentId: string,
-    errorMessage: string
+    errorMessage: string,
+    prompt: string,
+    model: 'haiku' | 'opus'
   ): Promise<void> {
     const agent = this.agentManager.getAgent(agentId);
     const agentName = agent?.name || 'Unknown';
-    const message = `❌ Erro no agente ${agentName}: ${this.truncatePrompt(errorMessage, 100)}`;
 
+    // Store error context for retry functionality
+    this.lastErrors.set(userId, { agentId, prompt, model });
+
+    // Try to send error with action buttons (Flow 11: Error Recovery)
+    if (this.sendErrorWithActions) {
+      try {
+        await this.sendErrorWithActions(userId, agentName, errorMessage);
+        return;
+      } catch (error) {
+        console.error('Failed to send error with actions, falling back to plain text:', error);
+      }
+    }
+
+    // Fallback to plain text message
+    const message = `❌ Erro no agente ${agentName}: ${this.truncatePrompt(errorMessage, 100)}`;
     try {
       await this.sendWhatsApp(userId, message);
     } catch (error) {
       console.error('Failed to send error notification:', error);
     }
+  }
+
+  /**
+   * Get last error for a user (used for retry functionality)
+   */
+  getLastError(userId: string): { agentId: string; prompt: string; model: 'haiku' | 'opus' } | undefined {
+    return this.lastErrors.get(userId);
+  }
+
+  /**
+   * Clear last error for a user
+   */
+  clearLastError(userId: string): void {
+    this.lastErrors.delete(userId);
   }
 
   /**

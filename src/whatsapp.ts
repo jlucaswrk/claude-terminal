@@ -741,3 +741,310 @@ export async function sendConfigurePriorityMenu(
     console.error('WhatsApp send error:', await response.text());
   }
 }
+
+/**
+ * Sends a confirmation message with action buttons
+ */
+export async function sendConfirmation(
+  to: string,
+  message: string,
+  buttons: Array<{ id: string; title: string }>,
+  messageId?: string
+): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: message,
+      },
+      action: {
+        buttons: buttons.slice(0, 3).map((btn) => ({
+          type: 'reply',
+          reply: {
+            id: btn.id,
+            title: btn.title,
+          },
+        })),
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends session migration options
+ */
+export async function sendMigrationOptions(to: string): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: 'Deseja migrar as sessões antigas para o novo sistema multi-agente?\n\nIsso criará agentes separados para suas conversas Haiku e Opus existentes.',
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: 'migration_migrate',
+              title: 'Migrar',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'migration_clear',
+              title: 'Limpar tudo',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'migration_cancel',
+              title: 'Cancelar',
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends generic buttons
+ */
+export async function sendButtons(
+  to: string,
+  message: string,
+  buttons: Array<{ id: string; title: string }>,
+  messageId?: string
+): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: message,
+      },
+      action: {
+        buttons: buttons.slice(0, 3).map((btn) => ({
+          type: 'reply',
+          reply: {
+            id: btn.id,
+            title: btn.title,
+          },
+        })),
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends agent selection list for reset with "All" option
+ */
+export async function sendAgentSelectionForReset(
+  to: string,
+  agents: Agent[],
+  messageId?: string
+): Promise<void> {
+  const agentRows = agents.slice(0, 9).map((agent) => {
+    const emoji = STATUS_EMOJI[agent.status];
+    const time = formatTimestamp(agent.lastActivity);
+
+    return {
+      id: `reset_${agent.id}`,
+      title: truncate(agent.name, 24),
+      description: truncate(`${emoji} ${agent.status} - ${time}`, 72),
+    };
+  });
+
+  // Add "Reset all" option
+  const rows = [
+    {
+      id: 'reset_all',
+      title: '🔄 Todos os agentes',
+      description: 'Limpar todas as sessões',
+    },
+    ...agentRows,
+  ];
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: {
+        text: '🔄 Resetar sessão\n\nEscolha qual agente deseja resetar:',
+      },
+      action: {
+        button: 'Escolher',
+        sections: [
+          {
+            title: 'Agentes',
+            rows,
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends action options for a history output item
+ */
+export async function sendOutputActions(
+  to: string,
+  agentId: string,
+  output: Output,
+  messageId?: string
+): Promise<void> {
+  const emoji = OUTPUT_STATUS_EMOJI[output.status];
+  const time = formatTimestamp(output.timestamp);
+  const summary = output.summary || truncate(output.response, 50);
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: {
+        text: `${emoji} ${summary}\n\nModelo: ${output.model.toUpperCase()}\nData: ${time}`,
+      },
+      action: {
+        button: 'Ações',
+        sections: [
+          {
+            title: 'Opções',
+            rows: [
+              {
+                id: `outputaction_details_${agentId}_${output.id}`,
+                title: '📄 Ver detalhes',
+                description: 'Prompt e resposta completos',
+              },
+              {
+                id: `outputaction_reexecute_${agentId}_${output.id}`,
+                title: '🔄 Reexecutar',
+                description: 'Executar o prompt novamente',
+              },
+              {
+                id: `outputaction_back_${agentId}_${output.id}`,
+                title: '⬅️ Voltar',
+                description: 'Voltar para o histórico',
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
