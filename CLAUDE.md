@@ -1,6 +1,6 @@
 # Claude Terminal
 
-WhatsApp como interface para múltiplos agentes Claude Code. Cada agente é uma sessão independente com contexto próprio.
+WhatsApp como interface para múltiplos agentes Claude Code. Cada agente é uma sessão independente com contexto próprio, capaz de executar código, navegar na web e gerar arquivos.
 
 ## Arquitetura
 
@@ -20,22 +20,50 @@ WhatsApp ──→ Kapso ──→ Tailscale ──→│  Webhook Handler (inde
                                     │         │                               │
                                     │         ▼                               │
                                     │  ClaudeTerminal (SDK sessions)          │
+                                    │         │                               │
+                                    │         ├──→ MCP Servers                │
+                                    │         │    (firecrawl, browser, auggie)│
+                                    │         │                               │
+                                    │         ▼                               │
+                                    │  Storage (Kapso Media)                  │
+                                    │  (upload de arquivos gerados)           │
                                     └─────────────────────────────────────────┘
                                               │
 WhatsApp ←── Kapso ←──────────────────────────┘
+   (texto, imagens, documentos)
 ```
 
-## Conceitos
+## Funcionalidades
 
-### Agentes
+### Agentes Inteligentes
 
-Cada agente é uma sessão Claude independente:
-- **Nome**: identificador do usuário (ex: "API Backend")
-- **Workspace**: diretório de trabalho opcional
-- **Sessão**: ID do Claude SDK, mantido entre mensagens
+Cada agente é uma sessão Claude independente com:
+- **Nome**: identificador do usuário (ex: "API Backend", "Frontend")
+- **Workspace**: diretório de trabalho opcional para projetos específicos
+- **Sessão persistente**: contexto mantido entre mensagens
 - **Prioridade**: high/medium/low para ordenação na fila
-- **Status**: idle/processing/error
-- **Outputs**: últimas 10 respostas (FIFO)
+- **Status**: idle/processing/error com detalhes
+- **Histórico**: últimas 10 interações com prompt/resposta
+
+### Ferramentas Disponíveis
+
+Os agentes têm acesso a:
+- **Bash**: execução de comandos no terminal
+- **Read/Write/Edit**: manipulação de arquivos
+- **Glob/Grep**: busca em arquivos e diretórios
+
+### MCP Servers Integrados
+
+- **Firecrawl**: scraping e crawling de websites
+- **Browser MCP**: automação de navegador (screenshots, interação)
+- **Auggie**: integração com Augment para contexto de código
+
+### Envio de Mídia
+
+O sistema detecta e envia automaticamente:
+- **Screenshots**: capturados de ferramentas de browser
+- **Arquivos gerados**: planilhas, PDFs, documentos, código
+- Formatos suportados: xlsx, csv, pdf, docx, txt, json, imagens, etc.
 
 ### Fila com Prioridade
 
@@ -55,7 +83,7 @@ O `UserContextManager` rastreia estados multi-step:
 - Criação de agente (nome → workspace → confirmação)
 - Configuração de prioridade
 - Configuração de limite de concorrência
-- Deleção de agente
+- Deleção de agente com confirmação
 
 ## Estrutura
 
@@ -66,26 +94,37 @@ src/
 ├── agent-manager.ts      # CRUD de agentes, persistência, estado
 ├── queue-manager.ts      # Fila prioritária, processamento de tasks
 ├── semaphore.ts          # Controle de concorrência (bounded/unbounded)
-├── terminal.ts           # Wrapper do Claude SDK com sessões
+├── terminal.ts           # Wrapper do Claude SDK com sessões e detecção de arquivos
 ├── user-context-manager.ts  # Estado conversacional multi-step
-├── whatsapp.ts           # Cliente Kapso (menus interativos, botões)
+├── whatsapp.ts           # Cliente Kapso (menus interativos, botões, mídia)
 ├── persistence.ts        # Serialização/deserialização de estado
-├── storage.ts            # S3 storage para arquivos
+├── storage.ts            # Upload de arquivos para Kapso Media Storage
 └── title-extractor.ts    # Extração de títulos de respostas
 ```
 
-## Comandos WhatsApp
+## Interface WhatsApp
+
+### Comandos
 
 | Comando | Descrição |
 |---------|-----------|
-| `/criar` | Criar novo agente |
-| `/agentes` | Listar agentes do usuário |
-| `/selecionar` | Trocar agente ativo |
-| `/deletar` | Remover agente |
-| `/prioridade` | Configurar prioridade do agente |
-| `/limite` | Configurar limite de concorrência |
-| `/status` | Ver status da fila |
-| `#opus` ou `#haiku` | Selecionar modelo (prefixo) |
+| `/` | Menu principal (lista agentes e ações) |
+| `/reset` | Limpar sessão de um ou todos os agentes |
+| `/compact` | Compactar contexto da conversa |
+| `/help` | Mostrar ajuda |
+
+### Fluxo de Uso
+
+1. **Primeiro uso**: envie qualquer mensagem → agente "General" criado automaticamente
+2. **Enviar prompt**: digite mensagem → selecione agente → escolha modelo (Haiku/Opus)
+3. **Gerenciar**: use `/` para criar agentes, configurar prioridades, ver histórico
+
+### Menus Interativos
+
+- Lista de agentes com status e última atividade
+- Menu de ações por agente (prompt, histórico, prioridade, reset, deletar)
+- Seletor de modelo (Haiku/Opus)
+- Confirmações para ações destrutivas
 
 ## Modelos de Dados
 
@@ -94,23 +133,34 @@ interface Agent {
   id: string;
   userId: string;           // Telefone do usuário
   name: string;
-  workspace?: string;
+  workspace?: string;       // Diretório de trabalho
   sessionId?: string;       // ID da sessão Claude SDK
   title: string;            // Título auto-gerado
   status: 'idle' | 'processing' | 'error';
+  statusDetails: string;    // Detalhes do status atual
   priority: 'high' | 'medium' | 'low';
   messageCount: number;
   outputs: Output[];        // Últimas 10 respostas
+  lastActivity: Date;
+  createdAt: Date;
 }
 
-interface QueueTask {
+interface Output {
   id: string;
-  agentId: string;
-  prompt: string;
+  summary: string;          // Resumo da ação
+  prompt: string;           // Prompt original
+  response: string;         // Resposta completa
   model: 'haiku' | 'opus';
-  priority: number;         // 0=high, 1=medium, 2=low
+  status: 'success' | 'warning' | 'error';
   timestamp: Date;
-  userId: string;
+}
+
+interface CreatedFile {
+  path: string;             // Caminho do arquivo criado
+  mediaId: string;          // ID no Kapso Media Storage
+  filename: string;         // Nome do arquivo
+  mimeType: string;         // Tipo MIME
+  mediaType: 'image' | 'video' | 'audio' | 'document';
 }
 ```
 
@@ -133,11 +183,10 @@ bun test
 ### Variáveis de Ambiente
 
 ```env
-KAPSO_API_KEY=xxx          # API key do Kapso
-KAPSO_PHONE_ID=xxx         # ID do telefone no Kapso
-AWS_ACCESS_KEY_ID=xxx      # Para S3 storage
-AWS_SECRET_ACCESS_KEY=xxx
-S3_BUCKET=xxx
+KAPSO_API_KEY=xxx              # API key do Kapso
+KAPSO_PHONE_NUMBER_ID=xxx      # ID do telefone no Kapso
+KAPSO_WEBHOOK_SECRET=xxx       # Token de verificação do webhook
+USER_PHONE_NUMBER=xxx          # Telefone autorizado (ex: +5581999999999)
 ```
 
 ### Expor Servidor
@@ -151,18 +200,58 @@ Configurar URL do funnel como webhook no Kapso.
 ## Fluxo de Mensagem
 
 ```
-1. Webhook recebe mensagem
-2. UserContextManager verifica se há fluxo em andamento
+1. Webhook recebe mensagem do WhatsApp via Kapso
+2. Valida origem (apenas USER_PHONE_NUMBER autorizado)
+3. UserContextManager verifica se há fluxo em andamento
    - Se sim: processa step do fluxo
    - Se não: interpreta como prompt ou comando
-3. Se for prompt:
-   - AgentManager resolve agente ativo
+4. Se for prompt:
+   - Usuário seleciona agente e modelo
    - QueueManager enfileira task com prioridade
    - Semaphore controla concorrência
    - ClaudeTerminal executa via SDK
-   - Resposta enviada via WhatsApp
-4. AgentManager persiste estado
+   - Detecta arquivos criados (Write tool)
+   - Upload de arquivos para Kapso Media
+5. Envia resposta via WhatsApp:
+   - Screenshots (se houver)
+   - Texto da resposta
+   - Arquivos gerados (documentos, planilhas, etc.)
+6. AgentManager atualiza e persiste estado
 ```
+
+## Fluxo de Arquivos
+
+```
+Claude usa Write tool para criar arquivo
+           ↓
+terminal.ts detecta evento tool_use
+           ↓
+Após execução, verifica se arquivo existe
+           ↓
+storage.ts faz upload para Kapso Media
+           ↓
+queue-manager.ts envia via WhatsApp
+           ↓
+Usuário recebe documento no chat
+```
+
+### MIME Types Suportados
+
+| Extensão | Tipo | WhatsApp Media Type |
+|----------|------|---------------------|
+| .xlsx, .xls | Planilhas | document |
+| .pdf | PDF | document |
+| .docx, .doc | Word | document |
+| .csv, .txt, .json | Texto | document |
+| .png, .jpg, .gif | Imagens | image |
+| .mp4, .webm | Vídeo | video |
+| .mp3, .wav | Áudio | audio |
+
+## Recuperação de Erros
+
+- **Crash recovery**: agentes em 'processing' são resetados para 'idle' no startup
+- **Error recovery**: botões de retry/ignorar quando um prompt falha
+- **Backup de estado**: arquivo .bak para recuperação de corrupção
 
 ## Testes
 
@@ -173,3 +262,5 @@ Configurar URL do funnel como webhook no Kapso.
 - `terminal.test.ts`: sessões, modelos, workspaces
 - `user-context-manager.test.ts`: fluxos multi-step
 - `whatsapp.test.ts`: menus interativos, formatação
+- `persistence.test.ts`: serialização, backup, recovery
+- `index.test.ts`: integração de fluxos completos

@@ -13,8 +13,8 @@
       "status": "idle",
       "statusDetails": "Aguardando prompt",
       "priority": "medium",
-      "lastActivity": "2026-02-01T13:50:20.506Z",
-      "messageCount": 1,
+      "lastActivity": "2026-02-01T14:00:32.326Z",
+      "messageCount": 2,
       "outputs": [
         {
           "id": "fe64d316-eaa5-42d2-aad0-522b5eaa9225",
@@ -24,22 +24,41 @@
           "model": "haiku",
           "status": "success",
           "timestamp": "2026-02-01T13:50:20.504Z"
+        },
+        {
+          "id": "971719b5-8581-4e32-bbbb-6862899e9b97",
+          "summary": "Olá! 👋 Tudo bem?\n\nEstou aqui para ajudar você com...",
+          "prompt": "Ola",
+          "response": "Olá! 👋 Tudo bem?\n\nEstou aqui para ajudar você com suas pesquisas e tarefas! Posso:\n\n- 🔍 **Pesquisar na web** - informações sobre qualquer assunto\n- 📊 **Criar planilhas em CSV** - como fizemos com os dados do dólar\n- 📄 **Ler e analisar arquivos** - documentos, código, imagens, PDFs\n- 💻 **Trabalhar com código** - buscar, analisar e editar\n- 🌐 **Navegar em websites** - coletar dados de páginas\n- ✏️ **Editar arquivos** - modificar textos e códigos\n\nO que você gostaria de fazer agora? 😊",
+          "model": "haiku",
+          "status": "success",
+          "timestamp": "2026-02-01T14:00:32.325Z"
         }
       ],
       "createdAt": "2026-02-01T13:48:13.768Z"
     },
     {
-      "id": "a7b48601-d5de-4d73-803b-12d18b11c5a8",
-      "userId": "5581999999999",
-      "name": "General",
-      "title": "",
-      "status": "idle",
-      "statusDetails": "Aguardando prompt",
+      "id": "91f53467-f60e-4bdd-a100-09b3e6700ee4",
+      "userId": "558197969570",
+      "name": "Fazedor",
+      "title": "Analise os filmes em cartaz...",
+      "status": "processing",
+      "statusDetails": "processando - Analise os filmes em cartaz no...",
       "priority": "medium",
-      "lastActivity": "2026-02-01T13:56:58.135Z",
-      "messageCount": 0,
-      "outputs": [],
-      "createdAt": "2026-02-01T13:56:58.135Z"
+      "lastActivity": "2026-02-01T14:04:42.432Z",
+      "messageCount": 1,
+      "outputs": [
+        {
+          "id": "bd1fe3bb-0dfa-43d3-9009-7848cd275f82",
+          "summary": "Perfeito! 🎬 Criei um arquivo CSV com a análise co...",
+          "prompt": "Analise os filmes em cartaz no rio mar recife dessa semana e gere um csv e me envie",
+          "response": "Perfeito! 🎬 Criei um arquivo CSV com a análise completa dos filmes em cartaz no Cinemark do Rio Mar Recife.\n\n## Resumo dos Filmes em Cartaz:\n\n📊 **Total de 12 filmes** em programação para esta semana\n\n**Destaques:**\n- 🎭 **Mais opções de Drama:** 4 filmes (O Agente Secreto, Hamnet, Marty Supreme, Song Sung Blue)\n- 🎨 **Animações familiares:** Zootopia 2, Davi - Nasce Um Rei\n- 🎬 **Grandes produções:** Avatar: Fogo e Cinzas (3h17), O Agente Secreto (2h41)\n- 👨‍👩‍👧‍👦 **Classificação etária:** Varia de 6 até 18 anos\n\n**Salas disponíveis:**\n- 12 salas no total (incluindo 2 salas Prime com poltronas reclináveis)\n- Poltronas D-BOX com tecnologia de movimento\n- Sala XD com som 7x mais potente\n\n## 📥 Arquivo CSV gerado:\nO arquivo **`filmes_riomar_recife.csv`** contém:\n- Título do filme\n- Gênero\n- Duração\n- Classificação indicativa\n- Idioma (Dublado/Legendado)\n- Sala de exibição\n- Horários das sessões\n- Data da programação\n\nO arquivo está pronto para download e pode ser aberto em qualquer planilha (Excel, Google Sheets, LibreOffice, etc.)!",
+          "model": "haiku",
+          "status": "success",
+          "timestamp": "2026-02-01T14:04:42.430Z"
+        }
+      ],
+      "createdAt": "2026-02-01T14:02:45.791Z"
     }
   ]
 }
