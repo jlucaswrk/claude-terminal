@@ -194,19 +194,6 @@
         }
       ],
       "createdAt": "2026-02-01T14:02:45.791Z"
-    },
-    {
-      "id": "1b09b411-fd54-4756-af8c-25d11fcdece0",
-      "userId": "5581999999999",
-      "name": "General",
-      "title": "",
-      "status": "idle",
-      "statusDetails": "Aguardando prompt",
-      "priority": "medium",
-      "lastActivity": "2026-02-01T16:09:56.875Z",
-      "messageCount": 0,
-      "outputs": [],
-      "createdAt": "2026-02-01T16:09:56.875Z"
     }
   ]
 }
