@@ -44,6 +44,10 @@ src/
 ├── index.ts      # Servidor HTTP, handler do webhook Kapso
 ├── terminal.ts   # Wrapper do processo Claude Code CLI
 └── whatsapp.ts   # Cliente da API do Kapso
+.claude/
+└── skills/
+    ├── brainstorming/     # Skill para brainstorming antes de criar features
+    └── frontend-design/   # Skill para criar interfaces frontend de alta qualidade
 ```
 
 ## TODO
