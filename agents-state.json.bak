@@ -196,17 +196,17 @@
       "createdAt": "2026-02-01T14:02:45.791Z"
     },
     {
-      "id": "c5fef3b4-5187-4980-b5a6-3a9de1640d91",
+      "id": "41db5d50-7947-40d2-b619-4d0b32fb7da9",
       "userId": "5581999999999",
       "name": "General",
       "title": "",
       "status": "idle",
       "statusDetails": "Aguardando prompt",
       "priority": "medium",
-      "lastActivity": "2026-02-01T15:55:21.770Z",
+      "lastActivity": "2026-02-01T16:04:04.367Z",
       "messageCount": 0,
       "outputs": [],
-      "createdAt": "2026-02-01T15:55:21.770Z"
+      "createdAt": "2026-02-01T16:04:04.367Z"
     }
   ]
 }

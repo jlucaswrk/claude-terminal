@@ -807,7 +807,19 @@ async function handleConfirmation(
     const agentName = agent?.name || 'Unknown';
 
     terminal.clearSession(userId, agentId);
-    agentManager.deleteAgent(agentId);
+    const deleted = agentManager.deleteAgent(agentId);
+
+    if (!deleted) {
+      await sendWhatsApp(userId, `❌ Falha ao deletar agente. Agente não encontrado.`);
+      return { status: 'delete_failed' };
+    }
+
+    // Clear any cached selections that point to the deleted agent
+    pendingAgentSelection.delete(userId);
+    const lastChoice = userContextManager.getLastChoice(userId);
+    if (lastChoice?.agentId === agentId) {
+      userContextManager.clearLastChoice(userId);
+    }
 
     await sendWhatsApp(userId, `✅ Agente *${agentName}* deletado.`);
     return { status: 'deleted' };
