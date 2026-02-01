@@ -5,6 +5,7 @@ const KAPSO_API_KEY = process.env.KAPSO_API_KEY!;
 const KAPSO_PHONE_NUMBER_ID = process.env.KAPSO_PHONE_NUMBER_ID!;
 
 // MIME type mapping for common file extensions
+// Note: WhatsApp only accepts specific types. CSV, JSON, XML are sent as text/plain
 const MIME_TYPES: Record<string, string> = {
   // Documents
   '.pdf': 'application/pdf',
@@ -12,10 +13,10 @@ const MIME_TYPES: Record<string, string> = {
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.xls': 'application/vnd.ms-excel',
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  '.csv': 'text/csv',
+  '.csv': 'text/plain',   // WhatsApp doesn't accept text/csv
   '.txt': 'text/plain',
-  '.json': 'application/json',
-  '.xml': 'application/xml',
+  '.json': 'text/plain',  // WhatsApp doesn't accept application/json
+  '.xml': 'text/plain',   // WhatsApp doesn't accept application/xml
   '.zip': 'application/zip',
   '.ppt': 'application/vnd.ms-powerpoint',
   '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',

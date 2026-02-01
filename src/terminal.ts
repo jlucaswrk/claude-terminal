@@ -153,6 +153,9 @@ export class ClaudeTerminal {
     const createdFilePaths: string[] = [];
 
     for await (const event of result) {
+      // Debug: log all event types
+      console.log(`[event] type=${event.type}${event.subtype ? ` subtype=${event.subtype}` : ''}`);
+
       // Capture session ID from init event
       if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
         newSessionId = event.session_id as string;
@@ -162,6 +165,9 @@ export class ClaudeTerminal {
       if (event.type === 'assistant' && (event as any).message?.content) {
         const content = (event as any).message.content;
         for (const block of content) {
+          // Debug: log all content blocks
+          console.log(`[block] type=${block.type}${block.name ? ` name=${block.name}` : ''}`);
+
           // Check for tool_use with Write tool
           if (block.type === 'tool_use' && block.name === 'Write' && block.input?.file_path) {
             const filePath = block.input.file_path as string;
