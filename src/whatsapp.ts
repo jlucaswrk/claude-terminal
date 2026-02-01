@@ -521,25 +521,36 @@ export async function sendAgentsList(
   }
 
   // Management section
+  const managementRows = [
+    {
+      id: 'action_create_agent',
+      title: 'Criar novo agente',
+      description: 'Criar um agente com nome e workspace',
+    },
+    {
+      id: 'action_configure_limit',
+      title: 'Configurar execução',
+      description: 'Limite de agentes simultâneos',
+    },
+    {
+      id: 'action_configure_priority',
+      title: 'Configurar prioridade',
+      description: 'Alterar prioridade de um agente',
+    },
+  ];
+
+  // Only show delete option if there are agents
+  if (agentRows.length > 0) {
+    managementRows.push({
+      id: 'action_delete_agents',
+      title: 'Remover agente(s)',
+      description: 'Deletar um ou todos os agentes',
+    });
+  }
+
   sections.push({
     title: '➕ Gerenciar',
-    rows: [
-      {
-        id: 'action_create_agent',
-        title: 'Criar novo agente',
-        description: 'Criar um agente com nome e workspace',
-      },
-      {
-        id: 'action_configure_limit',
-        title: 'Configurar execução',
-        description: 'Limite de agentes simultâneos',
-      },
-      {
-        id: 'action_configure_priority',
-        title: 'Configurar prioridade',
-        description: 'Alterar prioridade de um agente',
-      },
-    ],
+    rows: managementRows,
   });
 
   // Commands section
@@ -1170,6 +1181,78 @@ export async function sendAgentSelectionForReset(
       type: 'list',
       body: {
         text: '🔄 Resetar sessão\n\nEscolha qual agente deseja resetar:',
+      },
+      action: {
+        button: 'Escolher',
+        sections: [
+          {
+            title: 'Agentes',
+            rows,
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends agent selection list for delete with "All" option
+ */
+export async function sendAgentSelectionForDelete(
+  to: string,
+  agents: Agent[],
+  messageId?: string
+): Promise<void> {
+  const agentRows = agents.slice(0, 9).map((agent) => {
+    const emoji = STATUS_EMOJI[agent.status];
+    const time = formatTimestamp(agent.lastActivity);
+
+    return {
+      id: `delete_${agent.id}`,
+      title: truncate(agent.name, 24),
+      description: truncate(`${emoji} ${agent.status} - ${time}`, 72),
+    };
+  });
+
+  // Add "Delete all" option
+  const rows = [
+    {
+      id: 'delete_all',
+      title: '🗑️ Todos os agentes',
+      description: 'Remover todos permanentemente',
+    },
+    ...agentRows,
+  ];
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: {
+        text: '🗑️ Remover agente(s)\n\nEscolha qual agente deseja remover:',
       },
       action: {
         button: 'Escolher',

@@ -11,9 +11,9 @@
       "name": "General",
       "title": "Oi",
       "status": "idle",
-      "statusDetails": "Processou prompt",
+      "statusDetails": "Aguardando prompt",
       "priority": "high",
-      "lastActivity": "2026-02-01T15:12:14.811Z",
+      "lastActivity": "2026-02-01T16:07:11.204Z",
       "messageCount": 10,
       "outputs": [
         {
@@ -115,9 +115,9 @@
       "name": "Fazedor",
       "title": "Analise os filmes em cartaz...",
       "status": "idle",
-      "statusDetails": "Executou cat",
+      "statusDetails": "Aguardando prompt",
       "priority": "medium",
-      "lastActivity": "2026-02-01T15:25:18.649Z",
+      "lastActivity": "2026-02-01T16:07:11.207Z",
       "messageCount": 8,
       "outputs": [
         {
@@ -196,17 +196,17 @@
       "createdAt": "2026-02-01T14:02:45.791Z"
     },
     {
-      "id": "41db5d50-7947-40d2-b619-4d0b32fb7da9",
+      "id": "1b09b411-fd54-4756-af8c-25d11fcdece0",
       "userId": "5581999999999",
       "name": "General",
       "title": "",
       "status": "idle",
       "statusDetails": "Aguardando prompt",
       "priority": "medium",
-      "lastActivity": "2026-02-01T16:04:04.367Z",
+      "lastActivity": "2026-02-01T16:09:56.875Z",
       "messageCount": 0,
       "outputs": [],
-      "createdAt": "2026-02-01T16:04:04.367Z"
+      "createdAt": "2026-02-01T16:09:56.875Z"
     }
   ]
 }

@@ -11,9 +11,9 @@
       "name": "General",
       "title": "Oi",
       "status": "idle",
-      "statusDetails": "Processou prompt",
+      "statusDetails": "Aguardando prompt",
       "priority": "high",
-      "lastActivity": "2026-02-01T15:12:14.811Z",
+      "lastActivity": "2026-02-01T16:07:11.204Z",
       "messageCount": 10,
       "outputs": [
         {
@@ -115,9 +115,9 @@
       "name": "Fazedor",
       "title": "Analise os filmes em cartaz...",
       "status": "idle",
-      "statusDetails": "Executou cat",
+      "statusDetails": "Aguardando prompt",
       "priority": "medium",
-      "lastActivity": "2026-02-01T15:25:18.649Z",
+      "lastActivity": "2026-02-01T16:07:11.207Z",
       "messageCount": 8,
       "outputs": [
         {

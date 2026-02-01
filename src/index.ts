@@ -19,6 +19,7 @@ import {
   sendMigrationOptions,
   sendButtons,
   sendAgentSelectionForReset,
+  sendAgentSelectionForDelete,
   sendOutputActions,
 } from './whatsapp';
 import { PersistenceService } from './persistence';
@@ -318,6 +319,21 @@ async function handleResetCommand(userId: string): Promise<{ status: string }> {
 
   await sendAgentSelectionForReset(userId, agents);
   return { status: 'awaiting_reset_selection' };
+}
+
+/**
+ * Delete agents from main menu
+ */
+async function handleDeleteAgentsCommand(userId: string): Promise<{ status: string }> {
+  const agents = agentManager.listAgents(userId);
+
+  if (agents.length === 0) {
+    await sendWhatsApp(userId, 'Nenhum agente para remover.');
+    return { status: 'no_agents' };
+  }
+
+  await sendAgentSelectionForDelete(userId, agents);
+  return { status: 'awaiting_delete_selection' };
 }
 
 /**
@@ -803,6 +819,21 @@ async function handleConfirmation(
   // Delete confirmation
   if (buttonId.startsWith('confirm_delete_')) {
     const agentId = buttonId.replace('confirm_delete_', '');
+
+    if (agentId === 'all') {
+      // Delete all agents
+      const agents = agentManager.listAgents(userId);
+      for (const agent of agents) {
+        terminal.clearSession(userId, agent.id);
+        agentManager.deleteAgent(agent.id);
+      }
+      // Clear cached selections
+      pendingAgentSelection.delete(userId);
+      userContextManager.clearLastChoice(userId);
+      await sendWhatsApp(userId, `✅ Todos os ${agents.length} agentes deletados.`);
+      return { status: 'all_deleted' };
+    }
+
     const agent = agentManager.getAgent(agentId);
     const agentName = agent?.name || 'Unknown';
 
@@ -923,6 +954,15 @@ async function handleListReply(
 
   if (listId === 'action_configure_priority') {
     return handleConfigurePriorityCommand(userId);
+  }
+
+  if (listId === 'action_delete_agents') {
+    return handleDeleteAgentsCommand(userId);
+  }
+
+  // Delete selection
+  if (listId.startsWith('delete_')) {
+    return handleDeleteSelection(userId, listId);
   }
 
   // Reset selection
@@ -1201,6 +1241,44 @@ async function handleResetSelection(
     ]
   );
   return { status: 'awaiting_reset_confirmation' };
+}
+
+/**
+ * Handle delete agent selection
+ */
+async function handleDeleteSelection(
+  userId: string,
+  listId: string
+): Promise<{ status: string }> {
+  const selection = listId.replace('delete_', '');
+
+  if (selection === 'all') {
+    await sendConfirmation(
+      userId,
+      '⚠️ Deletar TODOS os agentes?\n\nIsso é irreversível e removerá todos os agentes permanentemente.',
+      [
+        { id: 'confirm_delete_all', title: 'Confirmar' },
+        { id: 'confirm_cancel', title: 'Cancelar' },
+      ]
+    );
+    return { status: 'awaiting_delete_all_confirmation' };
+  }
+
+  const agent = agentManager.getAgent(selection);
+  if (!agent) {
+    await sendWhatsApp(userId, '❌ Agente não encontrado.');
+    return { status: 'agent_not_found' };
+  }
+
+  await sendConfirmation(
+    userId,
+    `⚠️ Deletar agente *${agent.name}*?\n\nIsso é irreversível.`,
+    [
+      { id: `confirm_delete_${selection}`, title: 'Confirmar' },
+      { id: 'confirm_cancel', title: 'Cancelar' },
+    ]
+  );
+  return { status: 'awaiting_delete_confirmation' };
 }
 
 /**
