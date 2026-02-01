@@ -629,6 +629,11 @@ export async function sendConfigureLimitMenu(
     { value: 0, label: 'Sem limite' },
   ];
 
+  // currentLimit of 0 means unbounded/unlimited
+  const currentLimitDisplay = currentLimit === 0
+    ? 'Sem limite'
+    : `${currentLimit} agente${currentLimit > 1 ? 's' : ''}`;
+
   const rows = limitOptions.map((option) => ({
     id: `limit_${option.value}`,
     title: option.label,
@@ -643,7 +648,7 @@ export async function sendConfigureLimitMenu(
     interactive: {
       type: 'list',
       body: {
-        text: `⚙️ Configurar limite de execução\n\nLimite atual: ${currentLimit === 0 ? 'Sem limite' : `${currentLimit} agente${currentLimit > 1 ? 's' : ''}`}\n\nQuantos agentes podem executar simultaneamente?`,
+        text: `⚙️ Configurar limite de execução\n\nLimite atual: ${currentLimitDisplay}\n\nQuantos agentes podem executar simultaneamente?`,
       },
       action: {
         button: 'Escolher',

@@ -277,9 +277,10 @@ export class QueueManager {
       }
 
       // Create output record
+      // Note: summary is left empty to let AgentManager generate it from response text
       const output: Output = {
         id: crypto.randomUUID(),
-        summary: response.title || '',
+        summary: '',
         prompt,
         response: response.text,
         model,
@@ -287,11 +288,16 @@ export class QueueManager {
         timestamp: new Date(),
       };
 
-      // Add output to agent
+      // Add output to agent (this increments messageCount)
       this.agentManager.addOutput(agentId, output);
 
-      // Update title if this is the first message or every TITLE_UPDATE_INTERVAL messages
-      if (response.title && (agent.messageCount === 0 || agent.messageCount % DEFAULTS.TITLE_UPDATE_INTERVAL === 0)) {
+      // Re-fetch agent to get updated messageCount after addOutput
+      const updatedAgent = this.agentManager.getAgent(agentId);
+      const messageCount = updatedAgent?.messageCount ?? 0;
+
+      // Update title if this is the first message (messageCount === 1 after increment)
+      // or every TITLE_UPDATE_INTERVAL messages
+      if (response.title && (messageCount === 1 || messageCount % DEFAULTS.TITLE_UPDATE_INTERVAL === 0)) {
         this.agentManager.updateAgentTitle(agentId, response.title);
       }
 

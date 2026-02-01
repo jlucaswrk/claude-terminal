@@ -8,7 +8,7 @@ import type { Agent } from '../types';
 
 // Mock ClaudeTerminal
 class MockClaudeTerminal {
-  responses: Map<string, { text: string; images: string[] }> = new Map();
+  responses: Map<string, { text: string; images: string[]; title?: string }> = new Map();
   delays: Map<string, number> = new Map();
   callCount = 0;
   calls: Array<{ prompt: string; model: string; userId: string }> = [];
@@ -28,7 +28,7 @@ class MockClaudeTerminal {
 
   clearSession() {}
 
-  setResponse(prompt: string, response: { text: string; images: string[] }) {
+  setResponse(prompt: string, response: { text: string; images: string[]; title?: string }) {
     this.responses.set(prompt, response);
   }
 
@@ -481,6 +481,75 @@ describe('QueueManager', () => {
       expect(outputs[0].response).toBe('My response');
       expect(outputs[0].model).toBe('opus');
       expect(outputs[0].status).toBe('success');
+    });
+
+    test('sets agent title on first message', async () => {
+      const agent = agentManager.createAgent('user1', 'TestAgent');
+      expect(agent.title).toBe(''); // Initially empty
+
+      terminal.setResponse('first prompt', {
+        text: 'First response',
+        images: [],
+        title: 'Conversation About Testing',
+      });
+
+      queueManager.enqueue({
+        agentId: agent.id,
+        prompt: 'first prompt',
+        model: 'haiku',
+        userId: 'user1',
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const updatedAgent = agentManager.getAgent(agent.id)!;
+      expect(updatedAgent.title).toBe('Conversation About Testing');
+      expect(updatedAgent.messageCount).toBe(1);
+    });
+
+    test('output summary comes from response text, not title', async () => {
+      const agent = agentManager.createAgent('user1', 'TestAgent');
+
+      terminal.setResponse('my prompt', {
+        text: 'This is a detailed response that should be summarized',
+        images: [],
+        title: 'This Is The Title',
+      });
+
+      queueManager.enqueue({
+        agentId: agent.id,
+        prompt: 'my prompt',
+        model: 'haiku',
+        userId: 'user1',
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const outputs = agentManager.getOutputs(agent.id);
+      expect(outputs.length).toBe(1);
+      // Summary should come from response text, not title
+      expect(outputs[0].summary).toBe('This is a detailed response that should be summari...');
+      expect(outputs[0].summary).not.toBe('This Is The Title');
+    });
+
+    test('output summary truncates long responses to ~50 chars', async () => {
+      const agent = agentManager.createAgent('user1', 'TestAgent');
+
+      const longResponse = 'a'.repeat(100);
+      terminal.setResponse('my prompt', { text: longResponse, images: [] });
+
+      queueManager.enqueue({
+        agentId: agent.id,
+        prompt: 'my prompt',
+        model: 'haiku',
+        userId: 'user1',
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const outputs = agentManager.getOutputs(agent.id);
+      expect(outputs[0].summary.length).toBeLessThanOrEqual(53); // 50 chars + '...'
+      expect(outputs[0].summary).toContain('...');
     });
   });
 

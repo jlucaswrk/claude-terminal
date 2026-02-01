@@ -8,9 +8,15 @@ describe('Semaphore', () => {
       expect(sem.availablePermits()).toBe(3);
     });
 
-    test('throws if permits < 1', () => {
-      expect(() => new Semaphore(0)).toThrow('Semaphore requires at least 1 permit');
-      expect(() => new Semaphore(-1)).toThrow('Semaphore requires at least 1 permit');
+    test('allows 0 permits for unbounded mode', () => {
+      const sem = new Semaphore(0);
+      expect(sem.isUnbounded()).toBe(true);
+      expect(sem.availablePermits()).toBe(Infinity);
+      expect(sem.getMaxPermits()).toBe(0);
+    });
+
+    test('throws if permits < 0', () => {
+      expect(() => new Semaphore(-1)).toThrow('Semaphore permits cannot be negative');
     });
   });
 
@@ -117,10 +123,72 @@ describe('Semaphore', () => {
     });
   });
 
+  describe('unbounded mode', () => {
+    test('acquire does not block in unbounded mode', async () => {
+      const sem = new Semaphore(0);
+
+      // Should not block even with many concurrent acquires
+      const promises = [];
+      for (let i = 0; i < 100; i++) {
+        promises.push(sem.acquire());
+      }
+
+      // All should resolve immediately
+      await Promise.all(promises);
+      expect(sem.waitingCount()).toBe(0);
+    });
+
+    test('release is no-op in unbounded mode', () => {
+      const sem = new Semaphore(0);
+      // Should not throw
+      sem.release();
+      sem.release();
+      expect(sem.availablePermits()).toBe(Infinity);
+    });
+
+    test('switching to unbounded releases all waiting', async () => {
+      const sem = new Semaphore(1);
+      await sem.acquire();
+
+      const resolved: number[] = [];
+      sem.acquire().then(() => resolved.push(1));
+      sem.acquire().then(() => resolved.push(2));
+
+      await new Promise((r) => setTimeout(r, 5));
+      expect(sem.waitingCount()).toBe(2);
+
+      // Switch to unbounded - should release all waiting
+      sem.setMaxPermits(0);
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(sem.waitingCount()).toBe(0);
+      expect(resolved).toContain(1);
+      expect(resolved).toContain(2);
+      expect(sem.isUnbounded()).toBe(true);
+    });
+
+    test('switching from unbounded to bounded', async () => {
+      const sem = new Semaphore(0);
+      expect(sem.isUnbounded()).toBe(true);
+
+      sem.setMaxPermits(2);
+      expect(sem.isUnbounded()).toBe(false);
+      expect(sem.availablePermits()).toBe(2);
+      expect(sem.getMaxPermits()).toBe(2);
+    });
+  });
+
   describe('setMaxPermits', () => {
-    test('throws if newMax < 1', () => {
+    test('throws if newMax < 0', () => {
       const sem = new Semaphore(3);
-      expect(() => sem.setMaxPermits(0)).toThrow('Semaphore requires at least 1 permit');
+      expect(() => sem.setMaxPermits(-1)).toThrow('Semaphore permits cannot be negative');
+    });
+
+    test('allows setting to 0 for unbounded mode', () => {
+      const sem = new Semaphore(3);
+      sem.setMaxPermits(0);
+      expect(sem.isUnbounded()).toBe(true);
+      expect(sem.availablePermits()).toBe(Infinity);
     });
 
     test('increases permits correctly', async () => {

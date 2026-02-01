@@ -47,7 +47,8 @@ const persistenceService = new PersistenceService();
 const agentManager = new AgentManager(persistenceService);
 
 // Semaphore for concurrency control (use config from loaded state)
-const semaphore = new Semaphore(agentManager.getConfig().maxConcurrent || DEFAULTS.MAX_CONCURRENT);
+// Use ?? instead of || to preserve 0 (unbounded mode)
+const semaphore = new Semaphore(agentManager.getConfig().maxConcurrent ?? DEFAULTS.MAX_CONCURRENT);
 
 // Claude terminal
 const terminal = new ClaudeTerminal();
@@ -1079,11 +1080,9 @@ async function handleLimitSelection(
 ): Promise<{ status: string }> {
   const newLimit = parseInt(listId.replace('limit_', ''), 10);
 
-  // 0 means "no limit" - use a high number
-  const effectiveLimit = newLimit === 0 ? 100 : newLimit;
-
-  semaphore.setMaxPermits(effectiveLimit);
-  agentManager.updateConfig({ maxConcurrent: effectiveLimit });
+  // 0 means unbounded mode (no limit) - semaphore now supports this natively
+  semaphore.setMaxPermits(newLimit);
+  agentManager.updateConfig({ maxConcurrent: newLimit });
 
   userContextManager.completeFlow(userId);
 
