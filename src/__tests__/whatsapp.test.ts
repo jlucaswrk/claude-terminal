@@ -221,10 +221,11 @@ describe('sendAgentMenu', () => {
     const body = JSON.parse(call[1].body);
     const rows = body.interactive.action.sections[0].rows;
 
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     expect(rows.map((r: any) => r.id)).toEqual([
       'agentmenu_prompt_agent-123',
       'agentmenu_history_agent-123',
+      'agentmenu_emoji_agent-123',
       'agentmenu_priority_agent-123',
       'agentmenu_reset_agent-123',
       'agentmenu_delete_agent-123',

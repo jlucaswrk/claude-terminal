@@ -57,7 +57,7 @@ export class AgentManager {
    * Create a new agent
    * @throws AgentValidationError if validation fails
    */
-  createAgent(userId: string, name: string, workspace?: string): Agent {
+  createAgent(userId: string, name: string, workspace?: string, emoji?: string): Agent {
     // Validate name
     this.validateName(name);
 
@@ -79,6 +79,7 @@ export class AgentManager {
       id: crypto.randomUUID(),
       userId,
       name: name.trim(),
+      emoji,
       workspace,
       title: '',
       status: 'idle',
@@ -210,6 +211,20 @@ export class AgentManager {
     }
 
     agent.sessionId = sessionId;
+    this.persist();
+  }
+
+  /**
+   * Update agent emoji
+   */
+  updateEmoji(agentId: string, emoji: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new AgentValidationError(`Agent not found: ${agentId}`);
+    }
+
+    agent.emoji = emoji;
+    agent.lastActivity = new Date();
     this.persist();
   }
 

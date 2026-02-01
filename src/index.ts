@@ -21,6 +21,8 @@ import {
   sendAgentSelectionForReset,
   sendAgentSelectionForDelete,
   sendOutputActions,
+  sendEmojiSelector,
+  sendWorkspaceSelector,
 } from './whatsapp';
 import { PersistenceService } from './persistence';
 import { AgentManager, AgentValidationError } from './agent-manager';
@@ -434,8 +436,8 @@ async function handleFlowTextInput(
         }
 
         userContextManager.setAgentName(userId, text.trim());
-        await sendWhatsApp(userId, 'Workspace (opcional)? Envie o caminho completo ou "pular"');
-        return { status: 'awaiting_workspace' };
+        await sendEmojiSelector(userId, messageId);
+        return { status: 'awaiting_emoji' };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         await sendWhatsApp(userId, `❌ ${msg}. Tente novamente:`);
@@ -444,19 +446,20 @@ async function handleFlowTextInput(
     }
 
     if (userContextManager.isAwaitingWorkspace(userId)) {
-      const workspace = text.toLowerCase() === 'pular' ? null : text.trim();
+      const workspace = text.trim();
 
       try {
         userContextManager.setAgentWorkspace(userId, workspace);
         const data = userContextManager.getCreateAgentData(userId);
 
         // Create the agent
-        const agent = agentManager.createAgent(userId, data!.agentName!, data?.workspace);
+        const agent = agentManager.createAgent(userId, data!.agentName!, data?.workspace, data?.emoji);
         console.log(`Created agent '${agent.name}' for user ${userId}`);
 
         userContextManager.completeFlow(userId);
 
-        await sendWhatsApp(userId, `✅ Agente *${agent.name}* criado!`);
+        const agentEmoji = agent.emoji || '🤖';
+        await sendWhatsApp(userId, `✅ Agente ${agentEmoji} *${agent.name}* criado!`);
         await sendButtons(userId, 'Enviar prompt agora?', [
           { id: `newagent_prompt_${agent.id}`, title: 'Enviar prompt' },
           { id: 'newagent_later', title: 'Depois' },
@@ -465,10 +468,44 @@ async function handleFlowTextInput(
         return { status: 'agent_created' };
       } catch (error) {
         if (error instanceof AgentValidationError) {
-          await sendWhatsApp(userId, `❌ ${error.message}. Tente novamente ou envie "pular":`);
+          await sendWhatsApp(userId, `❌ ${error.message}. Tente novamente:`);
           return { status: 'awaiting_workspace' };
         }
         throw error;
+      }
+    }
+  }
+
+  // Edit Emoji Flow
+  if (flow === 'edit_emoji') {
+    if (userContextManager.isAwaitingEmojiText(userId)) {
+      const data = userContextManager.getEditEmojiData(userId);
+      if (!data?.agentId) {
+        userContextManager.completeFlow(userId);
+        await sendWhatsApp(userId, '❌ Erro: agente não encontrado.');
+        return { status: 'error' };
+      }
+
+      const emoji = text.trim();
+
+      // Basic emoji validation - check if it's a single emoji-like character
+      // This is a simple check; emojis are complex in Unicode
+      if (emoji.length === 0 || emoji.length > 10) {
+        await sendWhatsApp(userId, '❌ Envie apenas um emoji. Tente novamente:');
+        return { status: 'awaiting_emoji_text' };
+      }
+
+      try {
+        agentManager.updateEmoji(data.agentId, emoji);
+        const agent = agentManager.getAgent(data.agentId);
+        userContextManager.completeFlow(userId);
+        await sendWhatsApp(userId, `✅ Emoji do agente *${agent?.name}* atualizado para ${emoji}`);
+        return { status: 'emoji_updated' };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        await sendWhatsApp(userId, `❌ ${msg}`);
+        userContextManager.completeFlow(userId);
+        return { status: 'error' };
       }
     }
   }
@@ -914,6 +951,16 @@ async function handleListReply(
 ): Promise<{ status: string }> {
   console.log(`> List: ${listId}`);
 
+  // Emoji selection for agent creation
+  if (listId.startsWith('emoji_')) {
+    return handleEmojiSelection(userId, listId, messageId);
+  }
+
+  // Workspace selection for agent creation
+  if (listId.startsWith('workspace_')) {
+    return handleWorkspaceSelection(userId, listId, messageId);
+  }
+
   // Combined agent + model selection for prompt
   if (listId.startsWith('agentmodel_')) {
     const parts = listId.split('_');
@@ -1036,6 +1083,93 @@ async function handleAgentSelection(
 }
 
 /**
+ * Handle emoji selection during agent creation
+ */
+async function handleEmojiSelection(
+  userId: string,
+  listId: string,
+  messageId?: string
+): Promise<{ status: string }> {
+  if (!userContextManager.isAwaitingEmoji(userId)) {
+    await sendWhatsApp(userId, '❌ Seleção de emoji inesperada.');
+    return { status: 'unexpected_emoji_selection' };
+  }
+
+  // Extract emoji from listId (format: emoji_🤖)
+  const emoji = listId.replace('emoji_', '');
+
+  userContextManager.setAgentEmoji(userId, emoji);
+  await sendWorkspaceSelector(userId, messageId);
+  return { status: 'awaiting_workspace_choice' };
+}
+
+/**
+ * Handle workspace selection during agent creation
+ */
+async function handleWorkspaceSelection(
+  userId: string,
+  listId: string,
+  messageId?: string
+): Promise<{ status: string }> {
+  if (!userContextManager.isAwaitingWorkspaceChoice(userId)) {
+    await sendWhatsApp(userId, '❌ Seleção de workspace inesperada.');
+    return { status: 'unexpected_workspace_selection' };
+  }
+
+  const homeDir = process.env.HOME || '/Users/lucas';
+  let workspace: string | null = null;
+
+  switch (listId) {
+    case 'workspace_home':
+      workspace = homeDir;
+      break;
+    case 'workspace_desktop':
+      workspace = `${homeDir}/Desktop`;
+      break;
+    case 'workspace_documents':
+      workspace = `${homeDir}/Documents`;
+      break;
+    case 'workspace_custom':
+      userContextManager.setAwaitingCustomWorkspace(userId);
+      await sendWhatsApp(userId, 'Envie o caminho completo do workspace:');
+      return { status: 'awaiting_custom_workspace' };
+    case 'workspace_skip':
+      workspace = null;
+      break;
+    default:
+      await sendWhatsApp(userId, '❌ Opção inválida.');
+      return { status: 'invalid_workspace_option' };
+  }
+
+  // Create the agent
+  try {
+    userContextManager.setAgentWorkspace(userId, workspace);
+    const data = userContextManager.getCreateAgentData(userId);
+
+    const agent = agentManager.createAgent(userId, data!.agentName!, data?.workspace, data?.emoji);
+    console.log(`Created agent '${agent.name}' for user ${userId}`);
+
+    userContextManager.completeFlow(userId);
+
+    const agentEmoji = agent.emoji || '🤖';
+    await sendWhatsApp(userId, `✅ Agente ${agentEmoji} *${agent.name}* criado!`);
+    await sendButtons(userId, 'Enviar prompt agora?', [
+      { id: `newagent_prompt_${agent.id}`, title: 'Enviar prompt' },
+      { id: 'newagent_later', title: 'Depois' },
+    ]);
+
+    return { status: 'agent_created' };
+  } catch (error) {
+    if (error instanceof AgentValidationError) {
+      await sendWhatsApp(userId, `❌ ${error.message}`);
+      userContextManager.completeFlow(userId);
+      return { status: 'error' };
+    }
+    throw error;
+  }
+}
+
+/**
  * Handle agent menu actions
  */
 async function handleAgentMenuAction(
@@ -1065,6 +1199,19 @@ async function handleAgentMenuAction(
 
       await sendHistoryList(userId, agent.name, agent.outputs, messageId);
       return { status: 'history_shown' };
+    }
+
+    case 'emoji': {
+      // Edit emoji
+      const agent = agentManager.getAgent(agentId);
+      if (!agent) {
+        await sendWhatsApp(userId, '❌ Agente não encontrado.');
+        return { status: 'agent_not_found' };
+      }
+
+      userContextManager.startEditEmojiFlow(userId, agentId);
+      await sendWhatsApp(userId, `Envie o novo emoji para o agente *${agent.name}*:`);
+      return { status: 'awaiting_emoji_text' };
     }
 
     case 'priority': {

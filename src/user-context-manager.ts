@@ -83,7 +83,7 @@ export class UserContextManager {
 
   // ============================================
   // Create Agent Flow
-  // States: awaiting_name → awaiting_workspace → awaiting_confirmation
+  // States: awaiting_name → awaiting_emoji → awaiting_workspace_choice → (awaiting_workspace) → awaiting_confirmation
   // ============================================
 
   /**
@@ -100,7 +100,7 @@ export class UserContextManager {
 
   /**
    * Set the agent name in the create flow
-   * Advances state to awaiting_workspace
+   * Advances state to awaiting_emoji
    */
   setAgentName(userId: string, name: string): void {
     const context = this.contexts.get(userId);
@@ -112,6 +112,37 @@ export class UserContextManager {
       ...context.flowData,
       agentName: name,
     };
+    context.flowState = 'awaiting_emoji';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Set the agent emoji in the create flow
+   * Advances state to awaiting_workspace_choice
+   */
+  setAgentEmoji(userId: string, emoji: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'create_agent') {
+      throw new Error('Not in create agent flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      emoji,
+    };
+    context.flowState = 'awaiting_workspace_choice';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Set state to awaiting custom workspace input
+   */
+  setAwaitingCustomWorkspace(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'create_agent') {
+      throw new Error('Not in create agent flow');
+    }
+
     context.flowState = 'awaiting_workspace';
     this.contexts.set(userId, context);
   }
@@ -137,13 +168,14 @@ export class UserContextManager {
   /**
    * Get the data collected during create agent flow
    */
-  getCreateAgentData(userId: string): { agentName?: string; workspace?: string } | undefined {
+  getCreateAgentData(userId: string): { agentName?: string; emoji?: string; workspace?: string } | undefined {
     const context = this.contexts.get(userId);
     if (!context || context.currentFlow !== 'create_agent') {
       return undefined;
     }
     return {
       agentName: context.flowData?.agentName as string | undefined,
+      emoji: context.flowData?.emoji as string | undefined,
       workspace: context.flowData?.workspace as string | undefined,
     };
   }
@@ -157,7 +189,23 @@ export class UserContextManager {
   }
 
   /**
-   * Check if we're awaiting workspace
+   * Check if we're awaiting emoji selection
+   */
+  isAwaitingEmoji(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'create_agent' && context?.flowState === 'awaiting_emoji';
+  }
+
+  /**
+   * Check if we're awaiting workspace choice
+   */
+  isAwaitingWorkspaceChoice(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'create_agent' && context?.flowState === 'awaiting_workspace_choice';
+  }
+
+  /**
+   * Check if we're awaiting custom workspace input
    */
   isAwaitingWorkspace(userId: string): boolean {
     const context = this.contexts.get(userId);
@@ -170,6 +218,44 @@ export class UserContextManager {
   isAwaitingCreateConfirmation(userId: string): boolean {
     const context = this.contexts.get(userId);
     return context?.currentFlow === 'create_agent' && context?.flowState === 'awaiting_confirmation';
+  }
+
+  // ============================================
+  // Edit Emoji Flow
+  // States: awaiting_emoji_text
+  // ============================================
+
+  /**
+   * Start the edit emoji flow
+   */
+  startEditEmojiFlow(userId: string, agentId: string): void {
+    this.contexts.set(userId, {
+      userId,
+      currentFlow: 'edit_emoji',
+      flowState: 'awaiting_emoji_text',
+      flowData: { agentId },
+    });
+  }
+
+  /**
+   * Get the data for edit emoji flow
+   */
+  getEditEmojiData(userId: string): { agentId?: string } | undefined {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'edit_emoji') {
+      return undefined;
+    }
+    return {
+      agentId: context.flowData?.agentId as string | undefined,
+    };
+  }
+
+  /**
+   * Check if we're awaiting emoji text input
+   */
+  isAwaitingEmojiText(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'edit_emoji' && context?.flowState === 'awaiting_emoji_text';
   }
 
   // ============================================

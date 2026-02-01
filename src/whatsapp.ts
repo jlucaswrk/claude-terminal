@@ -362,25 +362,26 @@ export async function sendAgentWithModelSelector(
   const agentRows: any[] = [];
 
   for (const agent of agents.slice(0, 3)) { // Max 3 agents to fit 9 rows (3 per agent)
-    const emoji = STATUS_EMOJI[agent.status];
+    const agentEmoji = agent.emoji || '🤖';
+    const statusEmoji = STATUS_EMOJI[agent.status];
     const time = formatTimestamp(agent.lastActivity);
 
     agentRows.push({
       id: `agentmodel_${agent.id}_haiku`,
-      title: truncate(`${agent.name} (Haiku)`, 24),
-      description: truncate(`${emoji} ${agent.status} - ${time}`, 72),
+      title: truncate(`${agentEmoji} ${agent.name} (Haiku)`, 24),
+      description: truncate(`${statusEmoji} ${agent.status} - ${time}`, 72),
     });
 
     agentRows.push({
       id: `agentmodel_${agent.id}_sonnet`,
-      title: truncate(`${agent.name} (Sonnet)`, 24),
-      description: truncate(`${emoji} ${agent.status} - ${time}`, 72),
+      title: truncate(`${agentEmoji} ${agent.name} (Sonnet)`, 24),
+      description: truncate(`${statusEmoji} ${agent.status} - ${time}`, 72),
     });
 
     agentRows.push({
       id: `agentmodel_${agent.id}_opus`,
-      title: truncate(`${agent.name} (Opus)`, 24),
-      description: truncate(`${emoji} ${agent.status} - ${time}`, 72),
+      title: truncate(`${agentEmoji} ${agent.name} (Opus)`, 24),
+      description: truncate(`${statusEmoji} ${agent.status} - ${time}`, 72),
     });
   }
 
@@ -498,15 +499,16 @@ export async function sendAgentsList(
   messageId?: string
 ): Promise<void> {
   const agentRows = agents.slice(0, 10).map((agent) => {
-    const emoji = STATUS_EMOJI[agent.status];
+    const agentEmoji = agent.emoji || '🤖';
+    const statusEmoji = STATUS_EMOJI[agent.status];
     const time = formatTimestamp(agent.lastActivity);
     // Show last action (statusDetails) instead of title
     const lastAction = agent.statusDetails || 'Aguardando prompt';
 
     return {
       id: `agent_${agent.id}`,
-      title: truncate(agent.name, 24),
-      description: truncate(`${emoji} ${lastAction} - ${time}`, 72),
+      title: truncate(`${agentEmoji} ${agent.name}`, 24),
+      description: truncate(`${statusEmoji} ${lastAction} - ${time}`, 72),
     };
   });
 
@@ -623,7 +625,8 @@ export async function sendAgentMenu(
   agent: Agent,
   messageId?: string
 ): Promise<void> {
-  const emoji = STATUS_EMOJI[agent.status];
+  const statusEmoji = STATUS_EMOJI[agent.status];
+  const agentEmoji = agent.emoji || '🤖';
   const time = formatTimestamp(agent.lastActivity);
   const lastAction = agent.statusDetails || 'Aguardando prompt';
 
@@ -635,7 +638,7 @@ export async function sendAgentMenu(
     interactive: {
       type: 'list',
       body: {
-        text: `${emoji} *${agent.name}*\n${lastAction}\nStatus: ${agent.status} - ${time}\nPrioridade: ${PRIORITY_LABEL[agent.priority]}`,
+        text: `${agentEmoji} *${agent.name}*\n${statusEmoji} ${lastAction}\nStatus: ${agent.status} - ${time}\nPrioridade: ${PRIORITY_LABEL[agent.priority]}`,
       },
       action: {
         button: 'Ações',
@@ -652,6 +655,11 @@ export async function sendAgentMenu(
                 id: `agentmenu_history_${agent.id}`,
                 title: '📋 Ver histórico',
                 description: `Últimas ${agent.outputs.length} interações`,
+              },
+              {
+                id: `agentmenu_emoji_${agent.id}`,
+                title: '🎨 Alterar emoji',
+                description: `Atual: ${agentEmoji}`,
               },
               {
                 id: `agentmenu_priority_${agent.id}`,
@@ -1260,6 +1268,135 @@ export async function sendAgentSelectionForDelete(
           {
             title: 'Agentes',
             rows,
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends emoji selector list for agent creation
+ */
+export async function sendEmojiSelector(
+  to: string,
+  messageId?: string
+): Promise<void> {
+  const emojis = [
+    { emoji: '🤖', label: 'Robô' },
+    { emoji: '🔧', label: 'Ferramentas' },
+    { emoji: '📊', label: 'Gráficos' },
+    { emoji: '💡', label: 'Ideia' },
+    { emoji: '🎯', label: 'Alvo' },
+    { emoji: '📝', label: 'Notas' },
+    { emoji: '🚀', label: 'Foguete' },
+    { emoji: '⚡', label: 'Raio' },
+    { emoji: '🔍', label: 'Busca' },
+    { emoji: '💻', label: 'Computador' },
+  ];
+
+  const rows = emojis.map((e) => ({
+    id: `emoji_${e.emoji}`,
+    title: `${e.emoji} ${e.label}`,
+    description: '',
+  }));
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: {
+        text: '🎨 Escolha um emoji para o agente:\n\n_Você pode alterar depois nas configurações do agente._',
+      },
+      action: {
+        button: 'Escolher emoji',
+        sections: [
+          {
+            title: 'Emojis',
+            rows,
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends workspace selector list for agent creation
+ */
+export async function sendWorkspaceSelector(
+  to: string,
+  messageId?: string
+): Promise<void> {
+  const homeDir = process.env.HOME || '/Users/lucas';
+
+  const options = [
+    { id: 'workspace_home', title: '🏠 Home', description: homeDir },
+    { id: 'workspace_desktop', title: '🖥️ Mesa', description: `${homeDir}/Desktop` },
+    { id: 'workspace_documents', title: '📄 Documentos', description: `${homeDir}/Documents` },
+    { id: 'workspace_custom', title: '✏️ Caminho customizado', description: 'Inserir manualmente' },
+    { id: 'workspace_skip', title: '⏭️ Pular', description: 'Sem workspace' },
+  ];
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: {
+        text: '📁 Workspace do agente\n\nEscolha onde o agente vai trabalhar:',
+      },
+      action: {
+        button: 'Escolher',
+        sections: [
+          {
+            title: 'Opções',
+            rows: options,
           },
         ],
       },

@@ -22,6 +22,7 @@ export interface Agent {
   id: string;                   // UUID
   userId: string;               // Owning user ID (phone number)
   name: string;                 // User-provided name
+  emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;           // Absolute path (optional, immutable)
   sessionId?: string;           // Claude session ID (managed by SDK)
   title: string;                // Auto-generated title (3-5 words)
@@ -39,11 +40,12 @@ export interface Agent {
  */
 export interface UserContext {
   userId: string;
-  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent';
-  flowState?: 'awaiting_name' | 'awaiting_workspace' | 'awaiting_confirmation' | 'awaiting_selection';
+  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji';
+  flowState?: 'awaiting_name' | 'awaiting_emoji' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text';
   flowData?: {
     agentName?: string;
     agentId?: string;
+    emoji?: string;
     workspace?: string;
     priority?: string;
     [key: string]: unknown;
@@ -103,6 +105,7 @@ export interface SerializedAgent {
   id: string;
   userId: string;               // Owning user ID (phone number)
   name: string;
+  emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;
   sessionId?: string;
   title: string;

@@ -106,12 +106,12 @@ describe('UserContextManager', () => {
       expect(manager.isAwaitingAgentName('user2')).toBe(false);
     });
 
-    test('setAgentName stores name and advances state', () => {
+    test('setAgentName stores name and advances state to emoji', () => {
       manager.startCreateAgentFlow('user1');
       manager.setAgentName('user1', 'My Agent');
 
       expect(manager.isAwaitingAgentName('user1')).toBe(false);
-      expect(manager.isAwaitingWorkspace('user1')).toBe(true);
+      expect(manager.isAwaitingEmoji('user1')).toBe(true);
 
       const data = manager.getCreateAgentData('user1');
       expect(data!.agentName).toBe('My Agent');
@@ -126,20 +126,33 @@ describe('UserContextManager', () => {
       expect(() => manager.setAgentName('user1', 'Test')).toThrow('Not in create agent flow');
     });
 
-    test('isAwaitingWorkspace returns true after name is set', () => {
+    test('isAwaitingEmoji returns true after name is set', () => {
       manager.startCreateAgentFlow('user1');
-      expect(manager.isAwaitingWorkspace('user1')).toBe(false);
+      expect(manager.isAwaitingEmoji('user1')).toBe(false);
 
       manager.setAgentName('user1', 'Agent');
-      expect(manager.isAwaitingWorkspace('user1')).toBe(true);
+      expect(manager.isAwaitingEmoji('user1')).toBe(true);
+    });
+
+    test('setAgentEmoji stores emoji and advances to workspace choice', () => {
+      manager.startCreateAgentFlow('user1');
+      manager.setAgentName('user1', 'Agent');
+      manager.setAgentEmoji('user1', '🚀');
+
+      expect(manager.isAwaitingEmoji('user1')).toBe(false);
+      expect(manager.isAwaitingWorkspaceChoice('user1')).toBe(true);
+
+      const data = manager.getCreateAgentData('user1');
+      expect(data!.emoji).toBe('🚀');
     });
 
     test('setAgentWorkspace stores workspace and advances state', () => {
       manager.startCreateAgentFlow('user1');
       manager.setAgentName('user1', 'Agent');
+      manager.setAgentEmoji('user1', '🤖');
       manager.setAgentWorkspace('user1', '/path/to/workspace');
 
-      expect(manager.isAwaitingWorkspace('user1')).toBe(false);
+      expect(manager.isAwaitingWorkspaceChoice('user1')).toBe(false);
       expect(manager.isAwaitingCreateConfirmation('user1')).toBe(true);
 
       const data = manager.getCreateAgentData('user1');
@@ -149,6 +162,7 @@ describe('UserContextManager', () => {
     test('setAgentWorkspace accepts null (skip workspace)', () => {
       manager.startCreateAgentFlow('user1');
       manager.setAgentName('user1', 'Agent');
+      manager.setAgentEmoji('user1', '🤖');
       manager.setAgentWorkspace('user1', null);
 
       const data = manager.getCreateAgentData('user1');
@@ -163,6 +177,7 @@ describe('UserContextManager', () => {
     test('isAwaitingCreateConfirmation returns true after workspace is set', () => {
       manager.startCreateAgentFlow('user1');
       manager.setAgentName('user1', 'Agent');
+      manager.setAgentEmoji('user1', '🤖');
       manager.setAgentWorkspace('user1', '/path');
 
       expect(manager.isAwaitingCreateConfirmation('user1')).toBe(true);
@@ -178,11 +193,13 @@ describe('UserContextManager', () => {
     test('complete create agent flow preserves all data', () => {
       manager.startCreateAgentFlow('user1');
       manager.setAgentName('user1', 'Test Agent');
+      manager.setAgentEmoji('user1', '🚀');
       manager.setAgentWorkspace('user1', '/my/workspace');
 
       const data = manager.getCreateAgentData('user1');
       expect(data).toEqual({
         agentName: 'Test Agent',
+        emoji: '🚀',
         workspace: '/my/workspace',
       });
     });
@@ -479,7 +496,7 @@ describe('UserContextManager', () => {
 
       manager.setAgentName('user1', 'Agent 1');
 
-      expect(manager.isAwaitingWorkspace('user1')).toBe(true);
+      expect(manager.isAwaitingEmoji('user1')).toBe(true);
       expect(manager.isAwaitingAgentName('user2')).toBe(true);
     });
   });

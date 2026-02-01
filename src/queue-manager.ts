@@ -327,9 +327,12 @@ export class QueueManager {
         }
       }
 
-      // Send the text response
+      // Send the text response with agent header
       if (response.text) {
-        await this.sendWhatsApp(userId, response.text);
+        const agentEmoji = agent.emoji || '🤖';
+        const header = `${agentEmoji} *${agent.name}*\n───\n`;
+        const formattedResponse = header + response.text;
+        await this.sendWhatsApp(userId, formattedResponse);
       }
 
       // Send created files (documents, spreadsheets, etc.)
