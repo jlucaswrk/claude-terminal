@@ -1,8 +1,8 @@
 # Claude Terminal
 
-Control multiple Claude Code agents from WhatsApp. A powerful AI terminal in your pocket.
+Control multiple Claude Code agents from WhatsApp.
 
-Inspired by [Telminal](https://github.com/fristhon/telminal) (Telegram terminal), evolved into a full multi-agent system.
+Inspired by [Telminal](https://github.com/fristhon/telminal), evolved into a multi-agent system.
 
 ## Features
 
@@ -135,14 +135,14 @@ src/
 bun test
 ```
 
-263 tests covering all components.
+59 unit tests covering all core components.
 
 ## Requirements
 
 - [Bun](https://bun.sh) runtime
 - [Tailscale](https://tailscale.com) with Funnel enabled
-- [Kapso](https://kapso.ai) account for WhatsApp API
-- Claude Code CLI installed
+- [Kapso](https://kapso.ai) for WhatsApp API
+- Claude Code CLI
 
 ## Design Decisions
 
