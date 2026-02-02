@@ -79,7 +79,26 @@ Send any message → "General" agent created automatically → Choose model (Hai
 | `/` | Main menu (agents, settings) |
 | `/reset` | Clear agent session |
 | `/compact` | Compact conversation context |
+| `/bash` | Enable bash mode (all messages execute as commands) |
+| `/claude` | Disable bash mode (back to agent selection) |
 | `/help` | Show help |
+
+### Bash Execution
+
+ExecType**: Claude (AI assistant) or Bash (command execution only)
+- **ute shell commands directly:
+
+1. **Prefix mode**: Start message with `$` or `>`
+   ```
+   $ ls -la
+   > git status
+   ```
+
+2. **Bash mode toggle**: `/bash` to enable, all subsequent messages execute as commands
+
+3. **Bash agent**: Create a bash-type agent (commands only, no Claude)
+
+Output > 3500 chars is sent as `.txt` file. Dangerous commands (sudo, rm -rf /, etc) are blocked.
 
 ### Agents
 
@@ -118,6 +137,7 @@ Built-in integrations:
 ```
 src/
 ├── index.ts              # Webhook handler and orchestration
+├── bash-executor.ts      # Shell command execution with safety checks
 ├── terminal.ts           # Claude SDK wrapper with file detection
 ├── agent-manager.ts      # Agent CRUD and persistence
 ├── queue-manager.ts      # Priority queue processing
