@@ -1,4 +1,86 @@
+# Dependencies
 node_modules/
+bun.lockb
+.pnp
+.pnp.js
+
+# Environment variables
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Runtime state & data
+agents-state.json
+agents-state.json.bak
+.claude-terminal-sessions.json
+*.bak
+
+# Logs
+logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Testing
+coverage/
+*.lcov
+.nyc_output
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# IDEs and editors
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+.history/
+
+# OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# PM2
+.pm2/
+pm2-*.log
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+.temp/
+
+# Debug & profiling
+*.cpuprofile
+*.heapprofile
+*.heapsnapshot
+
+# Miscellaneous
+repomix-output.xml
+*.pid
+*.seed
+*.pid.lock
