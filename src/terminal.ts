@@ -125,12 +125,14 @@ export class ClaudeTerminal {
 
     console.log(`Running Claude (SDK) with ${model}${existingSessionId ? ' [resuming session]' : ' [new session]'}${workspace ? ` in ${workspace}` : ''}${images?.length ? ` [${images.length} image(s)]` : ''}...`);
 
-    // Build prompt - either simple string or content blocks with images
-    let prompt: string | { role: 'user'; content: Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> };
+    // Build prompt - string for text only, or AsyncIterable for images
+    type ContentBlock = { type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+
+    let promptInput: string | AsyncIterable<{ type: 'user'; message: { role: 'user'; content: ContentBlock[] }; parent_tool_use_id: null; session_id: string }>;
 
     if (images && images.length > 0) {
       // Build content array with images first, then text
-      const content: Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
+      const content: ContentBlock[] = [];
 
       for (const img of images) {
         content.push({
@@ -145,13 +147,23 @@ export class ClaudeTerminal {
 
       content.push({ type: 'text', text: input });
 
-      prompt = { role: 'user', content };
+      // Create async generator that yields one message
+      async function* createImagePrompt() {
+        yield {
+          type: 'user' as const,
+          message: { role: 'user' as const, content },
+          parent_tool_use_id: null,
+          session_id: existingSessionId || '',
+        };
+      }
+
+      promptInput = createImagePrompt();
     } else {
-      prompt = input;
+      promptInput = input;
     }
 
     const result = query({
-      prompt,
+      prompt: promptInput,
       options: {
         model,
         // Keep essential tools for terminal functionality
