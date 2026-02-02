@@ -406,16 +406,25 @@ export class UserContextManager {
    * Store a pending prompt for a user
    * Used when user sends a prompt and needs to select agent/model
    */
-  setPendingPrompt(userId: string, text: string, messageId?: string): void {
+  setPendingPrompt(
+    userId: string,
+    text: string,
+    messageId?: string,
+    images?: Array<{ data: string; mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' }>
+  ): void {
     const context = this.contexts.get(userId) ?? { userId };
-    context.pendingPrompt = { text, messageId };
+    context.pendingPrompt = { text, messageId, images };
     this.contexts.set(userId, context);
   }
 
   /**
    * Get the pending prompt for a user
    */
-  getPendingPrompt(userId: string): { text: string; messageId?: string } | undefined {
+  getPendingPrompt(userId: string): {
+    text: string;
+    messageId?: string;
+    images?: Array<{ data: string; mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' }>;
+  } | undefined {
     return this.contexts.get(userId)?.pendingPrompt;
   }
 

@@ -20,6 +20,11 @@ export type ToolUsage = {
 
 export type ProgressCallback = (toolName: string, toolInput?: Record<string, unknown>) => void;
 
+export type ImageInput = {
+  data: string; // base64 encoded
+  mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+};
+
 export type ClaudeResponse = {
   text: string;
   images: string[]; // URLs of uploaded images (legacy, for screenshots)
@@ -112,15 +117,41 @@ export class ClaudeTerminal {
     userId: string,
     agentId: string,
     workspace?: string,
-    onProgress?: ProgressCallback
+    onProgress?: ProgressCallback,
+    images?: ImageInput[]
   ): Promise<ClaudeResponse> {
     const sessionKey = getSessionKey(userId, agentId);
     const existingSessionId = sessions.get(sessionKey);
 
-    console.log(`Running Claude (SDK) with ${model}${existingSessionId ? ' [resuming session]' : ' [new session]'}${workspace ? ` in ${workspace}` : ''}...`);
+    console.log(`Running Claude (SDK) with ${model}${existingSessionId ? ' [resuming session]' : ' [new session]'}${workspace ? ` in ${workspace}` : ''}${images?.length ? ` [${images.length} image(s)]` : ''}...`);
+
+    // Build prompt - either simple string or content blocks with images
+    let prompt: string | { role: 'user'; content: Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> };
+
+    if (images && images.length > 0) {
+      // Build content array with images first, then text
+      const content: Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
+
+      for (const img of images) {
+        content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: img.mimeType,
+            data: img.data,
+          },
+        });
+      }
+
+      content.push({ type: 'text', text: input });
+
+      prompt = { role: 'user', content };
+    } else {
+      prompt = input;
+    }
 
     const result = query({
-      prompt: input,
+      prompt,
       options: {
         model,
         // Keep essential tools for terminal functionality
@@ -158,7 +189,7 @@ export class ClaudeTerminal {
 
     let response = '';
     let newSessionId: string | undefined;
-    const images: string[] = [];
+    const outputImages: string[] = []; // Screenshots captured from tool_result
     const createdFilePaths: string[] = [];
     const toolsUsed: ToolUsage[] = [];
 
@@ -209,7 +240,7 @@ export class ClaudeTerminal {
                 try {
                   const imageData = `data:${item.source.media_type};base64,${item.source.data}`;
                   const imageUrl = await uploadBase64Image(imageData, 'screenshot.png');
-                  images.push(imageUrl);
+                  outputImages.push(imageUrl);
                   console.log(`[image] Uploaded screenshot`);
                 } catch (err) {
                   console.error('Failed to upload image:', err);
@@ -258,15 +289,15 @@ export class ClaudeTerminal {
     const title = titleExtractor.extract(response, input);
 
     console.log('Claude response:', response.substring(0, 100) + '...');
-    if (images.length > 0) {
-      console.log(`[images] ${images.length} image(s) captured`);
+    if (outputImages.length > 0) {
+      console.log(`[images] ${outputImages.length} image(s) captured`);
     }
     if (files.length > 0) {
       console.log(`[files] ${files.length} file(s) created and uploaded`);
     }
     console.log(`[title] ${title}`);
 
-    return { text: response, images, files, title, toolsUsed };
+    return { text: response, images: outputImages, files, title, toolsUsed };
   }
 
   // Clear session for a user/agent

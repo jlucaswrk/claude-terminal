@@ -267,7 +267,7 @@ export class QueueManager {
    * Process a single task
    */
   private async processTask(task: QueueTask): Promise<ProcessingResult> {
-    const { agentId, prompt, model, userId } = task;
+    const { agentId, prompt, model, userId, images } = task;
 
     // Progress tracking state
     let lastToolName = '';
@@ -319,8 +319,8 @@ export class QueueManager {
         lastToolInput = toolInput;
       };
 
-      // Execute the prompt via ClaudeTerminal (with agentId, workspace, and progress callback)
-      const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace, onProgress);
+      // Execute the prompt via ClaudeTerminal (with agentId, workspace, progress callback, and images)
+      const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace, onProgress, images);
 
       // Send images first (if any) - these are screenshots captured from tool_result
       if (response.images.length > 0 && this.sendWhatsAppImage) {

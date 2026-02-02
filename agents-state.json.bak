@@ -11,10 +11,10 @@
       "name": "General",
       "type": "claude",
       "title": "Agora, se usar o digital...",
-      "status": "processing",
-      "statusDetails": "processando - tamanho máximo 4mb ?...",
+      "status": "idle",
+      "statusDetails": "Editou 3 arquivos",
       "priority": "high",
-      "lastActivity": "2026-02-02T02:50:34.529Z",
+      "lastActivity": "2026-02-02T02:50:34.531Z",
       "messageCount": 22,
       "outputs": [
         {

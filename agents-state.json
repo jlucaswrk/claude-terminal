@@ -11,10 +11,10 @@
       "name": "General",
       "type": "claude",
       "title": "Agora, se usar o digital...",
-      "status": "idle",
-      "statusDetails": "Editou 3 arquivos",
+      "status": "processing",
+      "statusDetails": "processando - transcreva...",
       "priority": "high",
-      "lastActivity": "2026-02-02T02:50:34.531Z",
+      "lastActivity": "2026-02-02T10:18:30.293Z",
       "messageCount": 22,
       "outputs": [
         {

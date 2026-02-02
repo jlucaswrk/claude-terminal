@@ -35,7 +35,7 @@ import { Semaphore } from './semaphore';
 import { DEFAULTS } from './types';
 import type { Agent, AgentType } from './types';
 import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
-import { uploadToKapso } from './storage';
+import { uploadToKapso, downloadFromKapso } from './storage';
 
 // =============================================================================
 // Configuration
@@ -145,6 +145,9 @@ app.post('/webhook', async (c) => {
       case 'list':
         return c.json(await handleListReply(userId, message.listId!, message.messageId));
 
+      case 'image':
+        return c.json(await handleImageMessage(userId, message.text || '', message.imageId!, message.imageMimeType!, message.messageId, message.imageUrl));
+
       default:
         return c.json({ status: 'unsupported_type' });
     }
@@ -250,6 +253,119 @@ async function handleTextMessage(
 
   // Flow 2: Send Prompt (Normal)
   return handleSendPrompt(userId, text, messageId);
+}
+
+// =============================================================================
+// Image Message Handler
+// =============================================================================
+
+async function handleImageMessage(
+  userId: string,
+  caption: string,
+  imageId: string,
+  imageMimeType: string,
+  messageId?: string,
+  imageUrl?: string
+): Promise<{ status: string }> {
+  console.log(`> [image] ${caption || '(no caption)'}`);
+
+  // Download the image - prefer Kapso URL, fallback to API
+  let buffer: Buffer;
+  let mimeType: string;
+
+  try {
+    await sendWhatsApp(userId, '📷 Recebendo imagem...');
+
+    if (imageUrl) {
+      // Use direct Kapso URL
+      console.log(`[image] Downloading from Kapso URL...`);
+      const response = await fetch(imageUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image: ${response.status}`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
+      mimeType = imageMimeType || response.headers.get('content-type') || 'image/jpeg';
+    } else {
+      // Fallback to API download
+      console.log(`[image] Downloading via Kapso API...`);
+      const imageData = await downloadFromKapso(imageId);
+      buffer = imageData.buffer;
+      mimeType = imageData.mimeType;
+    }
+
+    console.log(`[image] Downloaded ${buffer.length} bytes (${mimeType})`);
+  } catch (error) {
+    console.error('Failed to download image:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendWhatsApp(userId, `❌ Erro ao baixar imagem: ${errorMessage}`);
+    return { status: 'image_download_error' };
+  }
+
+  // Convert to base64
+  const base64Data = buffer.toString('base64');
+
+  // Validate MIME type for Claude
+  const validMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
+  type ValidMimeType = (typeof validMimeTypes)[number];
+  const validMimeType: ValidMimeType = validMimeTypes.includes(mimeType as ValidMimeType)
+    ? (mimeType as ValidMimeType)
+    : 'image/jpeg'; // Default to jpeg if unknown
+
+  const images = [{ data: base64Data, mimeType: validMimeType }];
+
+  // Use caption as prompt, or default text if no caption
+  const text = caption || 'Descreva esta imagem.';
+
+  // Check if there's already a pending agent selection (from agent menu "Enviar prompt")
+  const pendingAgent = pendingAgentSelection.get(userId);
+  if (pendingAgent) {
+    // Agent already selected - store prompt with image and go straight to model selection
+    userContextManager.setPendingPrompt(userId, text, messageId, images);
+    await sendModelSelector(userId, messageId);
+    return { status: 'awaiting_model_selection' };
+  }
+
+  // Regular prompt flow - check for onboarding
+  const agents = agentManager.listAgents(userId);
+
+  if (agents.length === 0) {
+    // Flow 1: First Experience (Onboarding) with image
+    await sendWhatsApp(userId, '👋 Criando agente "General" para você...');
+    const agent = agentManager.createAgent(userId, 'General');
+    console.log(`Created agent 'General' for user ${userId}`);
+
+    // Store the prompt with image and agent selection
+    userContextManager.setPendingPrompt(userId, text, messageId, images);
+    pendingAgentSelection.set(userId, agent.id);
+
+    // Show model selector
+    await sendModelSelector(userId, messageId);
+    return { status: 'onboarding_model_selection' };
+  }
+
+  // Flow 2: Send Prompt (Normal) with image
+  // Store the prompt with image
+  userContextManager.setPendingPrompt(userId, text, messageId, images);
+
+  // Get sorted agents
+  const sortedAgents = agentManager.listAgentsSorted(userId);
+
+  // Show agent selection
+  await sendAgentSelector(userId, sortedAgents, messageId);
+
+  // Show "Continue with last choice" button if user has a previous selection
+  const lastChoice = userContextManager.getLastChoice(userId);
+  if (lastChoice) {
+    const lastAgent = agentManager.getAgent(lastChoice.agentId);
+    if (lastAgent) {
+      await sendContinueWithLastChoice(userId, lastChoice.agentName, lastChoice.model, messageId);
+    } else {
+      userContextManager.clearLastChoice(userId);
+    }
+  }
+
+  return { status: 'awaiting_agent_selection' };
 }
 
 // =============================================================================
@@ -767,6 +883,7 @@ async function handleModelSelection(
     prompt: pending.text,
     model,
     userId,
+    images: pending.images,
   });
 
   console.log(`Task ${task.id} enqueued for agent ${agent.name}`);
@@ -821,6 +938,7 @@ async function handleAgentModelSelection(
     prompt: pending.text,
     model,
     userId,
+    images: pending.images,
   });
 
   console.log(`Task ${task.id} enqueued for agent ${agent.name}`);
@@ -1295,6 +1413,7 @@ async function handleModelSelectionForPrompt(
     prompt: pending.text,
     model,
     userId,
+    images: pending.images,
   });
 
   console.log(`Task ${task.id} enqueued for agent ${agent.name}`);
@@ -1747,11 +1866,15 @@ async function handlePrioritySelection(
 
 type ExtractedMessage = {
   from: string;
-  type: 'text' | 'button' | 'list';
+  type: 'text' | 'button' | 'list' | 'image';
   text?: string;
   buttonId?: string;
   listId?: string;
   messageId?: string;
+  // Image-specific fields
+  imageId?: string;
+  imageMimeType?: string;
+  imageUrl?: string; // Direct URL from Kapso
 };
 
 function extractMessage(payload: unknown): ExtractedMessage | null {
@@ -1802,6 +1925,21 @@ function extractMessage(payload: unknown): ExtractedMessage | null {
           messageId: message.id as string,
         };
       }
+
+      // Image message (Kapso v2)
+      if (message.type === 'image') {
+        const image = message.image as Record<string, unknown>;
+        const kapso = message.kapso as Record<string, unknown>;
+        return {
+          from,
+          type: 'image',
+          text: (image?.caption as string) || '',
+          imageId: image?.id as string,
+          imageMimeType: image?.mime_type as string,
+          imageUrl: (kapso?.media_url as string) || (image?.link as string), // Kapso provides direct URL
+          messageId: message.id as string,
+        };
+      }
     }
 
     // Fallback: Meta format (legacy)
@@ -1846,6 +1984,19 @@ function extractMessage(payload: unknown): ExtractedMessage | null {
         from,
         type: 'text',
         text: ((message.text as Record<string, unknown>)?.body as string) || '',
+        messageId: message.id as string,
+      };
+    }
+
+    // Image message
+    if (message.type === 'image') {
+      const image = message.image as Record<string, unknown>;
+      return {
+        from,
+        type: 'image',
+        text: (image?.caption as string) || '', // Caption becomes the text prompt
+        imageId: image?.id as string,
+        imageMimeType: image?.mime_type as string,
         messageId: message.id as string,
       };
     }

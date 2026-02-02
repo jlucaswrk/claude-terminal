@@ -60,6 +60,10 @@ export interface UserContext {
   pendingPrompt?: {
     text: string;
     messageId?: string;
+    images?: Array<{
+      data: string; // base64 encoded
+      mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+    }>;
   };
   lastChoice?: {
     agentId: string;
@@ -81,6 +85,10 @@ export interface QueueTask {
   priority: number;             // 0-2 (high=0, medium=1, low=2)
   timestamp: Date;
   userId: string;
+  images?: Array<{
+    data: string; // base64 encoded
+    mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  }>;
 }
 
 /**

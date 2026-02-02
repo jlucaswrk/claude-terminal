@@ -4,6 +4,47 @@ import { basename, extname } from 'path';
 const KAPSO_API_KEY = process.env.KAPSO_API_KEY!;
 const KAPSO_PHONE_NUMBER_ID = process.env.KAPSO_PHONE_NUMBER_ID!;
 
+/**
+ * Download media from Kapso/WhatsApp by media ID
+ * Returns the file as a Buffer along with mime type
+ */
+export async function downloadFromKapso(mediaId: string): Promise<{ buffer: Buffer; mimeType: string }> {
+  // First, get the media URL
+  const metaResponse = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v24.0/${mediaId}`,
+    {
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+      },
+    }
+  );
+
+  if (!metaResponse.ok) {
+    const error = await metaResponse.text();
+    throw new Error(`Failed to get media metadata: ${error}`);
+  }
+
+  const metadata = await metaResponse.json() as { url: string; mime_type: string };
+
+  // Download the actual file
+  const fileResponse = await fetch(metadata.url, {
+    headers: {
+      'X-API-Key': KAPSO_API_KEY,
+    },
+  });
+
+  if (!fileResponse.ok) {
+    const error = await fileResponse.text();
+    throw new Error(`Failed to download media: ${error}`);
+  }
+
+  const arrayBuffer = await fileResponse.arrayBuffer();
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    mimeType: metadata.mime_type,
+  };
+}
+
 // MIME type mapping for common file extensions
 // Note: WhatsApp only accepts specific types. CSV, JSON, XML are sent as text/plain
 const MIME_TYPES: Record<string, string> = {
