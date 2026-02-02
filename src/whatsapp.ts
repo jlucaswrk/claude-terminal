@@ -1596,6 +1596,58 @@ export async function sendAgentTypeSelector(
 /**
  * Sends bash mode status message with toggle button
  */
+/**
+ * Sends transcription error with "describe manually" fallback button
+ */
+export async function sendTranscriptionError(
+  to: string,
+  messageId?: string
+): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: '❌ Não consegui entender o áudio.\n\nO áudio pode estar muito baixo, com ruído, ou em um formato não suportado.',
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: `transcription_manual_${Date.now()}`,
+              title: 'Descrever manualmente',
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
 export async function sendBashModeStatus(
   to: string,
   isEnabled: boolean,

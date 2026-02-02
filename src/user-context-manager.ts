@@ -613,4 +613,35 @@ export class UserContextManager {
     const context = this.contexts.get(userId);
     return context?.currentFlow === 'create_agent' && context?.flowState === 'awaiting_type';
   }
+
+  // ============================================
+  // Failed Transcription Management
+  // ============================================
+
+  /**
+   * Mark that a transcription failed (for manual fallback)
+   */
+  setFailedTranscription(userId: string, failed: boolean): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    (context as any).failedTranscription = failed;
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if user has a failed transcription pending
+   */
+  hasFailedTranscription(userId: string): boolean {
+    return (this.contexts.get(userId) as any)?.failedTranscription === true;
+  }
+
+  /**
+   * Clear the failed transcription flag
+   */
+  clearFailedTranscription(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context) {
+      delete (context as any).failedTranscription;
+      this.contexts.set(userId, context);
+    }
+  }
 }

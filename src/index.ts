@@ -26,7 +26,9 @@ import {
   sendWorkspaceSelector,
   sendAgentTypeSelector,
   sendBashModeStatus,
+  sendTranscriptionError,
 } from './whatsapp';
+import { transcribeAudio } from './transcription';
 import { PersistenceService } from './persistence';
 import { AgentManager, AgentValidationError } from './agent-manager';
 import { QueueManager } from './queue-manager';
@@ -147,6 +149,9 @@ app.post('/webhook', async (c) => {
 
       case 'image':
         return c.json(await handleImageMessage(userId, message.text || '', message.imageId!, message.imageMimeType!, message.messageId, message.imageUrl));
+
+      case 'audio':
+        return c.json(await handleAudioMessage(userId, message.audioId!, message.audioMimeType!, message.messageId, message.audioUrl));
 
       default:
         return c.json({ status: 'unsupported_type' });
@@ -366,6 +371,74 @@ async function handleImageMessage(
   }
 
   return { status: 'awaiting_agent_selection' };
+}
+
+// =============================================================================
+// Audio Message Handler
+// =============================================================================
+
+async function handleAudioMessage(
+  userId: string,
+  audioId: string,
+  audioMimeType: string,
+  messageId?: string,
+  audioUrl?: string
+): Promise<{ status: string }> {
+  console.log(`> [audio] Received audio message`);
+
+  // Download the audio
+  let buffer: Buffer;
+  let mimeType: string;
+
+  try {
+    if (audioUrl) {
+      // Use direct Kapso URL
+      console.log(`[audio] Downloading from Kapso URL...`);
+      const response = await fetch(audioUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch audio: ${response.status}`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
+      mimeType = audioMimeType || response.headers.get('content-type') || 'audio/ogg';
+    } else {
+      // Fallback to API download
+      console.log(`[audio] Downloading via Kapso API...`);
+      const audioData = await downloadFromKapso(audioId);
+      buffer = audioData.buffer;
+      mimeType = audioData.mimeType;
+    }
+
+    console.log(`[audio] Downloaded ${buffer.length} bytes (${mimeType})`);
+  } catch (error) {
+    console.error('Failed to download audio:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendWhatsApp(userId, `❌ Erro ao baixar áudio: ${errorMessage}`);
+    return { status: 'audio_download_error' };
+  }
+
+  // Transcribe using Whisper
+  const result = await transcribeAudio(buffer, mimeType);
+
+  if (!result.success || !result.text) {
+    console.error('Transcription failed:', result.error);
+    // Mark that user came from failed transcription for manual fallback
+    userContextManager.setFailedTranscription(userId, true);
+    await sendTranscriptionError(userId, messageId);
+    return { status: 'transcription_failed' };
+  }
+
+  const transcribedText = result.text;
+  console.log(`[audio] Transcribed: "${transcribedText}"`);
+
+  // Show transcription preview (cropped to 100 chars)
+  const preview = transcribedText.length > 100
+    ? transcribedText.slice(0, 100) + '...'
+    : transcribedText;
+  await sendWhatsApp(userId, `🎤 _"${preview}"_`);
+
+  // Now treat the transcribed text as a regular text message
+  return handleTextMessage(userId, transcribedText, messageId);
 }
 
 // =============================================================================
@@ -793,12 +866,28 @@ async function handleButtonReply(
     return handleNewAgentChoice(userId, buttonId);
   }
 
+  // Transcription manual fallback
+  if (buttonId.startsWith('transcription_manual_')) {
+    return handleTranscriptionManualFallback(userId);
+  }
+
   // Generic buttons (Yes/No)
   if (buttonId === 'yes' || buttonId === 'no') {
     return handleGenericConfirmation(userId, buttonId);
   }
 
   return { status: 'unknown_button' };
+}
+
+/**
+ * Handle "Descrever manualmente" button after transcription failure
+ */
+async function handleTranscriptionManualFallback(userId: string): Promise<{ status: string }> {
+  // Clear the failed transcription flag
+  userContextManager.clearFailedTranscription(userId);
+
+  await sendWhatsApp(userId, 'Ok! Digite o que você queria dizer:');
+  return { status: 'awaiting_manual_input' };
 }
 
 /**
@@ -1866,7 +1955,7 @@ async function handlePrioritySelection(
 
 type ExtractedMessage = {
   from: string;
-  type: 'text' | 'button' | 'list' | 'image';
+  type: 'text' | 'button' | 'list' | 'image' | 'audio';
   text?: string;
   buttonId?: string;
   listId?: string;
@@ -1875,6 +1964,10 @@ type ExtractedMessage = {
   imageId?: string;
   imageMimeType?: string;
   imageUrl?: string; // Direct URL from Kapso
+  // Audio-specific fields
+  audioId?: string;
+  audioMimeType?: string;
+  audioUrl?: string; // Direct URL from Kapso
 };
 
 function extractMessage(payload: unknown): ExtractedMessage | null {
@@ -1940,6 +2033,20 @@ function extractMessage(payload: unknown): ExtractedMessage | null {
           messageId: message.id as string,
         };
       }
+
+      // Audio message (Kapso v2)
+      if (message.type === 'audio') {
+        const audio = message.audio as Record<string, unknown>;
+        const kapso = message.kapso as Record<string, unknown>;
+        return {
+          from,
+          type: 'audio',
+          audioId: audio?.id as string,
+          audioMimeType: audio?.mime_type as string,
+          audioUrl: (kapso?.media_url as string) || (audio?.link as string),
+          messageId: message.id as string,
+        };
+      }
     }
 
     // Fallback: Meta format (legacy)
@@ -1997,6 +2104,18 @@ function extractMessage(payload: unknown): ExtractedMessage | null {
         text: (image?.caption as string) || '', // Caption becomes the text prompt
         imageId: image?.id as string,
         imageMimeType: image?.mime_type as string,
+        messageId: message.id as string,
+      };
+    }
+
+    // Audio message
+    if (message.type === 'audio') {
+      const audio = message.audio as Record<string, unknown>;
+      return {
+        from,
+        type: 'audio',
+        audioId: audio?.id as string,
+        audioMimeType: audio?.mime_type as string,
         messageId: message.id as string,
       };
     }
