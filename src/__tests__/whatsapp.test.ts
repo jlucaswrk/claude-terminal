@@ -152,7 +152,8 @@ describe('sendAgentsList', () => {
     const body = JSON.parse(call[1].body);
     const agentRows = body.interactive.action.sections[0].rows;
 
-    expect(agentRows).toHaveLength(8);
+    // Now max 7 agents (10 rows - 3 management items)
+    expect(agentRows).toHaveLength(7);
   });
 
   test('includes messageId as context when provided', async () => {
@@ -173,9 +174,10 @@ describe('sendAgentsList', () => {
       (s: any) => s.title === '⚙️ Gerenciar'
     );
 
-    // Only create option when no agents (delete not shown)
-    expect(manageSection.rows).toHaveLength(1);
+    // Create + bash toggle when no agents (delete not shown)
+    expect(manageSection.rows).toHaveLength(2);
     expect(manageSection.rows[0].id).toBe('action_create_agent');
+    expect(manageSection.rows[1].id).toBe('action_toggle_bash');
   });
 });
 

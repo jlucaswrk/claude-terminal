@@ -1,6 +1,6 @@
 import { existsSync } from 'fs';
 import { PersistenceService } from './persistence';
-import type { Agent, Output, SystemConfig } from './types';
+import type { Agent, AgentType, Output, SystemConfig } from './types';
 import { DEFAULTS, PRIORITY_VALUES } from './types';
 
 /**
@@ -57,7 +57,7 @@ export class AgentManager {
    * Create a new agent
    * @throws AgentValidationError if validation fails
    */
-  createAgent(userId: string, name: string, workspace?: string, emoji?: string): Agent {
+  createAgent(userId: string, name: string, workspace?: string, emoji?: string, type: AgentType = 'claude'): Agent {
     // Validate name
     this.validateName(name);
 
@@ -79,11 +79,12 @@ export class AgentManager {
       id: crypto.randomUUID(),
       userId,
       name: name.trim(),
+      type,
       emoji,
       workspace,
       title: '',
       status: 'idle',
-      statusDetails: 'Aguardando prompt',
+      statusDetails: type === 'bash' ? 'Terminal pronto' : 'Aguardando prompt',
       priority: 'medium',
       lastActivity: now,
       messageCount: 0,

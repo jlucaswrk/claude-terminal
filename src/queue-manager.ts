@@ -3,6 +3,8 @@ import { AgentManager } from './agent-manager';
 import { ClaudeTerminal, type ClaudeResponse, type ToolUsage } from './terminal';
 import type { QueueTask, Output } from './types';
 import { PRIORITY_VALUES, DEFAULTS } from './types';
+import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
+import { uploadToKapso } from './storage';
 
 /**
  * Tool-specific emojis for progress messages
@@ -280,6 +282,11 @@ export class QueueManager {
         throw new Error(`Agent not found: ${agentId}`);
       }
 
+      // Handle bash-type agents differently
+      if (agent.type === 'bash') {
+        return this.processBashTask(task, agent);
+      }
+
       // Update agent status to processing
       const truncatedPrompt = this.truncatePrompt(prompt, 30);
       this.agentManager.updateAgentStatus(
@@ -416,6 +423,116 @@ export class QueueManager {
       if (progressInterval) {
         clearInterval(progressInterval);
       }
+    }
+  }
+
+  /**
+   * Process a bash-type agent task (direct terminal execution)
+   */
+  private async processBashTask(
+    task: QueueTask,
+    agent: { id: string; name: string; emoji?: string; workspace?: string }
+  ): Promise<ProcessingResult> {
+    const { agentId, prompt, userId } = task;
+
+    try {
+      // Update agent status to processing (internal only, no WhatsApp message)
+      const truncatedCmd = this.truncatePrompt(prompt, 30);
+      this.agentManager.updateAgentStatus(
+        agentId,
+        'processing',
+        `executando - ${truncatedCmd}...`
+      );
+
+      const agentEmoji = agent.emoji || '⚡';
+
+      // Execute the command
+      const result = await executeCommand(prompt, {
+        cwd: agent.workspace,
+      });
+
+      // Format the result for WhatsApp
+      const formattedResult = formatBashResult(result);
+      const header = `${agentEmoji} *${agent.name}*\n`;
+      await this.sendWhatsApp(userId, header + formattedResult);
+
+      // If output was truncated and we have media capabilities, send full output as file
+      if (result.truncated && result.output && this.sendWhatsAppMedia) {
+        try {
+          const filename = getFullOutputFilename(prompt);
+          const fullOutput = `$ ${prompt}\n\n${result.output}\n\nExit code: ${result.exitCode}\nDuration: ${result.duration}ms`;
+          const buffer = Buffer.from(fullOutput, 'utf-8');
+
+          const mediaId = await uploadToKapso(buffer, filename, 'text/plain');
+          if (mediaId) {
+            await this.sendWhatsAppMedia(
+              userId,
+              mediaId,
+              'document',
+              filename,
+              '📎 Output completo'
+            );
+          }
+        } catch (err) {
+          console.error('Failed to upload full bash output:', err);
+        }
+      }
+
+      // Create output record
+      const output: Output = {
+        id: crypto.randomUUID(),
+        summary: result.blocked
+          ? 'Comando bloqueado'
+          : result.exitCode === 0
+            ? `Executou: ${this.truncatePrompt(prompt, 30)}`
+            : `Falhou: ${this.truncatePrompt(prompt, 30)}`,
+        prompt,
+        response: formattedResult,
+        model: 'bash',
+        status: result.blocked ? 'warning' : result.exitCode === 0 ? 'success' : 'error',
+        timestamp: new Date(),
+      };
+
+      // Add output to agent
+      this.agentManager.addOutput(agentId, output);
+
+      // Update agent status back to idle
+      const statusDetails = result.blocked
+        ? 'comando bloqueado'
+        : result.exitCode === 0
+          ? `executou ${this.truncatePrompt(prompt, 20)}`
+          : `falhou (exit ${result.exitCode})`;
+      this.agentManager.updateAgentStatus(agentId, 'idle', statusDetails);
+
+      return {
+        taskId: task.id,
+        agentId,
+        success: !result.blocked && result.exitCode === 0,
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`Bash task ${task.id} failed:`, error);
+
+      // Update agent status to error
+      this.agentManager.updateAgentStatus(
+        agentId,
+        'error',
+        `erro - ${this.truncatePrompt(errorMessage, 50)}`
+      );
+
+      // Notify user of error
+      const agentEmoji = agent.emoji || '⚡';
+      await this.sendWhatsApp(
+        userId,
+        `❌ *${agent.name}*: Erro ao executar comando\n${this.truncatePrompt(errorMessage, 100)}`
+      );
+
+      return {
+        taskId: task.id,
+        agentId,
+        success: false,
+        error: error instanceof Error ? error : new Error(errorMessage),
+      };
     }
   }
 

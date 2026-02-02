@@ -3,6 +3,11 @@
  */
 
 /**
+ * Agent type - Claude Code (AI) or Bash (direct terminal)
+ */
+export type AgentType = 'claude' | 'bash';
+
+/**
  * Represents a single output/response from an agent
  */
 export interface Output {
@@ -10,7 +15,7 @@ export interface Output {
   summary: string;              // Summary of the action (e.g., "Created 3 files")
   prompt: string;               // Original user prompt
   response: string;             // Complete Claude response
-  model: 'haiku' | 'sonnet' | 'opus';  // Model used
+  model: 'haiku' | 'sonnet' | 'opus' | 'bash';  // Model used (bash for direct execution)
   status: 'success' | 'warning' | 'error';
   timestamp: Date;
 }
@@ -22,6 +27,7 @@ export interface Agent {
   id: string;                   // UUID
   userId: string;               // Owning user ID (phone number)
   name: string;                 // User-provided name
+  type: AgentType;              // 'claude' (default) or 'bash'
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;           // Absolute path (optional, immutable)
   sessionId?: string;           // Claude session ID (managed by SDK)
@@ -41,10 +47,11 @@ export interface Agent {
 export interface UserContext {
   userId: string;
   currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji';
-  flowState?: 'awaiting_name' | 'awaiting_emoji' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text';
+  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text';
   flowData?: {
     agentName?: string;
     agentId?: string;
+    agentType?: AgentType;
     emoji?: string;
     workspace?: string;
     priority?: string;
@@ -59,6 +66,8 @@ export interface UserContext {
     agentName: string;
     model: 'haiku' | 'sonnet' | 'opus';
   };
+  bashMode?: boolean;           // Global bash mode toggle
+  lastBashWorkspace?: string;   // Last workspace used for bash prefix commands
 }
 
 /**
@@ -105,6 +114,7 @@ export interface SerializedAgent {
   id: string;
   userId: string;               // Owning user ID (phone number)
   name: string;
+  type?: AgentType;             // 'claude' (default) or 'bash' - optional for backwards compat
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;
   sessionId?: string;
@@ -123,9 +133,22 @@ export interface SerializedOutput {
   summary: string;
   prompt: string;
   response: string;
-  model: 'haiku' | 'sonnet' | 'opus';
+  model: 'haiku' | 'sonnet' | 'opus' | 'bash';
   status: 'success' | 'warning' | 'error';
   timestamp: string;            // ISO date string
+}
+
+/**
+ * Result from bash command execution
+ */
+export interface BashResult {
+  command: string;
+  output: string;
+  exitCode: number;
+  duration: number;             // milliseconds
+  truncated: boolean;
+  blocked?: boolean;            // true if command was blocked
+  blockReason?: string;         // reason for blocking
 }
 
 /**
@@ -145,4 +168,7 @@ export const DEFAULTS = {
   SCHEMA_VERSION: '1.0',
   MAX_OUTPUTS_PER_AGENT: 10,
   TITLE_UPDATE_INTERVAL: 10,
+  BASH_TIMEOUT: 60000,          // 60 seconds
+  BASH_MAX_OUTPUT: 1024 * 1024, // 1MB
+  BASH_TRUNCATE_AT: 3500,       // WhatsApp message limit
 } as const;

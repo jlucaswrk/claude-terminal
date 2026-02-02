@@ -201,6 +201,8 @@ export class PersistenceService {
         id: agent.id,
         userId: agent.userId,
         name: agent.name,
+        type: agent.type,
+        emoji: agent.emoji,
         workspace: agent.workspace,
         sessionId: agent.sessionId,
         title: agent.title,
@@ -234,6 +236,9 @@ export class PersistenceService {
         // Backward compatibility: use 'default' for old agents without userId
         userId: agent.userId || 'default',
         name: agent.name,
+        // Backward compatibility: default to 'claude' for old agents without type
+        type: agent.type || 'claude',
+        emoji: agent.emoji,
         workspace: agent.workspace,
         sessionId: agent.sessionId,
         title: agent.title,

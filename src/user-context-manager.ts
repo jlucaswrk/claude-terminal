@@ -100,7 +100,7 @@ export class UserContextManager {
 
   /**
    * Set the agent name in the create flow
-   * Advances state to awaiting_emoji
+   * Advances state to awaiting_type
    */
   setAgentName(userId: string, name: string): void {
     const context = this.contexts.get(userId);
@@ -112,7 +112,7 @@ export class UserContextManager {
       ...context.flowData,
       agentName: name,
     };
-    context.flowState = 'awaiting_emoji';
+    context.flowState = 'awaiting_type';
     this.contexts.set(userId, context);
   }
 
@@ -168,13 +168,14 @@ export class UserContextManager {
   /**
    * Get the data collected during create agent flow
    */
-  getCreateAgentData(userId: string): { agentName?: string; emoji?: string; workspace?: string } | undefined {
+  getCreateAgentData(userId: string): { agentName?: string; agentType?: 'claude' | 'bash'; emoji?: string; workspace?: string } | undefined {
     const context = this.contexts.get(userId);
     if (!context || context.currentFlow !== 'create_agent') {
       return undefined;
     }
     return {
       agentName: context.flowData?.agentName as string | undefined,
+      agentType: context.flowData?.agentType as 'claude' | 'bash' | undefined,
       emoji: context.flowData?.emoji as string | undefined,
       workspace: context.flowData?.workspace as string | undefined,
     };
@@ -525,5 +526,82 @@ export class UserContextManager {
    */
   clearAll(): void {
     this.contexts.clear();
+  }
+
+  // ============================================
+  // Bash Mode Management
+  // ============================================
+
+  /**
+   * Enable bash mode for a user
+   */
+  enableBashMode(userId: string): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.bashMode = true;
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Disable bash mode for a user
+   */
+  disableBashMode(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context) {
+      context.bashMode = false;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  /**
+   * Check if user is in bash mode
+   */
+  isInBashMode(userId: string): boolean {
+    return this.contexts.get(userId)?.bashMode === true;
+  }
+
+  /**
+   * Set the last bash workspace used
+   */
+  setLastBashWorkspace(userId: string, workspace: string): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.lastBashWorkspace = workspace;
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the last bash workspace used
+   */
+  getLastBashWorkspace(userId: string): string | undefined {
+    return this.contexts.get(userId)?.lastBashWorkspace;
+  }
+
+  // ============================================
+  // Create Agent Flow - Type Selection
+  // ============================================
+
+  /**
+   * Set the agent type in the create flow
+   * Advances state to awaiting_emoji
+   */
+  setAgentType(userId: string, type: 'claude' | 'bash'): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'create_agent') {
+      throw new Error('Not in create agent flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      agentType: type,
+    };
+    context.flowState = 'awaiting_emoji';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if we're awaiting type selection
+   */
+  isAwaitingType(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'create_agent' && context?.flowState === 'awaiting_type';
   }
 }

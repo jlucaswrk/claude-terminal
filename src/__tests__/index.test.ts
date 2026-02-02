@@ -391,7 +391,12 @@ describe('Webhook Integration Tests', () => {
 
       // Send agent name
       const nameResult = await postWebhook(createTextPayload(userId, 'My New Agent'));
-      expect(nameResult.json.status).toBe('awaiting_emoji');
+      expect(nameResult.json.status).toBe('awaiting_type');
+
+      // Select agent type (claude)
+      whatsappCalls.length = 0;
+      const typeResult = await postWebhook(createListPayload(userId, 'agenttype_claude'));
+      expect(typeResult.json.status).toBe('awaiting_emoji');
 
       // Select emoji
       whatsappCalls.length = 0;
@@ -403,11 +408,12 @@ describe('Webhook Integration Tests', () => {
       const wsResult = await postWebhook(createListPayload(userId, 'workspace_skip'));
       expect(wsResult.json.status).toBe('agent_created');
 
-      // Should have created the agent with emoji
+      // Should have created the agent with emoji and type
       const agents = agentManager.listAgents(userId);
       const newAgent = agents.find((a: any) => a.name === 'My New Agent');
       expect(newAgent).toBeDefined();
       expect(newAgent?.emoji).toBe('🚀');
+      expect(newAgent?.type).toBe('claude');
 
       // Should have sent confirmation
       expect(whatsappCalls.some(c =>

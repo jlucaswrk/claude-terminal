@@ -47,12 +47,20 @@ describe('AgentManager', () => {
 
       expect(agent.id).toBeDefined();
       expect(agent.name).toBe('My Agent');
+      expect(agent.type).toBe('claude'); // default type
       expect(agent.status).toBe('idle');
       expect(agent.statusDetails).toBe('Aguardando prompt');
       expect(agent.priority).toBe('medium');
       expect(agent.title).toBe('');
       expect(agent.outputs).toEqual([]);
       expect(agent.messageCount).toBe(0);
+    });
+
+    test('creates bash agent with correct status', () => {
+      const agent = manager.createAgent('user1', 'Bash Agent', undefined, undefined, 'bash');
+
+      expect(agent.type).toBe('bash');
+      expect(agent.statusDetails).toBe('Terminal pronto');
     });
 
     test('creates agent with workspace', () => {

@@ -24,6 +24,8 @@ import {
   sendOutputActions,
   sendEmojiSelector,
   sendWorkspaceSelector,
+  sendAgentTypeSelector,
+  sendBashModeStatus,
 } from './whatsapp';
 import { PersistenceService } from './persistence';
 import { AgentManager, AgentValidationError } from './agent-manager';
@@ -31,7 +33,9 @@ import { QueueManager } from './queue-manager';
 import { UserContextManager } from './user-context-manager';
 import { Semaphore } from './semaphore';
 import { DEFAULTS } from './types';
-import type { Agent } from './types';
+import type { Agent, AgentType } from './types';
+import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
+import { uploadToKapso } from './storage';
 
 // =============================================================================
 // Configuration
@@ -199,9 +203,37 @@ async function handleTextMessage(
     return handleHelpCommand(userId);
   }
 
+  // Handle /bash command - enable bash mode
+  if (text.toLowerCase() === '/bash') {
+    return handleBashModeEnable(userId);
+  }
+
+  // Handle /claude command - disable bash mode
+  if (text.toLowerCase() === '/claude') {
+    return handleBashModeDisable(userId);
+  }
+
+  // Check for bash prefix ($ or >) - execute immediately
+  if (text.startsWith('$ ') || text.startsWith('> ')) {
+    const command = text.slice(2).trim();
+    return handleBashCommand(userId, command, messageId);
+  }
+
+  // Check if bash mode is enabled - execute all messages as bash
+  if (userContextManager.isInBashMode(userId)) {
+    return handleBashCommand(userId, text, messageId);
+  }
+
   // Check if there's already a pending agent selection (from agent menu "Enviar prompt")
   const pendingAgent = pendingAgentSelection.get(userId);
   if (pendingAgent) {
+    // Check if selected agent is bash type
+    const agent = agentManager.getAgent(pendingAgent);
+    if (agent?.type === 'bash') {
+      // Execute as bash command directly
+      pendingAgentSelection.delete(userId);
+      return handleBashCommand(userId, text, messageId, agent.workspace);
+    }
     // Agent already selected - store prompt and go straight to model selection
     userContextManager.setPendingPrompt(userId, text, messageId);
     await sendModelSelector(userId, messageId);
@@ -305,7 +337,8 @@ async function handleCreateAgentFlow(userId: string): Promise<{ status: string }
  */
 async function handleMenuCommand(userId: string): Promise<{ status: string }> {
   const agents = agentManager.listAgentsSorted(userId);
-  await sendAgentsList(userId, agents);
+  const bashModeEnabled = userContextManager.isInBashMode(userId);
+  await sendAgentsList(userId, agents, undefined, bashModeEnabled);
   return { status: 'menu_shown' };
 }
 
@@ -402,7 +435,12 @@ async function handleHelpCommand(userId: string): Promise<{ status: string }> {
       '/ - Menu principal\n' +
       '/reset - Limpar sessão\n' +
       '/compact - Compactar contexto\n' +
+      '/bash - Ativar modo bash\n' +
+      '/claude - Voltar ao modo normal\n' +
       '/help - Esta mensagem\n\n' +
+      '*Modo Bash:*\n' +
+      'Use `$ comando` para executar bash direto.\n' +
+      'Ou ative o modo bash com /bash.\n\n' +
       '*Agentes:*\n' +
       'Cada agente mantém seu próprio contexto de conversa.\n' +
       'Você pode criar agentes com workspaces específicos.\n' +
@@ -413,6 +451,79 @@ async function handleHelpCommand(userId: string): Promise<{ status: string }> {
       'Opus - Mais capaz e detalhado'
   );
   return { status: 'help_shown' };
+}
+
+/**
+ * Enable bash mode
+ */
+async function handleBashModeEnable(userId: string): Promise<{ status: string }> {
+  userContextManager.enableBashMode(userId);
+  await sendWhatsApp(
+    userId,
+    '🖥️ *Modo Bash ativado*\n\n' +
+      'Todas as mensagens serão executadas como comandos no terminal.\n\n' +
+      'Use `/claude` para voltar ao modo normal.'
+  );
+  return { status: 'bash_mode_enabled' };
+}
+
+/**
+ * Disable bash mode
+ */
+async function handleBashModeDisable(userId: string): Promise<{ status: string }> {
+  userContextManager.disableBashMode(userId);
+  await sendWhatsApp(
+    userId,
+    '🤖 *Modo Claude ativado*\n\n' +
+      'Mensagens serão enviadas para agentes Claude.\n\n' +
+      'Use `/bash` para modo terminal ou `$ comando` para execução rápida.'
+  );
+  return { status: 'bash_mode_disabled' };
+}
+
+/**
+ * Execute bash command and send result
+ */
+async function handleBashCommand(
+  userId: string,
+  command: string,
+  messageId?: string,
+  workspace?: string
+): Promise<{ status: string }> {
+  // Use provided workspace, last bash workspace, or home directory
+  const cwd = workspace || userContextManager.getLastBashWorkspace(userId) || process.env.HOME || '/tmp';
+
+  // Update last bash workspace
+  if (cwd !== process.env.HOME) {
+    userContextManager.setLastBashWorkspace(userId, cwd);
+  }
+
+  const result = await executeCommand(command, { cwd });
+  const formatted = formatBashResult(result);
+
+  // Check if output was truncated - send file with full output
+  if (result.truncated && result.output.length > DEFAULTS.BASH_TRUNCATE_AT) {
+    // Send truncated message first
+    await sendWhatsApp(userId, formatted);
+
+    // Upload full output as file
+    try {
+      const filename = getFullOutputFilename(command);
+      const fullOutput = `$ ${command}\n\n${result.output}\n\nExit code: ${result.exitCode}\nDuration: ${result.duration}ms`;
+      const buffer = Buffer.from(fullOutput, 'utf-8');
+
+      const mediaId = await uploadToKapso(buffer, filename, 'text/plain');
+      if (mediaId) {
+        await sendWhatsAppMedia(userId, mediaId, 'document', filename, 'Saída completa');
+      }
+    } catch (err) {
+      console.error('Failed to upload bash output:', err);
+    }
+  } else {
+    await sendWhatsApp(userId, formatted);
+  }
+
+  return { status: 'bash_executed' };
 }
 
 /**
@@ -437,8 +548,9 @@ async function handleFlowTextInput(
         }
 
         userContextManager.setAgentName(userId, text.trim());
-        await sendEmojiSelector(userId, messageId);
-        return { status: 'awaiting_emoji' };
+        // Now ask for agent type
+        await sendAgentTypeSelector(userId, messageId);
+        return { status: 'awaiting_type' };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         await sendWhatsApp(userId, `❌ ${msg}. Tente novamente:`);
@@ -453,9 +565,10 @@ async function handleFlowTextInput(
         userContextManager.setAgentWorkspace(userId, workspace);
         const data = userContextManager.getCreateAgentData(userId);
 
-        // Create the agent
-        const agent = agentManager.createAgent(userId, data!.agentName!, data?.workspace, data?.emoji);
-        console.log(`Created agent '${agent.name}' for user ${userId}`);
+        // Create the agent with type
+        const agentType = data?.agentType || 'claude';
+        const agent = agentManager.createAgent(userId, data!.agentName!, data?.workspace, data?.emoji, agentType);
+        console.log(`Created ${agentType} agent '${agent.name}' for user ${userId}`);
 
         userContextManager.completeFlow(userId);
 
@@ -525,6 +638,14 @@ async function handleButtonReply(
   buttonId: string
 ): Promise<{ status: string }> {
   console.log(`> Button: ${buttonId}`);
+
+  // Bash mode toggle
+  if (buttonId === 'bashmode_enable') {
+    return handleBashModeEnable(userId);
+  }
+  if (buttonId === 'bashmode_disable') {
+    return handleBashModeDisable(userId);
+  }
 
   // Continue with last choice
   if (buttonId.startsWith('continue_last_choice_')) {
@@ -952,6 +1073,11 @@ async function handleListReply(
 ): Promise<{ status: string }> {
   console.log(`> List: ${listId}`);
 
+  // Agent type selection for agent creation
+  if (listId.startsWith('agenttype_')) {
+    return handleAgentTypeSelection(userId, listId, messageId);
+  }
+
   // Emoji selection for agent creation
   if (listId.startsWith('emoji_')) {
     return handleEmojiSelection(userId, listId, messageId);
@@ -998,6 +1124,12 @@ async function handleListReply(
   // Management actions
   if (listId === 'action_create_agent') {
     return handleCreateAgentFlow(userId);
+  }
+
+  if (listId === 'action_toggle_bash') {
+    const isEnabled = userContextManager.isInBashMode(userId);
+    await sendBashModeStatus(userId, isEnabled, messageId);
+    return { status: 'bash_toggle_shown' };
   }
 
   if (listId === 'action_configure_limit') {
@@ -1171,6 +1303,27 @@ async function handleModelSelectionForPrompt(
 }
 
 /**
+ * Handle agent type selection during agent creation
+ */
+async function handleAgentTypeSelection(
+  userId: string,
+  listId: string,
+  messageId?: string
+): Promise<{ status: string }> {
+  if (!userContextManager.isAwaitingType(userId)) {
+    await sendWhatsApp(userId, '❌ Seleção de tipo inesperada.');
+    return { status: 'unexpected_type_selection' };
+  }
+
+  const type: AgentType = listId === 'agenttype_bash' ? 'bash' : 'claude';
+  userContextManager.setAgentType(userId, type);
+
+  // Now ask for emoji
+  await sendEmojiSelector(userId, messageId);
+  return { status: 'awaiting_emoji' };
+}
+
+/**
  * Handle emoji selection during agent creation
  */
 // Emoji key to character mapping
@@ -1249,15 +1402,19 @@ async function handleWorkspaceSelection(
     userContextManager.setAgentWorkspace(userId, workspace);
     const data = userContextManager.getCreateAgentData(userId);
 
-    const agent = agentManager.createAgent(userId, data!.agentName!, data?.workspace, data?.emoji);
-    console.log(`Created agent '${agent.name}' for user ${userId}`);
+    const agentType = data?.agentType || 'claude';
+    const agent = agentManager.createAgent(userId, data!.agentName!, data?.workspace, data?.emoji, agentType);
+    console.log(`Created ${agentType} agent '${agent.name}' for user ${userId}`);
 
     userContextManager.completeFlow(userId);
 
-    const agentEmoji = agent.emoji || '🤖';
-    await sendWhatsApp(userId, `✅ Agente ${agentEmoji} *${agent.name}* criado!`);
-    await sendButtons(userId, 'Enviar prompt agora?', [
-      { id: `newagent_prompt_${agent.id}`, title: 'Enviar prompt' },
+    const agentEmoji = agent.emoji || (agentType === 'bash' ? '🖥️' : '🤖');
+    const typeLabel = agentType === 'bash' ? '(Bash)' : '';
+    await sendWhatsApp(userId, `✅ Agente ${agentEmoji} *${agent.name}* ${typeLabel} criado!`);
+
+    const promptLabel = agentType === 'bash' ? 'Enviar comando' : 'Enviar prompt';
+    await sendButtons(userId, `${agentType === 'bash' ? 'Executar comando agora?' : 'Enviar prompt agora?'}`, [
+      { id: `newagent_prompt_${agent.id}`, title: promptLabel },
       { id: 'newagent_later', title: 'Depois' },
     ]);
 

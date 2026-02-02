@@ -548,14 +548,15 @@ function truncate(text: string, maxLength: number): string {
 export async function sendAgentsList(
   to: string,
   agents: Agent[],
-  messageId?: string
+  messageId?: string,
+  bashModeEnabled?: boolean
 ): Promise<void> {
   // WhatsApp limit: max 10 rows total across all sections
-  // Reserve 2 rows for management (create + delete)
-  // So max 8 agents can be shown
-  const maxAgents = Math.min(agents.length, 8);
+  // Reserve 3 rows for management (create + delete + bash mode)
+  // So max 7 agents can be shown
+  const maxAgents = Math.min(agents.length, 7);
   const agentRows = agents.slice(0, maxAgents).map((agent) => {
-    const agentEmoji = agent.emoji || '🤖';
+    const agentEmoji = agent.emoji || (agent.type === 'bash' ? '🖥️' : '🤖');
     const statusEmoji = STATUS_EMOJI[agent.status];
     const time = formatTimestamp(agent.lastActivity);
     // Show last action (statusDetails) instead of title
@@ -579,11 +580,17 @@ export async function sendAgentsList(
   }
 
   // Management section - condensed to fit WhatsApp's 10 row limit
+  const bashStatus = bashModeEnabled ? '🟢 ON' : '⚪ OFF';
   const managementRows = [
     {
       id: 'action_create_agent',
       title: '➕ Criar agente',
       description: 'Novo agente com emoji e workspace',
+    },
+    {
+      id: 'action_toggle_bash',
+      title: `🖥️ Modo Bash: ${bashStatus}`,
+      description: bashModeEnabled ? 'Clique para desativar' : 'Clique para ativar',
     },
   ];
 
@@ -1496,6 +1503,126 @@ export async function sendOutputActions(
                 description: 'Voltar para o histórico',
               },
             ],
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends agent type selector list for agent creation
+ */
+export async function sendAgentTypeSelector(
+  to: string,
+  messageId?: string
+): Promise<void> {
+  const options = [
+    {
+      id: 'agenttype_claude',
+      title: '🤖 Claude Code',
+      description: 'IA com ferramentas (bash, arquivos, web)',
+    },
+    {
+      id: 'agenttype_bash',
+      title: '🖥️ Bash',
+      description: 'Terminal direto, sem IA',
+    },
+  ];
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: {
+        text: '🔧 Tipo de agente\n\nEscolha o tipo do novo agente:',
+      },
+      action: {
+        button: 'Escolher tipo',
+        sections: [
+          {
+            title: 'Tipos',
+            rows: options,
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends bash mode status message with toggle button
+ */
+export async function sendBashModeStatus(
+  to: string,
+  isEnabled: boolean,
+  messageId?: string
+): Promise<void> {
+  const status = isEnabled ? 'ON' : 'OFF';
+  const emoji = isEnabled ? '🟢' : '⚪';
+  const action = isEnabled ? 'Desativar' : 'Ativar';
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: `🖥️ *Modo Bash: ${emoji} ${status}*\n\nQuando ativo, todas as mensagens são executadas como comandos no terminal.\n\nDica: Use \`$ comando\` para executar bash sem ativar o modo.`,
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: isEnabled ? 'bashmode_disable' : 'bashmode_enable',
+              title: action,
+            },
           },
         ],
       },
