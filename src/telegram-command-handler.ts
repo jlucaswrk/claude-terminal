@@ -7,6 +7,7 @@
 
 import type { Agent, ModelMode } from './types';
 import { AgentManager } from './agent-manager';
+import type { GroupOnboardingManager } from './group-onboarding-manager';
 
 /**
  * Result of routing a Telegram message
@@ -21,6 +22,7 @@ export type TelegramRouteResult =
   | { action: 'unknown_user'; chatId: number }
   | { action: 'ralph_loop'; agentId: string; task: string; chatId: number; userId: string }
   | { action: 'bash_command'; agentId: string; command: string; chatId: number; userId: string }
+  | { action: 'group_onboarding_locked'; chatId: number; userId: string; lockedByUserId: number }
   | { action: 'ignore' };
 
 /**
@@ -44,7 +46,10 @@ export type ChatType = 'private' | 'group' | 'supergroup' | 'channel';
  * that the caller can execute.
  */
 export class TelegramCommandHandler {
-  constructor(private readonly agentManager: AgentManager) {}
+  constructor(
+    private readonly agentManager: AgentManager,
+    private readonly groupOnboardingManager?: GroupOnboardingManager
+  ) {}
 
   /**
    * Route a message from a Telegram group chat
@@ -55,9 +60,35 @@ export class TelegramCommandHandler {
    * @param chatId - Telegram chat ID
    * @param userId - Internal user ID (phone number)
    * @param text - Message text
+   * @param telegramUserId - Telegram user ID (for onboarding lock checks)
    * @returns TelegramRouteResult indicating what action to take
    */
-  routeGroupMessage(chatId: number, userId: string, text: string): TelegramRouteResult {
+  routeGroupMessage(chatId: number, userId: string, text: string, telegramUserId?: number): TelegramRouteResult {
+    // Check for active group onboarding before routing
+    if (this.groupOnboardingManager && telegramUserId !== undefined) {
+      if (this.groupOnboardingManager.hasActiveOnboarding(chatId)) {
+        // Check if message is from the user who has the lock
+        if (this.groupOnboardingManager.isLockedByUser(chatId, telegramUserId)) {
+          // Same user - treat as flow input
+          return {
+            action: 'flow_input',
+            text,
+            chatId,
+            userId,
+          };
+        } else {
+          // Different user - group is locked
+          const lockedByUserId = this.groupOnboardingManager.getLockedByUserId(chatId)!;
+          return {
+            action: 'group_onboarding_locked',
+            chatId,
+            userId,
+            lockedByUserId,
+          };
+        }
+      }
+    }
+
     // Check if this is a command (starts with /)
     if (text.startsWith('/')) {
       const [command, ...argParts] = text.split(' ');

@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { TelegramCommandHandler, type TelegramRouteResult } from './telegram-command-handler';
 import { AgentManager } from './agent-manager';
+import { GroupOnboardingManager } from './group-onboarding-manager';
 import { PersistenceService } from './persistence';
 import { existsSync, unlinkSync } from 'fs';
 import type { Agent } from './types';
@@ -218,6 +219,129 @@ describe('TelegramCommandHandler', () => {
         expect(result.model).toBe('sonnet');
         expect(result.text).toBe('hello');
       }
+    });
+  });
+
+  describe('routeGroupMessage with onboarding locks', () => {
+    let groupOnboardingManager: GroupOnboardingManager;
+    let handlerWithOnboarding: TelegramCommandHandler;
+
+    beforeEach(() => {
+      groupOnboardingManager = new GroupOnboardingManager();
+      handlerWithOnboarding = new TelegramCommandHandler(agentManager, groupOnboardingManager);
+    });
+
+    test('should return flow_input when same user has onboarding lock', () => {
+      const chatId = 99999;
+      const telegramUserId = 67890;
+
+      // Start onboarding - this user has the lock
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+
+      const result = handlerWithOnboarding.routeGroupMessage(chatId, 'user123', 'some text', telegramUserId);
+
+      expect(result.action).toBe('flow_input');
+      if (result.action === 'flow_input') {
+        expect(result.text).toBe('some text');
+        expect(result.chatId).toBe(chatId);
+        expect(result.userId).toBe('user123');
+      }
+    });
+
+    test('should return group_onboarding_locked when different user sends message', () => {
+      const chatId = 99999;
+      const lockOwnerUserId = 11111;
+      const otherUserId = 22222;
+
+      // Start onboarding with user 11111
+      groupOnboardingManager.startOnboarding(chatId, lockOwnerUserId, 'awaiting_emoji');
+
+      // Different user tries to send message
+      const result = handlerWithOnboarding.routeGroupMessage(chatId, 'user123', 'some text', otherUserId);
+
+      expect(result.action).toBe('group_onboarding_locked');
+      if (result.action === 'group_onboarding_locked') {
+        expect(result.chatId).toBe(chatId);
+        expect(result.userId).toBe('user123');
+        expect(result.lockedByUserId).toBe(lockOwnerUserId);
+      }
+    });
+
+    test('should route normally when no active onboarding', () => {
+      // No onboarding started - should route to orphaned_group for unlinked group
+      const result = handlerWithOnboarding.routeGroupMessage(99999, 'user123', 'hello', 67890);
+      expect(result.action).toBe('orphaned_group');
+    });
+
+    test('should route normally when no telegramUserId provided', () => {
+      const chatId = 99999;
+
+      // Start onboarding
+      groupOnboardingManager.startOnboarding(chatId, 67890, 'awaiting_emoji');
+
+      // Call without telegramUserId - should use original behavior
+      const result = handlerWithOnboarding.routeGroupMessage(chatId, 'user123', 'hello');
+      expect(result.action).toBe('orphaned_group');
+    });
+
+    test('should route normally without GroupOnboardingManager', () => {
+      // Handler without GroupOnboardingManager should use original behavior
+      const result = handler.routeGroupMessage(99999, 'user123', 'hello', 67890);
+      expect(result.action).toBe('orphaned_group');
+    });
+
+    test('should check onboarding lock for linked groups too', () => {
+      const chatId = 12345; // Already linked to testAgent in beforeEach
+      const telegramUserId = 67890;
+
+      // Start onboarding even though agent is linked
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_model_mode');
+
+      // Same user - should return flow_input (not prompt)
+      const result = handlerWithOnboarding.routeGroupMessage(chatId, 'user123', 'hello', telegramUserId);
+      expect(result.action).toBe('flow_input');
+    });
+
+    test('should return group_onboarding_locked for linked group with different user', () => {
+      const chatId = 12345; // Already linked to testAgent
+      const lockOwnerUserId = 11111;
+      const otherUserId = 22222;
+
+      // Start onboarding with user 11111
+      groupOnboardingManager.startOnboarding(chatId, lockOwnerUserId, 'awaiting_model_mode');
+
+      // Different user tries to send message
+      const result = handlerWithOnboarding.routeGroupMessage(chatId, 'user123', 'hello', otherUserId);
+      expect(result.action).toBe('group_onboarding_locked');
+    });
+
+    test('should allow commands during onboarding from same user', () => {
+      const chatId = 12345;
+      const telegramUserId = 67890;
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+
+      // Commands should still be detected - but since onboarding check happens first,
+      // it returns flow_input for all text from same user during onboarding
+      const result = handlerWithOnboarding.routeGroupMessage(chatId, 'user123', '/status', telegramUserId);
+
+      // Even commands return flow_input during onboarding for the lock owner
+      expect(result.action).toBe('flow_input');
+      if (result.action === 'flow_input') {
+        expect(result.text).toBe('/status');
+      }
+    });
+
+    test('should block commands from different user during onboarding', () => {
+      const chatId = 12345;
+      const lockOwnerUserId = 11111;
+      const otherUserId = 22222;
+
+      groupOnboardingManager.startOnboarding(chatId, lockOwnerUserId, 'awaiting_emoji');
+
+      // Different user tries to send a command
+      const result = handlerWithOnboarding.routeGroupMessage(chatId, 'user123', '/status', otherUserId);
+      expect(result.action).toBe('group_onboarding_locked');
     });
   });
 

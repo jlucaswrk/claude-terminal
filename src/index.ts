@@ -216,7 +216,7 @@ const queueManager = new QueueManager(
 );
 
 // Telegram command handler (stateless router)
-const telegramCommandHandler = new TelegramCommandHandler(agentManager);
+const telegramCommandHandler = new TelegramCommandHandler(agentManager, groupOnboardingManager);
 
 // Ralph loop manager (for autonomous Ralph mode execution)
 const ralphLoopManager = new RalphLoopManager(semaphore, agentManager, persistenceService, terminal);
@@ -695,7 +695,7 @@ async function handleTelegramMessage(message: any): Promise<void> {
   // Route based on chat type using TelegramCommandHandler
   if (isGroup) {
     // Group message routing
-    const route = telegramCommandHandler.routeGroupMessage(chatId, userId, text);
+    const route = telegramCommandHandler.routeGroupMessage(chatId, userId, text, from.id);
 
     switch (route.action) {
       case 'command':
@@ -733,6 +733,17 @@ async function handleTelegramMessage(message: any): Promise<void> {
       case 'bash_command':
         // Handle bash command for bash agents
         await handleTelegramBashCommand(chatId, userId, route.agentId, route.command);
+        return;
+
+      case 'group_onboarding_locked':
+        // Another user is configuring this group - silently ignore
+        // We cannot use answerCallbackQuery here since this is a plain message (no callback context)
+        // Posting to chat would show warning to everyone; silent ignore is the best UX
+        return;
+
+      case 'flow_input':
+        // Same user during onboarding but not at a text-input step
+        // Silently ignore (they should use buttons)
         return;
 
       case 'orphaned_group':

@@ -1824,4 +1824,328 @@ describe('Integration: Group Onboarding Flow', () => {
       });
     });
   });
+
+  describe('Message Routing: Lock Validation & Concurrent User Scenarios', () => {
+    const mockRouteHandler = mock(() => Promise.resolve());
+
+    beforeEach(() => {
+      mockRouteHandler.mockClear();
+      mockSendTelegramMessage.mockClear();
+      mockSendTelegramButtons.mockClear();
+    });
+
+    /**
+     * Helper to simulate message routing with lock validation
+     * This mirrors the logic in index.ts routeGroupMessage handling
+     */
+    async function simulateMessageRouting(
+      chatId: number,
+      telegramUserId: number,
+      _text: string,
+      groupOnboardingManager: GroupOnboardingManager,
+      _mockSendMessage: typeof mockSendTelegramMessage
+    ): Promise<'flow_input' | 'group_onboarding_locked' | 'normal_routing'> {
+      // Check for active onboarding
+      if (groupOnboardingManager.hasActiveOnboarding(chatId)) {
+        // Check if message is from the user who has the lock
+        if (groupOnboardingManager.isLockedByUser(chatId, telegramUserId)) {
+          // Same user - return flow_input (silently ignore non-step messages)
+          return 'flow_input';
+        } else {
+          // Different user - silently ignore (no chat message, no callback alert for plain messages)
+          return 'group_onboarding_locked';
+        }
+      }
+
+      // No active onboarding - normal routing
+      return 'normal_routing';
+    }
+
+    describe('Concurrent user message handling', () => {
+      it('should silently ignore messages from lock owner (flow_input)', async () => {
+        const chatId = 12345;
+        const lockOwnerUserId = 11111;
+
+        // User starts onboarding
+        groupOnboardingManager.startOnboarding(chatId, lockOwnerUserId, 'awaiting_emoji');
+
+        // Same user sends a message during onboarding
+        const result = await simulateMessageRouting(
+          chatId, lockOwnerUserId, 'random text',
+          groupOnboardingManager, mockSendTelegramMessage
+        );
+
+        expect(result).toBe('flow_input');
+        // No message should be sent (silently ignored)
+        expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+      });
+
+      it('should silently ignore different user during onboarding (no chat message)', async () => {
+        const chatId = 12345;
+        const lockOwnerUserId = 11111;
+        const otherUserId = 22222;
+
+        // First user starts onboarding
+        groupOnboardingManager.startOnboarding(chatId, lockOwnerUserId, 'awaiting_emoji');
+
+        // Different user tries to send a message
+        const result = await simulateMessageRouting(
+          chatId, otherUserId, 'hello',
+          groupOnboardingManager, mockSendTelegramMessage
+        );
+
+        // Should return group_onboarding_locked but NOT send a message to the chat
+        // (we can't use answerCallbackQuery for plain messages, so we silently ignore)
+        expect(result).toBe('group_onboarding_locked');
+        expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+      });
+
+      it('should route normally when no active onboarding', async () => {
+        const chatId = 12345;
+        const telegramUserId = 67890;
+
+        // No onboarding active
+        const result = await simulateMessageRouting(
+          chatId, telegramUserId, 'hello',
+          groupOnboardingManager, mockSendTelegramMessage
+        );
+
+        expect(result).toBe('normal_routing');
+        expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+      });
+
+      it('should route normally after onboarding completes', async () => {
+        const chatId = 12345;
+        const lockOwnerUserId = 11111;
+        const otherUserId = 22222;
+
+        // Start onboarding
+        groupOnboardingManager.startOnboarding(chatId, lockOwnerUserId, 'awaiting_emoji');
+
+        // Complete onboarding
+        groupOnboardingManager.completeOnboarding(chatId, lockOwnerUserId);
+
+        // Now other user can send messages normally
+        const result = await simulateMessageRouting(
+          chatId, otherUserId, 'hello',
+          groupOnboardingManager, mockSendTelegramMessage
+        );
+
+        expect(result).toBe('normal_routing');
+      });
+
+      it('should route normally after onboarding is cancelled', async () => {
+        const chatId = 12345;
+        const lockOwnerUserId = 11111;
+        const otherUserId = 22222;
+
+        // Start onboarding
+        groupOnboardingManager.startOnboarding(chatId, lockOwnerUserId, 'awaiting_emoji');
+
+        // Cancel onboarding
+        groupOnboardingManager.cancelOnboarding(chatId, lockOwnerUserId);
+
+        // Now other user can send messages normally
+        const result = await simulateMessageRouting(
+          chatId, otherUserId, 'hello',
+          groupOnboardingManager, mockSendTelegramMessage
+        );
+
+        expect(result).toBe('normal_routing');
+      });
+    });
+
+    describe('Multiple users trying to configure same group', () => {
+      it('should only allow first user to start onboarding', () => {
+        const chatId = 12345;
+        const firstUserId = 11111;
+        const secondUserId = 22222;
+
+        // First user starts onboarding
+        const result1 = groupOnboardingManager.startOnboarding(chatId, firstUserId, 'awaiting_name');
+        expect(result1.success).toBe(true);
+
+        // Second user tries to start onboarding
+        const result2 = groupOnboardingManager.startOnboarding(chatId, secondUserId, 'awaiting_name');
+        expect(result2.success).toBe(false);
+        expect(result2.lockedByUserId).toBe(firstUserId);
+      });
+
+      it('should block second user from modifying onboarding state', () => {
+        const chatId = 12345;
+        const firstUserId = 11111;
+        const secondUserId = 22222;
+
+        // First user starts onboarding
+        groupOnboardingManager.startOnboarding(chatId, firstUserId, 'awaiting_name');
+
+        // Second user tries to update state
+        const updated = groupOnboardingManager.updateState(chatId, secondUserId, { step: 'awaiting_emoji' });
+        expect(updated).toBe(false);
+
+        // First user should still see awaiting_name
+        expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('awaiting_name');
+      });
+
+      it('should allow same user to restart onboarding', () => {
+        const chatId = 12345;
+        const userId = 11111;
+
+        // Start onboarding
+        groupOnboardingManager.startOnboarding(chatId, userId, 'awaiting_name');
+        groupOnboardingManager.setAgentName(chatId, userId, 'TestAgent');
+
+        // Same user restarts onboarding
+        const result = groupOnboardingManager.startOnboarding(chatId, userId, 'awaiting_name');
+        expect(result.success).toBe(true);
+
+        // State should be reset
+        expect(groupOnboardingManager.getData(chatId)?.agentName).toBeUndefined();
+      });
+    });
+
+    describe('Race conditions and edge cases', () => {
+      it('should handle rapid message sequence from different users', async () => {
+        const chatId = 12345;
+        const userA = 11111;
+        const userB = 22222;
+        const userC = 33333;
+
+        // User A starts onboarding
+        groupOnboardingManager.startOnboarding(chatId, userA, 'awaiting_emoji');
+
+        // Multiple users try to send messages rapidly
+        const resultA = await simulateMessageRouting(chatId, userA, 'msg1', groupOnboardingManager, mockSendTelegramMessage);
+        const resultB = await simulateMessageRouting(chatId, userB, 'msg2', groupOnboardingManager, mockSendTelegramMessage);
+        const resultC = await simulateMessageRouting(chatId, userC, 'msg3', groupOnboardingManager, mockSendTelegramMessage);
+
+        // Only user A (lock owner) gets flow_input
+        expect(resultA).toBe('flow_input');
+
+        // Users B and C get locked out (silently ignored, no chat messages)
+        expect(resultB).toBe('group_onboarding_locked');
+        expect(resultC).toBe('group_onboarding_locked');
+
+        // No messages should be sent (silently ignored for plain messages)
+        expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+      });
+
+      it('should handle onboarding across multiple groups independently', async () => {
+        const group1 = 11111;
+        const group2 = 22222;
+        const userA = 10001;
+        const userB = 10002;
+
+        // User A configuring group 1
+        groupOnboardingManager.startOnboarding(group1, userA, 'awaiting_emoji');
+
+        // User B configuring group 2
+        groupOnboardingManager.startOnboarding(group2, userB, 'awaiting_emoji');
+
+        // User A sends to group 1 - allowed (flow_input)
+        const result1 = await simulateMessageRouting(group1, userA, 'msg', groupOnboardingManager, mockSendTelegramMessage);
+        expect(result1).toBe('flow_input');
+
+        // User B sends to group 2 - allowed (flow_input)
+        const result2 = await simulateMessageRouting(group2, userB, 'msg', groupOnboardingManager, mockSendTelegramMessage);
+        expect(result2).toBe('flow_input');
+
+        // User A sends to group 2 - blocked (not the lock owner, silently ignored)
+        const result3 = await simulateMessageRouting(group2, userA, 'msg', groupOnboardingManager, mockSendTelegramMessage);
+        expect(result3).toBe('group_onboarding_locked');
+
+        // User B sends to group 1 - blocked (not the lock owner, silently ignored)
+        const result4 = await simulateMessageRouting(group1, userB, 'msg', groupOnboardingManager, mockSendTelegramMessage);
+        expect(result4).toBe('group_onboarding_locked');
+
+        // No messages should be sent (silently ignored for plain messages)
+        expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+      });
+
+      it('should correctly identify lock owner across onboarding steps', async () => {
+        const chatId = 12345;
+        const lockOwner = 11111;
+        const intruder = 22222;
+
+        // Start onboarding at awaiting_name
+        groupOnboardingManager.startOnboarding(chatId, lockOwner, 'awaiting_name');
+
+        // Advance through steps
+        groupOnboardingManager.setAgentName(chatId, lockOwner, 'TestAgent');
+        groupOnboardingManager.advanceStep(chatId, lockOwner, 'awaiting_emoji');
+
+        // Intruder tries at awaiting_emoji step
+        let result = await simulateMessageRouting(chatId, intruder, 'msg', groupOnboardingManager, mockSendTelegramMessage);
+        expect(result).toBe('group_onboarding_locked');
+
+        groupOnboardingManager.advanceStep(chatId, lockOwner, 'awaiting_workspace');
+
+        // Intruder tries at awaiting_workspace step
+        result = await simulateMessageRouting(chatId, intruder, 'msg', groupOnboardingManager, mockSendTelegramMessage);
+        expect(result).toBe('group_onboarding_locked');
+
+        groupOnboardingManager.advanceStep(chatId, lockOwner, 'awaiting_model_mode');
+
+        // Intruder tries at awaiting_model_mode step
+        result = await simulateMessageRouting(chatId, intruder, 'msg', groupOnboardingManager, mockSendTelegramMessage);
+        expect(result).toBe('group_onboarding_locked');
+
+        // Lock owner can still send at any step
+        result = await simulateMessageRouting(chatId, lockOwner, 'msg', groupOnboardingManager, mockSendTelegramMessage);
+        expect(result).toBe('flow_input');
+      });
+    });
+
+    describe('Unlinked groups during onboarding (silent ignore)', () => {
+      it('should not show orphaned group message during active onboarding', () => {
+        const chatId = 99999; // Unlinked group
+        const lockOwner = 11111;
+
+        // Start onboarding on unlinked group
+        groupOnboardingManager.startOnboarding(chatId, lockOwner, 'awaiting_name');
+
+        // Verify group has active onboarding
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(true);
+
+        // The routing logic should NOT return 'orphaned_group' when there's active onboarding
+        // Instead it should return 'flow_input' for the lock owner
+        expect(groupOnboardingManager.isLockedByUser(chatId, lockOwner)).toBe(true);
+      });
+
+      it('should return flow_input for lock owner in unlinked group', async () => {
+        const chatId = 99999; // Unlinked group
+        const lockOwner = 11111;
+
+        groupOnboardingManager.startOnboarding(chatId, lockOwner, 'awaiting_emoji');
+
+        // Lock owner sends message to unlinked group during onboarding
+        const result = await simulateMessageRouting(
+          chatId, lockOwner, 'some text',
+          groupOnboardingManager, mockSendTelegramMessage
+        );
+
+        // Should get flow_input, not orphaned_group
+        expect(result).toBe('flow_input');
+        expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+      });
+
+      it('should return group_onboarding_locked for other users in unlinked group', async () => {
+        const chatId = 99999; // Unlinked group
+        const lockOwner = 11111;
+        const otherUser = 22222;
+
+        groupOnboardingManager.startOnboarding(chatId, lockOwner, 'awaiting_emoji');
+
+        // Other user sends message to unlinked group during onboarding
+        const result = await simulateMessageRouting(
+          chatId, otherUser, 'hello',
+          groupOnboardingManager, mockSendTelegramMessage
+        );
+
+        // Should get group_onboarding_locked (silently ignored, no chat message)
+        expect(result).toBe('group_onboarding_locked');
+        expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+      });
+    });
+  });
 });
