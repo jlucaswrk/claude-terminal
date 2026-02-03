@@ -1,5 +1,6 @@
-import { existsSync, copyFileSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, copyFileSync, readFileSync, readdirSync, mkdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
+import { homedir } from 'os';
 import type {
   Agent,
   Output,
@@ -8,11 +9,16 @@ import type {
   SerializedAgentsState,
   SerializedAgent,
   SerializedOutput,
+  RalphLoopState,
+  RalphIteration,
+  SerializedRalphLoopState,
+  SerializedRalphIteration,
 } from './types';
 import { DEFAULTS } from './types';
 
 const STATE_FILE = './agents-state.json';
 const BACKUP_FILE = './agents-state.json.bak';
+const LOOPS_DIR = join(homedir(), '.claude-terminal', 'loops');
 
 /**
  * PersistenceService handles saving and loading the agents state to/from JSON
@@ -26,10 +32,22 @@ const BACKUP_FILE = './agents-state.json.bak';
 export class PersistenceService {
   private readonly stateFile: string;
   private readonly backupFile: string;
+  private readonly loopsDir: string;
 
-  constructor(stateFile: string = STATE_FILE) {
+  constructor(stateFile: string = STATE_FILE, loopsDir: string = LOOPS_DIR) {
     this.stateFile = stateFile;
     this.backupFile = stateFile + '.bak';
+    this.loopsDir = loopsDir;
+    this.ensureLoopsDir();
+  }
+
+  /**
+   * Ensure the loops directory exists
+   */
+  private ensureLoopsDir(): void {
+    if (!existsSync(this.loopsDir)) {
+      mkdirSync(this.loopsDir, { recursive: true });
+    }
   }
 
   /**
@@ -173,7 +191,7 @@ export class PersistenceService {
     }
 
     // Status must be valid
-    if (!['idle', 'processing', 'error'].includes(a.status!)) {
+    if (!['idle', 'processing', 'error', 'ralph-loop', 'ralph-paused'].includes(a.status!)) {
       return false;
     }
 
@@ -202,9 +220,11 @@ export class PersistenceService {
         userId: agent.userId,
         name: agent.name,
         type: agent.type,
+        mode: agent.mode,
         emoji: agent.emoji,
         workspace: agent.workspace,
         sessionId: agent.sessionId,
+        currentLoopId: agent.currentLoopId,
         title: agent.title,
         status: agent.status,
         statusDetails: agent.statusDetails,
@@ -213,12 +233,15 @@ export class PersistenceService {
         messageCount: agent.messageCount,
         outputs: agent.outputs.map((output): SerializedOutput => ({
           id: output.id,
+          type: output.type,
           summary: output.summary,
           prompt: output.prompt,
           response: output.response,
           model: output.model,
           status: output.status,
           timestamp: output.timestamp.toISOString(),
+          loopId: output.loopId,
+          iterationCount: output.iterationCount,
         })),
         createdAt: agent.createdAt.toISOString(),
       })),
@@ -238,9 +261,12 @@ export class PersistenceService {
         name: agent.name,
         // Backward compatibility: default to 'claude' for old agents without type
         type: agent.type || 'claude',
+        // Backward compatibility: default to 'conversational' for old agents without mode
+        mode: agent.mode || 'conversational',
         emoji: agent.emoji,
         workspace: agent.workspace,
         sessionId: agent.sessionId,
+        currentLoopId: agent.currentLoopId,
         title: agent.title,
         status: agent.status,
         statusDetails: agent.statusDetails,
@@ -249,12 +275,16 @@ export class PersistenceService {
         messageCount: agent.messageCount,
         outputs: agent.outputs.map((output): Output => ({
           id: output.id,
+          // Backward compatibility: default to 'standard' for legacy outputs without type
+          type: output.type || 'standard',
           summary: output.summary,
           prompt: output.prompt,
           response: output.response,
           model: output.model,
           status: output.status,
           timestamp: new Date(output.timestamp),
+          loopId: output.loopId,
+          iterationCount: output.iterationCount,
         })),
         createdAt: new Date(agent.createdAt),
       })),
@@ -314,5 +344,318 @@ export class PersistenceService {
    */
   getBackupFilePath(): string {
     return this.backupFile;
+  }
+
+  /**
+   * Get the path to the loops directory
+   */
+  getLoopsDir(): string {
+    return this.loopsDir;
+  }
+
+  /**
+   * Get the file path for a specific loop
+   */
+  private getLoopFilePath(loopId: string): string {
+    return join(this.loopsDir, `${loopId}.json`);
+  }
+
+  /**
+   * Save a loop state to disk
+   */
+  saveLoop(loopState: RalphLoopState): void {
+    this.ensureLoopsDir();
+    const serialized = this.serializeLoop(loopState);
+    const json = JSON.stringify(serialized, null, 2);
+    const filePath = this.getLoopFilePath(loopState.id);
+    Bun.write(filePath, json);
+  }
+
+  /**
+   * Load a loop state from disk
+   * Returns null if file doesn't exist or is invalid
+   */
+  loadLoop(loopId: string): RalphLoopState | null {
+    const filePath = this.getLoopFilePath(loopId);
+
+    if (!existsSync(filePath)) {
+      return null;
+    }
+
+    try {
+      const content = readFileSync(filePath, 'utf-8');
+      const data = JSON.parse(content) as SerializedRalphLoopState;
+
+      if (!this.validateLoopSchema(data)) {
+        console.error(`Invalid loop schema in ${filePath}`);
+        return null;
+      }
+
+      return this.deserializeLoop(data);
+    } catch (err) {
+      console.error(`Failed to load loop ${loopId}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Delete a loop file
+   */
+  deleteLoop(loopId: string): boolean {
+    const filePath = this.getLoopFilePath(loopId);
+
+    if (!existsSync(filePath)) {
+      return false;
+    }
+
+    try {
+      unlinkSync(filePath);
+      return true;
+    } catch (err) {
+      console.error(`Failed to delete loop ${loopId}:`, err);
+      return false;
+    }
+  }
+
+  /**
+   * List all loop IDs in the loops directory
+   */
+  listLoops(): string[] {
+    if (!existsSync(this.loopsDir)) {
+      return [];
+    }
+
+    try {
+      const files = readdirSync(this.loopsDir);
+      return files
+        .filter(f => f.endsWith('.json'))
+        .map(f => f.replace('.json', ''));
+    } catch (err) {
+      console.error('Failed to list loops:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Load all loops from disk
+   */
+  loadAllLoops(): RalphLoopState[] {
+    const loopIds = this.listLoops();
+    const loops: RalphLoopState[] = [];
+
+    for (const loopId of loopIds) {
+      const loop = this.loadLoop(loopId);
+      if (loop) {
+        loops.push(loop);
+      }
+    }
+
+    return loops;
+  }
+
+  /**
+   * Detect and mark interrupted loops (status "running" when process starts)
+   * Returns the number of loops marked as interrupted
+   */
+  recoverInterruptedLoops(): number {
+    const loops = this.loadAllLoops();
+    let interruptedCount = 0;
+
+    for (const loop of loops) {
+      if (loop.status === 'running') {
+        // Mark as interrupted and save
+        const interruptedLoop: RalphLoopState = {
+          ...loop,
+          status: 'interrupted',
+        };
+        this.saveLoop(interruptedLoop);
+        interruptedCount++;
+        console.log(`Marked loop ${loop.id} as interrupted (was running)`);
+      }
+    }
+
+    return interruptedCount;
+  }
+
+  /**
+   * Clean up orphaned loop files (loops whose agent no longer exists)
+   * Returns the number of loops deleted
+   */
+  cleanupOrphanedLoops(existingAgentIds: string[]): number {
+    const loops = this.loadAllLoops();
+    let deletedCount = 0;
+    const agentIdSet = new Set(existingAgentIds);
+
+    for (const loop of loops) {
+      // Only clean up completed/failed/cancelled/blocked loops with non-existent agents
+      const isTerminalState = ['completed', 'failed', 'cancelled', 'blocked'].includes(loop.status);
+      const agentExists = agentIdSet.has(loop.agentId);
+
+      if (!agentExists && isTerminalState) {
+        if (this.deleteLoop(loop.id)) {
+          deletedCount++;
+          console.log(`Deleted orphaned loop ${loop.id} (agent ${loop.agentId} no longer exists)`);
+        }
+      }
+    }
+
+    return deletedCount;
+  }
+
+  /**
+   * Get loops for a specific agent
+   */
+  getLoopsForAgent(agentId: string): RalphLoopState[] {
+    return this.loadAllLoops().filter(loop => loop.agentId === agentId);
+  }
+
+  /**
+   * Get active loops (running or paused)
+   */
+  getActiveLoops(): RalphLoopState[] {
+    return this.loadAllLoops().filter(loop =>
+      loop.status === 'running' || loop.status === 'paused'
+    );
+  }
+
+  /**
+   * Validate loop state schema
+   */
+  private validateLoopSchema(data: unknown): data is SerializedRalphLoopState {
+    if (!data || typeof data !== 'object') {
+      return false;
+    }
+
+    const loop = data as Partial<SerializedRalphLoopState>;
+
+    // Required string fields
+    const requiredStrings = ['id', 'agentId', 'userId', 'status', 'task', 'currentModel', 'startTime'];
+    for (const field of requiredStrings) {
+      if (typeof (loop as Record<string, unknown>)[field] !== 'string') {
+        return false;
+      }
+    }
+
+    // Required number fields
+    if (typeof loop.currentIteration !== 'number' || typeof loop.maxIterations !== 'number') {
+      return false;
+    }
+
+    // Status must be valid
+    const validStatuses = ['running', 'paused', 'completed', 'failed', 'cancelled', 'interrupted', 'blocked'];
+    if (!validStatuses.includes(loop.status!)) {
+      return false;
+    }
+
+    // Model must be valid
+    const validModels = ['haiku', 'sonnet', 'opus'];
+    if (!validModels.includes(loop.currentModel!)) {
+      return false;
+    }
+
+    // Iterations must be array
+    if (!Array.isArray(loop.iterations)) {
+      return false;
+    }
+
+    // Validate each iteration
+    for (const iteration of loop.iterations) {
+      if (!this.validateIterationSchema(iteration)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Validate a single iteration object
+   */
+  private validateIterationSchema(iteration: unknown): iteration is SerializedRalphIteration {
+    if (!iteration || typeof iteration !== 'object') {
+      return false;
+    }
+
+    const iter = iteration as Partial<SerializedRalphIteration>;
+
+    // Required number fields
+    if (typeof iter.number !== 'number' || typeof iter.duration !== 'number') {
+      return false;
+    }
+
+    // Required string fields
+    const requiredStrings = ['model', 'action', 'prompt', 'response', 'timestamp'];
+    for (const field of requiredStrings) {
+      if (typeof (iter as Record<string, unknown>)[field] !== 'string') {
+        return false;
+      }
+    }
+
+    // Boolean field
+    if (typeof iter.completionPromiseFound !== 'boolean') {
+      return false;
+    }
+
+    // Model must be valid
+    const validModels = ['haiku', 'sonnet', 'opus'];
+    if (!validModels.includes(iter.model!)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Serialize loop state for JSON storage (convert Dates to ISO strings)
+   */
+  private serializeLoop(loop: RalphLoopState): SerializedRalphLoopState {
+    return {
+      id: loop.id,
+      agentId: loop.agentId,
+      userId: loop.userId,
+      status: loop.status as SerializedRalphLoopState['status'],
+      task: loop.task,
+      currentIteration: loop.currentIteration,
+      maxIterations: loop.maxIterations,
+      currentModel: loop.currentModel,
+      startTime: loop.startTime.toISOString(),
+      iterations: loop.iterations.map((iter): SerializedRalphIteration => ({
+        number: iter.number,
+        model: iter.model,
+        action: iter.action,
+        prompt: iter.prompt,
+        response: iter.response,
+        completionPromiseFound: iter.completionPromiseFound,
+        timestamp: iter.timestamp.toISOString(),
+        duration: iter.duration,
+      })),
+    };
+  }
+
+  /**
+   * Deserialize loop state from JSON (convert ISO strings to Dates)
+   */
+  private deserializeLoop(data: SerializedRalphLoopState): RalphLoopState {
+    return {
+      id: data.id,
+      agentId: data.agentId,
+      userId: data.userId,
+      status: data.status,
+      task: data.task,
+      currentIteration: data.currentIteration,
+      maxIterations: data.maxIterations,
+      currentModel: data.currentModel,
+      startTime: new Date(data.startTime),
+      iterations: data.iterations.map((iter): RalphIteration => ({
+        number: iter.number,
+        model: iter.model,
+        action: iter.action,
+        prompt: iter.prompt,
+        response: iter.response,
+        completionPromiseFound: iter.completionPromiseFound,
+        timestamp: new Date(iter.timestamp),
+        duration: iter.duration,
+      })),
+    };
   }
 }

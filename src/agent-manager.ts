@@ -1,6 +1,6 @@
 import { existsSync } from 'fs';
 import { PersistenceService } from './persistence';
-import type { Agent, AgentType, Output, SystemConfig } from './types';
+import type { Agent, AgentType, Output, OutputType, SystemConfig } from './types';
 import { DEFAULTS, PRIORITY_VALUES } from './types';
 
 /**
@@ -50,6 +50,13 @@ export class AgentManager {
         // Rebuild agentsByUser from the persisted userId field
         this.trackAgentForUser(agent.userId, agent.id);
       }
+
+      // Clean up orphaned loop files on startup
+      const agentIds = Array.from(this.agents.keys());
+      const deletedCount = persistenceService.cleanupOrphanedLoops(agentIds);
+      if (deletedCount > 0) {
+        console.log(`Cleaned up ${deletedCount} orphaned loop file(s) on startup`);
+      }
     }
   }
 
@@ -80,6 +87,7 @@ export class AgentManager {
       userId,
       name: name.trim(),
       type,
+      mode: 'conversational',
       emoji,
       workspace,
       title: '',
@@ -101,11 +109,26 @@ export class AgentManager {
 
   /**
    * Delete an agent
+   * @throws AgentValidationError if agent has an actively running Ralph loop (must pause first)
    */
   deleteAgent(agentId: string): boolean {
     const agent = this.agents.get(agentId);
     if (!agent) {
       return false;
+    }
+
+    // Prevent deleting agents with actively running Ralph loops (must pause/cancel first)
+    if (agent.mode === 'ralph' && agent.currentLoopId) {
+      if (agent.status === 'ralph-loop') {
+        throw new AgentValidationError(
+          `Cannot delete agent with active Ralph loop. Pause or cancel the loop first.`
+        );
+      }
+      // If paused, clean up the loop file before deletion
+      if (agent.status === 'ralph-paused') {
+        this.persistenceService.deleteLoop(agent.currentLoopId);
+        console.log(`Deleted paused loop ${agent.currentLoopId} before agent deletion`);
+      }
     }
 
     // Remove from user tracking
@@ -121,6 +144,14 @@ export class AgentManager {
 
     this.agents.delete(agentId);
     this.persist();
+
+    // Clean up orphaned loop files for this deleted agent
+    const remainingAgentIds = Array.from(this.agents.keys());
+    const deletedCount = this.persistenceService.cleanupOrphanedLoops(remainingAgentIds);
+    if (deletedCount > 0) {
+      console.log(`Cleaned up ${deletedCount} orphaned loop file(s) after agent deletion`);
+    }
+
     return true;
   }
 
@@ -157,6 +188,8 @@ export class AgentManager {
 
   /**
    * Update agent status
+   * Supports standard statuses: 'idle', 'processing', 'error'
+   * Supports Ralph statuses: 'ralph-loop', 'ralph-paused'
    */
   updateAgentStatus(agentId: string, status: Agent['status'], details: string): void {
     const agent = this.agents.get(agentId);
@@ -164,8 +197,141 @@ export class AgentManager {
       throw new AgentValidationError(`Agent not found: ${agentId}`);
     }
 
+    // Validate Ralph statuses are only used for Ralph-mode agents
+    if ((status === 'ralph-loop' || status === 'ralph-paused') && agent.mode !== 'ralph') {
+      throw new AgentValidationError(
+        `Cannot set status '${status}' on non-Ralph agent. Promote to Ralph mode first.`
+      );
+    }
+
     agent.status = status;
     agent.statusDetails = details;
+    agent.lastActivity = new Date();
+    this.persist();
+  }
+
+  /**
+   * Promote an agent to Ralph mode
+   * Sets mode='ralph', currentLoopId, and status='ralph-paused'
+   * @throws AgentValidationError if agent not found or already in Ralph mode with active loop
+   */
+  promoteToRalph(agentId: string, loopId: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new AgentValidationError(`Agent not found: ${agentId}`);
+    }
+
+    // Check if agent already has an active loop
+    if (agent.mode === 'ralph' && agent.currentLoopId && agent.status === 'ralph-loop') {
+      throw new AgentValidationError(
+        `Agent already has an active Ralph loop. Pause or cancel it first.`
+      );
+    }
+
+    agent.mode = 'ralph';
+    agent.currentLoopId = loopId;
+    agent.status = 'ralph-paused';
+    agent.statusDetails = 'Loop criado, aguardando execução';
+    agent.lastActivity = new Date();
+    this.persist();
+  }
+
+  /**
+   * Demote an agent from Ralph mode to conversational
+   * Clears mode, currentLoopId, and resets status to 'idle'
+   * @throws AgentValidationError if agent not found or has an actively running loop
+   */
+  demoteToConversational(agentId: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new AgentValidationError(`Agent not found: ${agentId}`);
+    }
+
+    // Prevent demotion if loop is actively running
+    if (agent.status === 'ralph-loop') {
+      throw new AgentValidationError(
+        `Cannot demote agent with active Ralph loop. Pause or cancel the loop first.`
+      );
+    }
+
+    // If agent has a paused loop, clean up the loop file before demotion
+    if (agent.currentLoopId && agent.status === 'ralph-paused') {
+      this.persistenceService.deleteLoop(agent.currentLoopId);
+      console.log(`Deleted paused loop ${agent.currentLoopId} before agent demotion`);
+    }
+
+    agent.mode = 'conversational';
+    agent.currentLoopId = undefined;
+    agent.status = 'idle';
+    agent.statusDetails = 'Aguardando prompt';
+    agent.lastActivity = new Date();
+    this.persist();
+  }
+
+  /**
+   * Clear loop reference from agent (used when loop completes/fails/cancels)
+   */
+  clearLoopReference(agentId: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new AgentValidationError(`Agent not found: ${agentId}`);
+    }
+
+    agent.currentLoopId = undefined;
+    agent.lastActivity = new Date();
+    this.persist();
+  }
+
+  /**
+   * Check if agent has an active Ralph loop
+   */
+  hasActiveLoop(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      return false;
+    }
+    return agent.mode === 'ralph' &&
+           agent.currentLoopId !== undefined &&
+           (agent.status === 'ralph-loop' || agent.status === 'ralph-paused');
+  }
+
+  /**
+   * Check if agent is in Ralph mode
+   */
+  isRalphMode(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    return agent?.mode === 'ralph';
+  }
+
+  /**
+   * Update agent mode directly
+   * Use this for simple mode changes; for full Ralph loop setup, use promoteToRalph
+   * @throws AgentValidationError if agent not found or has active loop
+   */
+  updateAgentMode(agentId: string, mode: 'conversational' | 'ralph'): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new AgentValidationError(`Agent not found: ${agentId}`);
+    }
+
+    // Prevent mode change if loop is actively running
+    if (agent.status === 'ralph-loop') {
+      throw new AgentValidationError(
+        `Cannot change mode while Ralph loop is running. Pause or cancel the loop first.`
+      );
+    }
+
+    agent.mode = mode;
+
+    // Clear loop reference if switching away from ralph
+    if (mode === 'conversational') {
+      agent.currentLoopId = undefined;
+      if (agent.status === 'ralph-paused') {
+        agent.status = 'idle';
+        agent.statusDetails = 'Aguardando prompt';
+      }
+    }
+
     agent.lastActivity = new Date();
     this.persist();
   }
@@ -231,11 +397,28 @@ export class AgentManager {
 
   /**
    * Add an output to an agent (FIFO, max 10)
+   * Supports standard outputs and Ralph loop summary outputs (type: 'ralph-loop')
    */
   addOutput(agentId: string, output: Output): void {
     const agent = this.agents.get(agentId);
     if (!agent) {
       throw new AgentValidationError(`Agent not found: ${agentId}`);
+    }
+
+    // Set default type if not provided
+    if (!output.type) {
+      output.type = 'standard';
+    }
+
+    // Validate ralph-loop outputs have required fields
+    if (output.type === 'ralph-loop') {
+      if (!output.loopId) {
+        throw new AgentValidationError('Ralph loop output must have loopId');
+      }
+      // Generate a more descriptive summary for Ralph loop outputs
+      if (!output.summary && output.iterationCount !== undefined) {
+        output.summary = `Loop completado em ${output.iterationCount} iterações`;
+      }
     }
 
     // Generate summary if not provided

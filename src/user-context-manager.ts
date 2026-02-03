@@ -644,4 +644,130 @@ export class UserContextManager {
       this.contexts.set(userId, context);
     }
   }
+
+  // ============================================
+  // Configure Ralph Flow
+  // States: awaiting_ralph_task → awaiting_ralph_max_iterations → awaiting_confirmation
+  // ============================================
+
+  /**
+   * Start the configure Ralph flow
+   * Begins collecting Ralph loop configuration (task, max iterations)
+   */
+  startConfigureRalphFlow(userId: string, agentId: string): void {
+    this.contexts.set(userId, {
+      userId,
+      currentFlow: 'configure_ralph',
+      flowState: 'awaiting_ralph_task',
+      flowData: { agentId },
+    });
+  }
+
+  /**
+   * Set the Ralph task in the configure flow
+   * Advances state to awaiting_ralph_max_iterations
+   */
+  setRalphTask(userId: string, task: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'configure_ralph') {
+      throw new Error('Not in configure Ralph flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      ralphTask: task,
+    };
+    context.flowState = 'awaiting_ralph_max_iterations';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Set the Ralph max iterations in the configure flow
+   * Advances state to awaiting_confirmation
+   */
+  setRalphMaxIterations(userId: string, maxIterations: number): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'configure_ralph') {
+      throw new Error('Not in configure Ralph flow');
+    }
+
+    if (maxIterations < 1 || maxIterations > 100) {
+      throw new Error('Max iterations must be between 1 and 100');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      ralphMaxIterations: maxIterations,
+    };
+    context.flowState = 'awaiting_confirmation';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the data collected during configure Ralph flow
+   */
+  getRalphConfigData(userId: string): {
+    agentId?: string;
+    ralphTask?: string;
+    ralphMaxIterations?: number;
+    ralphModel?: 'haiku' | 'sonnet' | 'opus';
+  } | undefined {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'configure_ralph') {
+      return undefined;
+    }
+    return {
+      agentId: context.flowData?.agentId as string | undefined,
+      ralphTask: context.flowData?.ralphTask as string | undefined,
+      ralphMaxIterations: context.flowData?.ralphMaxIterations as number | undefined,
+      ralphModel: context.flowData?.ralphModel as 'haiku' | 'sonnet' | 'opus' | undefined,
+    };
+  }
+
+  /**
+   * Check if we're in configure Ralph flow
+   */
+  isInConfigureRalphFlow(userId: string): boolean {
+    return this.contexts.get(userId)?.currentFlow === 'configure_ralph';
+  }
+
+  /**
+   * Check if we're awaiting Ralph task input
+   */
+  isAwaitingRalphTask(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'configure_ralph' && context?.flowState === 'awaiting_ralph_task';
+  }
+
+  /**
+   * Check if we're awaiting Ralph max iterations input
+   */
+  isAwaitingRalphMaxIterations(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'configure_ralph' && context?.flowState === 'awaiting_ralph_max_iterations';
+  }
+
+  /**
+   * Check if we're awaiting Ralph configuration confirmation
+   */
+  isAwaitingRalphConfirmation(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'configure_ralph' && context?.flowState === 'awaiting_confirmation';
+  }
+
+  /**
+   * Set Ralph model selection in configure flow
+   */
+  setRalphModel(userId: string, model: 'haiku' | 'sonnet' | 'opus'): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'configure_ralph') {
+      throw new Error('Not in configure Ralph flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      ralphModel: model,
+    };
+    this.contexts.set(userId, context);
+  }
 }
