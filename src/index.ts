@@ -2414,8 +2414,10 @@ async function handleModelModeSelection(
   await sendConfirmation(
     userId,
     `Criar agente "${data?.agentName}"?`,
-    'confirm_create',
-    'cancel_create'
+    [
+      { id: 'confirm_create', title: '✅ Criar' },
+      { id: 'cancel_create', title: '❌ Cancelar' },
+    ]
   );
   return { status: 'confirmation_sent' };
 }

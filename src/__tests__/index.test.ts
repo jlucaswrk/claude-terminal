@@ -21,6 +21,23 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.includes('api.kapso.ai')) {
     const body = init?.body ? JSON.parse(init.body as string) : {};
     whatsappCalls.push({ to: body.to, body });
+
+    // Handle group creation API calls
+    if (url.includes('/groups') && init?.method === 'POST' && !url.includes('/participants')) {
+      return new Response(JSON.stringify({ id: `mock-group-${Date.now()}@g.us` }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Handle group deletion
+    if (url.includes('/groups') && init?.method === 'DELETE') {
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     return new Response(JSON.stringify({ success: true }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -138,46 +155,37 @@ describe('Webhook Integration Tests', () => {
     } catch {}
   });
 
-  describe('Flow 1: Onboarding (First Experience)', () => {
-    it('should create General agent and show model selector for first prompt', async () => {
+  describe('Flow 1: Prompts from Main Number', () => {
+    it('should reject prompts from main number (use groups instead)', async () => {
       const payload = createTextPayload(userId, 'Hello Claude');
       const result = await postWebhook(payload);
 
-      expect(result.json.status).toBe('onboarding_model_selection');
+      // Main number now rejects prompts - use groups for prompts
+      expect(result.json.status).toBe('rejected_prompt');
 
-      // Should have sent welcome message and model selector
-      expect(whatsappCalls.length).toBeGreaterThanOrEqual(2);
-
-      // First call should be the welcome message
-      expect(whatsappCalls[0].body.type).toBe('text');
-      expect(whatsappCalls[0].body.text.body).toContain('Criando agente');
-
-      // Second call should be the model selector (interactive button)
-      expect(whatsappCalls[1].body.type).toBe('interactive');
-      expect(whatsappCalls[1].body.interactive.type).toBe('button');
-
-      // General agent should be created
-      const agents = agentManager.listAgents(userId);
-      expect(agents.length).toBe(1);
-      expect(agents[0].name).toBe('General');
+      // Should have sent rejection message
+      expect(whatsappCalls.some(c =>
+        c.body.text?.body?.includes('grupo') || c.body.text?.body?.includes('Prompts')
+      )).toBe(true);
     });
   });
 
-  describe('Flow 2: Send Prompt (Normal)', () => {
-    it('should show agent list when user has agents', async () => {
+  describe('Flow 2: Prompts Rejected from Main Number', () => {
+    it('should reject prompts from main number even when user has agents', async () => {
       // Setup: Create an agent first
       agentManager.createAgent(userId, 'Test Agent');
 
-      // Send a prompt
+      // Send a prompt from main number
       const payload = createTextPayload(userId, 'What is 2+2?');
       const result = await postWebhook(payload);
 
-      expect(result.json.status).toBe('awaiting_agent_selection');
+      // Main number now rejects prompts - use groups for prompts
+      expect(result.json.status).toBe('rejected_prompt');
 
-      // Should have sent agent + model selection list
-      const listCall = whatsappCalls.find(c => c.body.interactive?.type === 'list');
-      expect(listCall).toBeDefined();
-      expect(listCall?.body.interactive.action.sections).toBeDefined();
+      // Should have sent rejection message
+      expect(whatsappCalls.some(c =>
+        c.body.text?.body?.includes('grupo') || c.body.text?.body?.includes('Prompts')
+      )).toBe(true);
     });
   });
 
@@ -384,7 +392,7 @@ describe('Webhook Integration Tests', () => {
   });
 
   describe('Flow 4: Create New Agent', () => {
-    it('should complete agent creation flow', async () => {
+    it('should complete agent creation flow with new mode and model mode steps', async () => {
       // Start create flow
       await postWebhook(createListPayload(userId, 'action_create_agent'));
       whatsappCalls.length = 0;
@@ -401,12 +409,29 @@ describe('Webhook Integration Tests', () => {
       // Select emoji
       whatsappCalls.length = 0;
       const emojiResult = await postWebhook(createListPayload(userId, 'emoji_foguete'));
-      expect(emojiResult.json.status).toBe('awaiting_workspace_choice');
+      // NEW: After emoji, now goes to mode selection (conversational vs ralph)
+      expect(emojiResult.json.status).toBe('awaiting_mode_choice');
+
+      // NEW STEP: Select mode (conversational)
+      whatsappCalls.length = 0;
+      const modeResult = await postWebhook(createButtonPayload(userId, 'mode_conversational'));
+      expect(modeResult.json.status).toBe('workspace_selector_sent');
 
       // Skip workspace
       whatsappCalls.length = 0;
       const wsResult = await postWebhook(createListPayload(userId, 'workspace_skip'));
-      expect(wsResult.json.status).toBe('agent_created');
+      // NEW: After workspace, now goes to model mode selection
+      expect(wsResult.json.status).toBe('awaiting_model_mode_choice');
+
+      // NEW STEP: Select model mode (selection)
+      whatsappCalls.length = 0;
+      const modelModeResult = await postWebhook(createListPayload(userId, 'model_mode_selection'));
+      expect(modelModeResult.json.status).toBe('confirmation_sent');
+
+      // Confirm creation
+      whatsappCalls.length = 0;
+      const confirmResult = await postWebhook(createButtonPayload(userId, 'confirm_create'));
+      expect(confirmResult.json.status).toBe('created');
 
       // Should have created the agent with emoji and type
       const agents = agentManager.listAgents(userId);
@@ -414,6 +439,7 @@ describe('Webhook Integration Tests', () => {
       expect(newAgent).toBeDefined();
       expect(newAgent?.emoji).toBe('🚀');
       expect(newAgent?.type).toBe('claude');
+      expect(newAgent?.modelMode).toBe('selection');
 
       // Should have sent confirmation
       expect(whatsappCalls.some(c =>
@@ -590,8 +616,8 @@ describe('Message Extraction', () => {
     });
     const result = await response.json();
 
-    // Should process the message (onboarding or prompt)
-    expect(['onboarding_model_selection', 'awaiting_agent_selection', 'menu_shown']).toContain(result.status);
+    // Main number now rejects prompts - use groups for prompts
+    expect(result.status).toBe('rejected_prompt');
   });
 
   it('should handle Meta format (legacy)', async () => {
