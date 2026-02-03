@@ -850,6 +850,32 @@ export class UserContextManager {
   }
 
   /**
+   * Start prompt flow for Telegram - stores agentId and waits for text
+   */
+  startPromptFlow(userId: string, agentId: string): void {
+    this.contexts.set(userId, {
+      userId,
+      flowData: { agentId },
+    });
+  }
+
+  /**
+   * Check if user has a pending prompt flow (waiting for text)
+   */
+  hasPendingPromptFlow(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return !!context?.flowData?.agentId && !context?.pendingPrompt;
+  }
+
+  /**
+   * Get the pending agent ID for prompt flow
+   */
+  getPendingAgentId(userId: string): string | undefined {
+    const context = this.contexts.get(userId);
+    return context?.flowData?.agentId as string | undefined;
+  }
+
+  /**
    * Check if user is awaiting mode selection
    */
   isAwaitingModeSelection(userId: string): boolean {

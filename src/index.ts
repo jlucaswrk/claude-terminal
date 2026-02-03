@@ -55,6 +55,7 @@ import {
   isTelegramConfigured,
   getBotInfo,
   sendTelegramMessage,
+  sendTelegramPhoto,
   sendTelegramButtons,
   sendTelegramCommandList,
   sendTelegramAgentNamePrompt,
@@ -66,6 +67,7 @@ import {
   sendTelegramAgentConfirmation,
   sendTelegramAgentsList,
   sendTelegramDojoActivated,
+  sendTelegramModelSelector,
   answerCallbackQuery,
 } from './telegram';
 import { MessageRouter } from './message-router';
@@ -108,8 +110,47 @@ const semaphore = new Semaphore(agentManager.getConfig().maxConcurrent ?? DEFAUL
 // Claude terminal
 const terminal = new ClaudeTerminal();
 
+// Wrapper functions that detect telegram: prefix and route accordingly
+async function sendMessage(to: string, text: string): Promise<void> {
+  if (to.startsWith('telegram:')) {
+    const chatId = parseInt(to.replace('telegram:', ''), 10);
+    await sendTelegramMessage(chatId, text);
+  } else {
+    await sendWhatsApp(to, text);
+  }
+}
+
+async function sendImage(to: string, imageUrl: string): Promise<void> {
+  if (to.startsWith('telegram:')) {
+    const chatId = parseInt(to.replace('telegram:', ''), 10);
+    await sendTelegramPhoto(chatId, imageUrl);
+  } else {
+    await sendWhatsAppImage(to, imageUrl);
+  }
+}
+
+async function sendErrorWithActionsWrapper(to: string, agentName: string, error: string): Promise<void> {
+  if (to.startsWith('telegram:')) {
+    const chatId = parseInt(to.replace('telegram:', ''), 10);
+    await sendTelegramMessage(chatId, `❌ *${agentName}*: ${error}`);
+  } else {
+    await sendErrorWithActions(to, agentName, error);
+  }
+}
+
+async function sendMedia(to: string, mediaId: string, mediaType: string, filename: string, caption?: string): Promise<void> {
+  if (to.startsWith('telegram:')) {
+    const chatId = parseInt(to.replace('telegram:', ''), 10);
+    // For Telegram, we'd need to convert the mediaId to actual media
+    // For now, just send a text message with the filename
+    await sendTelegramMessage(chatId, `📎 *${filename}*${caption ? `\n${caption}` : ''}`);
+  } else {
+    await sendWhatsAppMedia(to, mediaId, mediaType as 'image' | 'video' | 'audio' | 'document', filename, caption);
+  }
+}
+
 // Queue manager (with image, file, and error recovery support)
-const queueManager = new QueueManager(semaphore, agentManager, terminal, sendWhatsApp, sendWhatsAppImage, sendErrorWithActions, sendWhatsAppMedia);
+const queueManager = new QueueManager(semaphore, agentManager, terminal, sendMessage, sendImage, sendErrorWithActionsWrapper, sendMedia);
 
 // Ralph loop manager (for autonomous Ralph mode execution)
 const ralphLoopManager = new RalphLoopManager(semaphore, agentManager, persistenceService, terminal);
@@ -348,6 +389,36 @@ async function handleTelegramMessage(message: any): Promise<void> {
     return;
   }
 
+  // Handle pending prompt flow (user selected agent, waiting for text)
+  if (userContextManager.hasPendingPromptFlow(userId)) {
+    const agentId = userContextManager.getPendingAgentId(userId);
+    const agent = agentId ? agentManager.getAgent(agentId) : null;
+
+    if (agent) {
+      // Store the prompt and ask for model if agent uses selection mode
+      if (agent.modelMode === 'selection') {
+        userContextManager.setPendingPrompt(userId, text, undefined);
+        await sendTelegramModelSelector(chatId, agent.name);
+      } else {
+        // Fixed model - queue immediately
+        userContextManager.clearContext(userId);
+        await sendTelegramMessage(chatId, `Processando com *${agent.modelMode}*...`);
+
+        queueManager.enqueue({
+          id: `tg-${Date.now()}`,
+          agentId: agent.id,
+          prompt: text,
+          model: agent.modelMode as 'haiku' | 'sonnet' | 'opus',
+          priority: PRIORITY_VALUES[agent.priority],
+          timestamp: new Date(),
+          userId,
+          replyTo: `telegram:${chatId}`,
+        });
+      }
+      return;
+    }
+  }
+
   // Default: show help
   await sendTelegramCommandList(chatId);
 }
@@ -502,6 +573,98 @@ async function handleTelegramCallback(query: any): Promise<void> {
   else if (data.startsWith('agent_')) {
     const agentId = data.replace('agent_', '');
     await handleTelegramAgentMenu(chatId, userId, agentId);
+  }
+  else if (data.startsWith('prompt_')) {
+    const agentId = data.replace('prompt_', '');
+    const agent = agentManager.getAgent(agentId);
+    if (agent && agent.userId === userId) {
+      // Store agent selection and ask for prompt
+      userContextManager.startPromptFlow(userId, agentId);
+      await sendTelegramMessage(chatId,
+        `*${agent.emoji || '🤖'} ${agent.name}*\n\n` +
+        `Envie sua mensagem:`
+      );
+    }
+  }
+  else if (data.startsWith('history_')) {
+    const agentId = data.replace('history_', '');
+    const agent = agentManager.getAgent(agentId);
+    if (agent && agent.userId === userId) {
+      if (agent.outputs.length === 0) {
+        await sendTelegramMessage(chatId, 'Nenhum historico ainda.');
+      } else {
+        let text = `*Historico de ${agent.name}*\n\n`;
+        for (const output of agent.outputs.slice(-5)) {
+          const status = output.status === 'success' ? '✅' : output.status === 'error' ? '❌' : '⚠️';
+          text += `${status} *${output.summary}*\n`;
+          text += `_${output.prompt.slice(0, 50)}${output.prompt.length > 50 ? '...' : ''}_\n\n`;
+        }
+        await sendTelegramMessage(chatId, text);
+      }
+    }
+  }
+  else if (data.startsWith('reset_')) {
+    const agentId = data.replace('reset_', '');
+    const agent = agentManager.getAgent(agentId);
+    if (agent && agent.userId === userId) {
+      agentManager.resetSession(agentId);
+      await sendTelegramMessage(chatId, `Sessao de *${agent.name}* resetada.`);
+    }
+  }
+  else if (data.startsWith('delete_')) {
+    const agentId = data.replace('delete_', '');
+    const agent = agentManager.getAgent(agentId);
+    if (agent && agent.userId === userId) {
+      // Ask for confirmation
+      await sendTelegramButtons(chatId,
+        `Deletar *${agent.name}*?\n\nEsta acao nao pode ser desfeita.`,
+        [
+          [
+            { text: 'Sim, deletar', callback_data: `confirmdelete_${agentId}` },
+            { text: 'Cancelar', callback_data: 'canceldelete' },
+          ],
+        ]
+      );
+    }
+  }
+  else if (data.startsWith('confirmdelete_')) {
+    const agentId = data.replace('confirmdelete_', '');
+    const agent = agentManager.getAgent(agentId);
+    if (agent && agent.userId === userId) {
+      const name = agent.name;
+      agentManager.deleteAgent(agentId);
+      await sendTelegramMessage(chatId, `Agente *${name}* deletado.`);
+    }
+  }
+  else if (data === 'canceldelete') {
+    await sendTelegramMessage(chatId, 'Delecao cancelada.');
+  }
+  else if (data.startsWith('model_')) {
+    // Handle model selection for pending prompt
+    const model = data.replace('model_', '') as 'haiku' | 'sonnet' | 'opus';
+    const context = userContextManager.getContext(userId);
+    const pendingPrompt = context?.pendingPrompt;
+    const agentId = context?.flowData?.agentId;
+
+    if (pendingPrompt && agentId) {
+      const agent = agentManager.getAgent(agentId);
+      if (agent) {
+        userContextManager.clearContext(userId);
+        await sendTelegramMessage(chatId, `Processando com *${model}*...`);
+
+        // Queue the prompt
+        queueManager.enqueue({
+          id: `tg-${Date.now()}`,
+          agentId,
+          prompt: pendingPrompt.text,
+          model,
+          priority: PRIORITY_VALUES[agent.priority],
+          timestamp: new Date(),
+          userId,
+          replyTo: `telegram:${chatId}`,
+        });
+      }
+    }
   }
 }
 
