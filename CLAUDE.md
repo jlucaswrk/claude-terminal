@@ -239,6 +239,37 @@ tailscale funnel 3000
 
 Configurar URL do funnel como webhook no Kapso.
 
+### PM2 (Gerenciador de Processos)
+
+**IMPORTANTE**: O servidor roda via PM2, não manualmente com `bun run`.
+
+```bash
+# Ver status
+pm2 list
+
+# Ver logs em tempo real
+pm2 logs claude-terminal
+
+# Reiniciar (aplica novas variáveis de ambiente)
+pm2 restart claude-terminal --update-env
+
+# Parar
+pm2 stop claude-terminal
+
+# Iniciar
+pm2 start claude-terminal
+```
+
+PM2 cuida de:
+- **Logs**: `pm2 logs` para ver output
+- **Auto-restart**: reinicia automaticamente se crashar
+- **Variáveis de ambiente**: usar `--update-env` ao reiniciar para aplicar novas vars
+
+Para adicionar/alterar variáveis de ambiente, edite o ecosystem ou use:
+```bash
+TELEGRAM_BOT_TOKEN=xxx pm2 restart claude-terminal --update-env
+```
+
 ## Fluxo de Mensagem
 
 ```

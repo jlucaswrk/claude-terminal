@@ -391,7 +391,10 @@ app.post('/webhook/telegram', async (c) => {
 
   try {
     const update = await c.req.json();
-    await handleTelegramUpdate(update);
+    // Process asynchronously - respond immediately to avoid Telegram timeout
+    handleTelegramUpdate(update).catch(err => {
+      console.error('Telegram update processing error:', err);
+    });
     return c.json({ ok: true });
   } catch (error) {
     console.error('Telegram webhook error:', error);
@@ -407,7 +410,10 @@ app.post('/telegram', async (c) => {
 
   try {
     const update = await c.req.json();
-    await handleTelegramUpdate(update);
+    // Process asynchronously - respond immediately to avoid Telegram timeout
+    handleTelegramUpdate(update).catch(err => {
+      console.error('Telegram update processing error:', err);
+    });
     return c.json({ ok: true });
   } catch (error) {
     console.error('Telegram webhook error:', error);
