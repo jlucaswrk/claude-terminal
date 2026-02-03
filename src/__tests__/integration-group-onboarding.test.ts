@@ -13,6 +13,7 @@ import { AgentManager } from '../agent-manager';
 import { GroupOnboardingManager } from '../group-onboarding-manager';
 import { TelegramCommandHandler } from '../telegram-command-handler';
 import { PersistenceService } from '../persistence';
+import { validateGroupAgentName } from '../telegram';
 import { unlinkSync, existsSync } from 'fs';
 import type { UserPreferences } from '../types';
 
@@ -2627,6 +2628,1053 @@ describe('Integration: Group Onboarding Flow', () => {
         // Should be locked (silently ignored)
         expect(result.action).toBe('group_onboarding_locked');
       });
+    });
+  });
+
+  // ============================================
+  // Pin Permission Denied Tests
+  // ============================================
+
+  describe('Pin Permission Denied: Graceful degradation', () => {
+    /**
+     * Helper to simulate bot addition when pin fails due to permissions
+     */
+    async function simulateHandleBotAddedToGroupWithPinFailure(
+      chatId: number,
+      telegramUserId: number,
+      telegramUsername: string | undefined,
+      persistenceService: PersistenceService,
+      agentManager: AgentManager,
+      groupOnboardingManager: GroupOnboardingManager,
+      mockSendMessage: typeof mockSendTelegramMessage,
+      mockSendButtons: typeof mockSendTelegramButtons,
+      mockPinMessage: () => Promise<boolean>, // Pin fails
+    ): Promise<void> {
+      const allPrefs = persistenceService.getAllUserPreferences();
+      const userPrefs = allPrefs.find(p =>
+        p.telegramUsername?.toLowerCase() === telegramUsername?.toLowerCase()
+      );
+
+      if (!userPrefs || !telegramUsername) {
+        await mockSendMessage(chatId,
+          '👋 *Bot adicionado ao grupo*\n\n' +
+          'Não encontrei seu cadastro.\n' +
+          'Configure o Dojo primeiro pelo WhatsApp.'
+        );
+        return;
+      }
+
+      const userId = userPrefs.userId;
+      const existingAgents = agentManager.listAgents(userId);
+      const hasExistingAgents = existingAgents.length > 0;
+
+      let message;
+
+      if (!hasExistingAgents) {
+        message = await mockSendButtons(chatId,
+          '🎉 *Seu primeiro agente!*\n\n' +
+          'Vamos criar um agente para este grupo.',
+          [
+            [{ text: '✨ Criar agora', callback_data: `onboard_create_${telegramUserId}` }],
+          ]
+        );
+      } else {
+        message = await mockSendButtons(chatId,
+          '👋 *Esse grupo não tem agente ainda*\n\n' +
+          'Você pode criar um novo ou vincular um existente.',
+          [
+            [
+              { text: '✨ Criar um', callback_data: `onboard_create_${telegramUserId}` },
+              { text: '🔗 Vincular existente', callback_data: `onboard_link_${telegramUserId}` },
+            ],
+          ]
+        );
+      }
+
+      if (message) {
+        // Pin fails due to permissions
+        const pinSuccess = await mockPinMessage();
+
+        // Start onboarding regardless of pin success
+        const result = groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        if (result.success) {
+          // Only store pinned message ID if pin succeeded
+          if (pinSuccess) {
+            groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, message.message_id);
+          }
+        }
+      }
+    }
+
+    beforeEach(() => {
+      mockSendTelegramMessage.mockClear();
+      mockSendTelegramButtons.mockClear();
+      mockPinTelegramMessage.mockClear();
+      mockEditTelegramMessage.mockClear();
+    });
+
+    it('should continue onboarding when pin fails due to permissions', async () => {
+      const userId = '+5581999999999';
+      const telegramUsername = 'lucas';
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      // User has Dojo mode configured
+      persistenceService.saveUserPreferences({
+        userId,
+        mode: 'dojo',
+        telegramUsername,
+        onboardingComplete: true,
+      });
+
+      // Pin will fail
+      const mockFailingPin = mock(() => Promise.resolve(false));
+
+      await simulateHandleBotAddedToGroupWithPinFailure(
+        chatId,
+        telegramUserId,
+        telegramUsername,
+        persistenceService,
+        agentManager,
+        groupOnboardingManager,
+        mockSendTelegramMessage,
+        mockSendTelegramButtons,
+        mockFailingPin
+      );
+
+      // Onboarding should still be active even though pin failed
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(true);
+      expect(groupOnboardingManager.isLockedByUser(chatId, telegramUserId)).toBe(true);
+
+      // Pinned message ID should NOT be stored
+      expect(groupOnboardingManager.getPinnedMessageId(chatId)).toBeUndefined();
+
+      // Buttons should still have been sent
+      expect(mockSendTelegramButtons).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not store pinned message ID when pin fails', async () => {
+      const userId = '+5581999999999';
+      const telegramUsername = 'lucas';
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      persistenceService.saveUserPreferences({
+        userId,
+        mode: 'dojo',
+        telegramUsername,
+        onboardingComplete: true,
+      });
+
+      const mockFailingPin = mock(() => Promise.resolve(false));
+
+      await simulateHandleBotAddedToGroupWithPinFailure(
+        chatId,
+        telegramUserId,
+        telegramUsername,
+        persistenceService,
+        agentManager,
+        groupOnboardingManager,
+        mockSendTelegramMessage,
+        mockSendTelegramButtons,
+        mockFailingPin
+      );
+
+      // Verify state
+      const state = groupOnboardingManager.getState(chatId);
+      expect(state).toBeDefined();
+      expect(state?.pinnedMessageId).toBeUndefined();
+    });
+
+    it('should handle pin permission error during existing user flow', async () => {
+      const userId = '+5581999999999';
+      const telegramUsername = 'lucas';
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      persistenceService.saveUserPreferences({
+        userId,
+        mode: 'dojo',
+        telegramUsername,
+        onboardingComplete: true,
+      });
+
+      // Create an existing agent
+      agentManager.createAgent(userId, 'ExistingAgent', undefined, '🤖');
+
+      const mockFailingPin = mock(() => Promise.resolve(false));
+
+      await simulateHandleBotAddedToGroupWithPinFailure(
+        chatId,
+        telegramUserId,
+        telegramUsername,
+        persistenceService,
+        agentManager,
+        groupOnboardingManager,
+        mockSendTelegramMessage,
+        mockSendTelegramButtons,
+        mockFailingPin
+      );
+
+      // Should have two buttons despite pin failure
+      const buttonsCall = mockSendTelegramButtons.mock.calls[0];
+      expect(buttonsCall[2][0]).toHaveLength(2);
+      expect(buttonsCall[2][0][0].text).toBe('✨ Criar um');
+      expect(buttonsCall[2][0][1].text).toBe('🔗 Vincular existente');
+
+      // Onboarding should still work
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(true);
+    });
+
+    it('should allow full creation flow even when pin failed initially', async () => {
+      const userId = '+5581999999999';
+      const telegramUsername = 'lucas';
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      persistenceService.saveUserPreferences({
+        userId,
+        mode: 'dojo',
+        telegramUsername,
+        onboardingComplete: true,
+      });
+
+      const mockFailingPin = mock(() => Promise.resolve(false));
+
+      await simulateHandleBotAddedToGroupWithPinFailure(
+        chatId,
+        telegramUserId,
+        telegramUsername,
+        persistenceService,
+        agentManager,
+        groupOnboardingManager,
+        mockSendTelegramMessage,
+        mockSendTelegramButtons,
+        mockFailingPin
+      );
+
+      // No pinned message ID but onboarding is active
+      expect(groupOnboardingManager.getPinnedMessageId(chatId)).toBeUndefined();
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(true);
+
+      // Complete full creation flow
+      groupOnboardingManager.setAgentName(chatId, telegramUserId, 'Test Agent');
+      groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_emoji');
+      groupOnboardingManager.setEmoji(chatId, telegramUserId, '🚀');
+      groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_workspace');
+      groupOnboardingManager.setWorkspace(chatId, telegramUserId, '__sandbox__');
+      groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_model_mode');
+      groupOnboardingManager.setModelMode(chatId, telegramUserId, 'sonnet');
+
+      // Create agent
+      const state = groupOnboardingManager.getState(chatId);
+      const agent = agentManager.createAgent(
+        userId,
+        state!.data.agentName!,
+        undefined,
+        state!.data.emoji!,
+        'claude',
+        state!.data.modelMode!
+      );
+
+      // Link to group
+      agentManager.setTelegramChatId(agent.id, chatId);
+
+      // Complete onboarding
+      const completedState = groupOnboardingManager.completeOnboarding(chatId, telegramUserId);
+
+      expect(agent).toBeDefined();
+      expect(agent.name).toBe('Test Agent');
+      expect(agent.telegramChatId).toBe(chatId);
+      expect(completedState).toBeDefined();
+    });
+
+    it('should skip editing pinned message on completion when no pinned message ID', async () => {
+      const userId = '+5581999999999';
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      // Start onboarding without pinned message (simulating pin failure)
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+      // NOT calling setPinnedMessageId
+
+      // Complete flow
+      groupOnboardingManager.setAgentName(chatId, telegramUserId, 'Test');
+      groupOnboardingManager.setEmoji(chatId, telegramUserId, '🤖');
+
+      // Verify no pinned message ID
+      expect(groupOnboardingManager.getPinnedMessageId(chatId)).toBeUndefined();
+
+      // Complete onboarding
+      groupOnboardingManager.completeOnboarding(chatId, telegramUserId);
+
+      // Edit message should not have been called
+      expect(mockEditTelegramMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  // ============================================
+  // Graceful Degradation: API Failure Scenarios
+  // ============================================
+
+  describe('Graceful Degradation: API Failure Scenarios', () => {
+    beforeEach(() => {
+      mockSendTelegramMessage.mockClear();
+      mockSendTelegramButtons.mockClear();
+      mockEditTelegramMessage.mockClear();
+    });
+
+    it('should handle sendButtons returning null', async () => {
+      const telegramUsername = 'lucas';
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      persistenceService.saveUserPreferences({
+        userId: '+5581999999999',
+        mode: 'dojo',
+        telegramUsername,
+        onboardingComplete: true,
+      });
+
+      // sendButtons fails
+      const failingSendButtons = mock(() => Promise.resolve(null));
+
+      await simulateHandleBotAddedToGroup(
+        chatId,
+        telegramUserId,
+        telegramUsername,
+        persistenceService,
+        agentManager,
+        groupOnboardingManager,
+        mockSendTelegramMessage,
+        failingSendButtons,
+        mockPinTelegramMessage
+      );
+
+      // sendButtons was called
+      expect(failingSendButtons).toHaveBeenCalledTimes(1);
+
+      // Pin should not be called when message is null
+      expect(mockPinTelegramMessage).not.toHaveBeenCalled();
+
+      // No onboarding should be started when message send fails
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+    });
+
+    it('should handle editMessage failure during agent linking', async () => {
+      const userId = '+5581999999999';
+      const telegramUserId = 67890;
+      const chatId = 12345;
+      const pinnedMessageId = 99999;
+
+      // Create agent to link
+      const agent = agentManager.createAgent(userId, 'LinkableAgent', undefined, '🔗');
+
+      // Start onboarding
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+      groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+      // editMessage fails
+      const failingEditMessage = mock(() => Promise.resolve(false));
+
+      // Helper function similar to simulateLinkAgentCallback but with failing edit
+      const agent1 = agentManager.getAgent(agent.id);
+      expect(agent1).toBeDefined();
+
+      // Link agent
+      agentManager.setTelegramChatId(agent.id, chatId);
+
+      // Try to edit pinned message (fails)
+      const editResult = await failingEditMessage(chatId, pinnedMessageId, 'Success message');
+      expect(editResult).toBe(false);
+
+      // Agent should still be linked despite edit failure
+      expect(agent.telegramChatId).toBe(chatId);
+
+      // Complete onboarding
+      groupOnboardingManager.completeOnboarding(chatId, telegramUserId);
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+    });
+
+    it('should handle concurrent API calls gracefully', async () => {
+      const userId = '+5581999999999';
+      const telegramUsername = 'lucas';
+      const telegramUserId1 = 11111;
+      const telegramUserId2 = 22222;
+      const chatId1 = 10001;
+      const chatId2 = 10002;
+
+      persistenceService.saveUserPreferences({
+        userId,
+        mode: 'dojo',
+        telegramUsername,
+        onboardingComplete: true,
+      });
+
+      // Start onboarding in two groups concurrently
+      const promises = [
+        simulateHandleBotAddedToGroup(
+          chatId1,
+          telegramUserId1,
+          telegramUsername,
+          persistenceService,
+          agentManager,
+          groupOnboardingManager,
+          mockSendTelegramMessage,
+          mockSendTelegramButtons,
+          mockPinTelegramMessage
+        ),
+        simulateHandleBotAddedToGroup(
+          chatId2,
+          telegramUserId2,
+          telegramUsername,
+          persistenceService,
+          agentManager,
+          groupOnboardingManager,
+          mockSendTelegramMessage,
+          mockSendTelegramButtons,
+          mockPinTelegramMessage
+        ),
+      ];
+
+      await Promise.all(promises);
+
+      // Both groups should have active onboarding
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId1)).toBe(true);
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId2)).toBe(true);
+
+      // Each group locked by its respective user
+      expect(groupOnboardingManager.isLockedByUser(chatId1, telegramUserId1)).toBe(true);
+      expect(groupOnboardingManager.isLockedByUser(chatId2, telegramUserId2)).toBe(true);
+    });
+  });
+
+  // ============================================
+  // Validation Error Handling
+  // ============================================
+
+  describe('Validation Error Handling: Invalid Inputs', () => {
+    beforeEach(() => {
+      mockSendTelegramMessage.mockClear();
+      mockSendTelegramButtons.mockClear();
+    });
+
+    describe('Agent name validation', () => {
+      it('should reject empty agent name', () => {
+        const chatId = 12345;
+        const telegramUserId = 67890;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        const error = validateGroupAgentName('');
+        expect(error).toBe('Nome é obrigatório');
+      });
+
+      it('should reject whitespace-only agent name', () => {
+        const error = validateGroupAgentName('   ');
+        expect(error).toBe('Nome não pode ser vazio');
+      });
+
+      it('should reject name exceeding 50 characters', () => {
+        const longName = 'A'.repeat(51);
+        const error = validateGroupAgentName(longName);
+        expect(error).toBe('Nome excede o limite de 50 caracteres');
+      });
+
+      it('should reject names with dangerous characters', () => {
+        const dangerousInputs = [
+          { input: 'Test<script>alert(1)</script>', expected: 'Nome contém caracteres inválidos' },
+          { input: 'Test>injection', expected: 'Nome contém caracteres inválidos' },
+          { input: 'Test{bad}', expected: 'Nome contém caracteres inválidos' },
+          { input: 'Test|pipe', expected: 'Nome contém caracteres inválidos' },
+          { input: 'Test\\escape', expected: 'Nome contém caracteres inválidos' },
+          { input: 'Test^caret', expected: 'Nome contém caracteres inválidos' },
+          { input: 'Test`backtick', expected: 'Nome contém caracteres inválidos' },
+        ];
+
+        for (const { input, expected } of dangerousInputs) {
+          const error = validateGroupAgentName(input);
+          expect(error).toBe(expected);
+        }
+      });
+
+      it('should accept valid names with special characters', () => {
+        const validNames = [
+          'My Agent',
+          'Agent-1',
+          'Agent_2',
+          'Agent.3',
+          'Agente (Test)',
+          'Café Agent',
+          'Agent @Work',
+          '🚀 RocketAgent',
+        ];
+
+        for (const name of validNames) {
+          const error = validateGroupAgentName(name);
+          expect(error).toBeNull();
+        }
+      });
+    });
+
+    describe('Workspace validation', () => {
+      it('should accept sandbox marker', () => {
+        const chatId = 12345;
+        const telegramUserId = 67890;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_workspace');
+        groupOnboardingManager.setWorkspace(chatId, telegramUserId, '__sandbox__');
+
+        const state = groupOnboardingManager.getState(chatId);
+        expect(state?.data.workspace).toBe('__sandbox__');
+      });
+
+      it('should accept awaiting custom marker', () => {
+        const chatId = 12345;
+        const telegramUserId = 67890;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_workspace');
+        groupOnboardingManager.setWorkspace(chatId, telegramUserId, '__awaiting_custom__');
+
+        const state = groupOnboardingManager.getState(chatId);
+        expect(state?.data.workspace).toBe('__awaiting_custom__');
+      });
+
+      it('should reject non-existent custom workspace path at agent creation', () => {
+        const userId = '+5581999999999';
+        const nonExistentPath = '/this/path/absolutely/does/not/exist/12345';
+
+        expect(() => {
+          agentManager.createAgent(userId, 'TestAgent', nonExistentPath, '🤖');
+        }).toThrow('Workspace path does not exist');
+      });
+    });
+
+    describe('Model mode validation', () => {
+      it('should accept all valid model modes', () => {
+        const chatId = 12345;
+        const telegramUserId = 67890;
+        const validModes = ['selection', 'haiku', 'sonnet', 'opus'] as const;
+
+        for (const mode of validModes) {
+          groupOnboardingManager.clearAll();
+          groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_model_mode');
+          groupOnboardingManager.setModelMode(chatId, telegramUserId, mode);
+
+          const state = groupOnboardingManager.getState(chatId);
+          expect(state?.data.modelMode).toBe(mode);
+        }
+      });
+    });
+
+    describe('Emoji validation', () => {
+      it('should accept valid emojis', () => {
+        const chatId = 12345;
+        const telegramUserId = 67890;
+        const validEmojis = ['🤖', '⚡', '🔧', '🎯', '🧠', '✨', '📊', '💡', '🚀', '🔍', '💻', '📁'];
+
+        for (const emoji of validEmojis) {
+          groupOnboardingManager.clearAll();
+          groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+          groupOnboardingManager.setEmoji(chatId, telegramUserId, emoji);
+
+          const state = groupOnboardingManager.getState(chatId);
+          expect(state?.data.emoji).toBe(emoji);
+        }
+      });
+
+      it('should accept custom emojis', () => {
+        const chatId = 12345;
+        const telegramUserId = 67890;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+        groupOnboardingManager.setEmoji(chatId, telegramUserId, '🦄');
+
+        const state = groupOnboardingManager.getState(chatId);
+        expect(state?.data.emoji).toBe('🦄');
+      });
+    });
+  });
+
+  // ============================================
+  // Bot Removal During Different Onboarding States
+  // ============================================
+
+  describe('Bot Removal: During Different Onboarding States', () => {
+    beforeEach(() => {
+      mockSendTelegramMessage.mockClear();
+      mockSendTelegramButtons.mockClear();
+    });
+
+    it('should cleanup state when bot removed during awaiting_name step', async () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(true);
+
+      await simulateHandleBotRemovedFromGroup(chatId, agentManager, groupOnboardingManager);
+
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+    });
+
+    it('should cleanup state when bot removed during awaiting_emoji step', async () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+      groupOnboardingManager.setAgentName(chatId, telegramUserId, 'TestAgent');
+      groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_emoji');
+
+      expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('awaiting_emoji');
+
+      await simulateHandleBotRemovedFromGroup(chatId, agentManager, groupOnboardingManager);
+
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+    });
+
+    it('should cleanup state when bot removed during awaiting_workspace step', async () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+      groupOnboardingManager.setAgentName(chatId, telegramUserId, 'TestAgent');
+      groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_emoji');
+      groupOnboardingManager.setEmoji(chatId, telegramUserId, '🚀');
+      groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_workspace');
+
+      expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('awaiting_workspace');
+
+      await simulateHandleBotRemovedFromGroup(chatId, agentManager, groupOnboardingManager);
+
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+    });
+
+    it('should cleanup state when bot removed during awaiting_model_mode step', async () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+      groupOnboardingManager.setAgentName(chatId, telegramUserId, 'TestAgent');
+      groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_model_mode');
+
+      expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('awaiting_model_mode');
+
+      await simulateHandleBotRemovedFromGroup(chatId, agentManager, groupOnboardingManager);
+
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+    });
+
+    it('should cleanup state when bot removed during linking_agent step', async () => {
+      const userId = '+5581999999999';
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      // Create an agent to link
+      const agent = agentManager.createAgent(userId, 'Agent', undefined, '🤖');
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'linking_agent');
+      groupOnboardingManager.setSelectedAgentId(chatId, telegramUserId, agent.id);
+
+      expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('linking_agent');
+
+      await simulateHandleBotRemovedFromGroup(chatId, agentManager, groupOnboardingManager);
+
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+
+      // Agent should NOT be linked
+      expect(agent.telegramChatId).toBeUndefined();
+    });
+
+    it('should unlink agent AND cleanup onboarding when both exist', async () => {
+      const userId = '+5581999999999';
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      // Create and link an agent
+      const agent = agentManager.createAgent(userId, 'LinkedAgent', undefined, '🔗');
+      agentManager.setTelegramChatId(agent.id, chatId);
+
+      // Start new onboarding (rare but possible edge case)
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+
+      // Verify both exist
+      expect(agentManager.getAgentByTelegramChatId(chatId)).toBeDefined();
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(true);
+
+      await simulateHandleBotRemovedFromGroup(chatId, agentManager, groupOnboardingManager);
+
+      // Both should be cleaned up
+      expect(agentManager.getAgentByTelegramChatId(chatId)).toBeUndefined();
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+    });
+  });
+
+  // ============================================
+  // Concurrent Users: Advanced Scenarios
+  // ============================================
+
+  describe('Concurrent Users: Advanced Scenarios', () => {
+    beforeEach(() => {
+      mockSendTelegramMessage.mockClear();
+      mockSendTelegramButtons.mockClear();
+    });
+
+    it('should handle user rejoining group during active onboarding', async () => {
+      const telegramUsername = 'lucas';
+      const telegramUserId1 = 11111;
+      const telegramUserId2 = 22222;
+      const chatId = 12345;
+
+      persistenceService.saveUserPreferences({
+        userId: '+5581999999999',
+        mode: 'dojo',
+        telegramUsername,
+        onboardingComplete: true,
+      });
+
+      // User 1 starts onboarding
+      await simulateHandleBotAddedToGroup(
+        chatId,
+        telegramUserId1,
+        telegramUsername,
+        persistenceService,
+        agentManager,
+        groupOnboardingManager,
+        mockSendTelegramMessage,
+        mockSendTelegramButtons,
+        mockPinTelegramMessage
+      );
+
+      expect(groupOnboardingManager.isLockedByUser(chatId, telegramUserId1)).toBe(true);
+
+      // User 2 tries to add bot again (re-added scenario)
+      await simulateHandleBotAddedToGroup(
+        chatId,
+        telegramUserId2,
+        telegramUsername,
+        persistenceService,
+        agentManager,
+        groupOnboardingManager,
+        mockSendTelegramMessage,
+        mockSendTelegramButtons,
+        mockPinTelegramMessage
+      );
+
+      // Lock should still be with user 1 (first user)
+      expect(groupOnboardingManager.isLockedByUser(chatId, telegramUserId1)).toBe(true);
+      expect(groupOnboardingManager.isLockedByUser(chatId, telegramUserId2)).toBe(false);
+    });
+
+    it('should allow onboarding after previous user completes', async () => {
+      const telegramUsername = 'lucas';
+      const telegramUserId1 = 11111;
+      const telegramUserId2 = 22222;
+      const chatId1 = 10001;
+      const chatId2 = 10002;
+
+      persistenceService.saveUserPreferences({
+        userId: '+5581999999999',
+        mode: 'dojo',
+        telegramUsername,
+        onboardingComplete: true,
+      });
+
+      // User 1 completes onboarding in group 1
+      await simulateHandleBotAddedToGroup(
+        chatId1,
+        telegramUserId1,
+        telegramUsername,
+        persistenceService,
+        agentManager,
+        groupOnboardingManager,
+        mockSendTelegramMessage,
+        mockSendTelegramButtons,
+        mockPinTelegramMessage
+      );
+
+      groupOnboardingManager.completeOnboarding(chatId1, telegramUserId1);
+
+      // User 2 can now start in group 2
+      await simulateHandleBotAddedToGroup(
+        chatId2,
+        telegramUserId2,
+        telegramUsername,
+        persistenceService,
+        agentManager,
+        groupOnboardingManager,
+        mockSendTelegramMessage,
+        mockSendTelegramButtons,
+        mockPinTelegramMessage
+      );
+
+      // Group 1 - no active onboarding
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId1)).toBe(false);
+
+      // Group 2 - user 2 has lock
+      expect(groupOnboardingManager.isLockedByUser(chatId2, telegramUserId2)).toBe(true);
+    });
+
+    it('should handle timeout scenario cleanup', () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      // Start onboarding
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+      // Set started time to 31 minutes ago
+      const thirtyOneMinutesAgo = new Date(Date.now() - 31 * 60 * 1000);
+      groupOnboardingManager._setStartedAtForTesting(chatId, thirtyOneMinutesAgo);
+
+      // Check if timed out
+      expect(groupOnboardingManager.hasTimedOut(chatId, 30 * 60 * 1000)).toBe(true);
+
+      // Cleanup timed out
+      const cleanedUp = groupOnboardingManager.cleanupTimedOut(30 * 60 * 1000);
+
+      expect(cleanedUp).toContain(chatId);
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+    });
+
+    it('should not cleanup active onboarding before timeout', () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      // Start onboarding
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+      // Set started time to 29 minutes ago
+      const twentyNineMinutesAgo = new Date(Date.now() - 29 * 60 * 1000);
+      groupOnboardingManager._setStartedAtForTesting(chatId, twentyNineMinutesAgo);
+
+      // Check if timed out
+      expect(groupOnboardingManager.hasTimedOut(chatId, 30 * 60 * 1000)).toBe(false);
+
+      // Cleanup should not remove this one
+      const cleanedUp = groupOnboardingManager.cleanupTimedOut(30 * 60 * 1000);
+
+      expect(cleanedUp).not.toContain(chatId);
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(true);
+    });
+
+    it('should handle multiple groups with different timeout states', () => {
+      const userId1 = 11111;
+      const userId2 = 22222;
+      const userId3 = 33333;
+      const chatId1 = 10001;
+      const chatId2 = 10002;
+      const chatId3 = 10003;
+
+      // Start onboarding in three groups
+      groupOnboardingManager.startOnboarding(chatId1, userId1, 'awaiting_name');
+      groupOnboardingManager.startOnboarding(chatId2, userId2, 'awaiting_emoji');
+      groupOnboardingManager.startOnboarding(chatId3, userId3, 'awaiting_workspace');
+
+      // Set different times
+      groupOnboardingManager._setStartedAtForTesting(chatId1, new Date(Date.now() - 35 * 60 * 1000)); // Expired
+      groupOnboardingManager._setStartedAtForTesting(chatId2, new Date(Date.now() - 31 * 60 * 1000)); // Expired
+      groupOnboardingManager._setStartedAtForTesting(chatId3, new Date(Date.now() - 10 * 60 * 1000)); // Active
+
+      // Cleanup
+      const cleanedUp = groupOnboardingManager.cleanupTimedOut(30 * 60 * 1000);
+
+      expect(cleanedUp).toContain(chatId1);
+      expect(cleanedUp).toContain(chatId2);
+      expect(cleanedUp).not.toContain(chatId3);
+
+      // Verify states
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId1)).toBe(false);
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId2)).toBe(false);
+      expect(groupOnboardingManager.hasActiveOnboarding(chatId3)).toBe(true);
+    });
+  });
+
+  // ============================================
+  // State Preservation Tests
+  // ============================================
+
+  describe('State Preservation: Data Integrity', () => {
+    it('should preserve all data through complete flow', () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+      const pinnedMessageId = 99999;
+
+      // Start onboarding
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+      groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+      // Step 1: Set name
+      groupOnboardingManager.setAgentName(chatId, telegramUserId, 'Test Agent');
+      groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_emoji');
+
+      // Verify state
+      let state = groupOnboardingManager.getState(chatId);
+      expect(state?.data.agentName).toBe('Test Agent');
+      expect(state?.pinnedMessageId).toBe(pinnedMessageId);
+      expect(state?.step).toBe('awaiting_emoji');
+
+      // Step 2: Set emoji
+      groupOnboardingManager.setEmoji(chatId, telegramUserId, '🚀');
+      groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_workspace');
+
+      // Verify state
+      state = groupOnboardingManager.getState(chatId);
+      expect(state?.data.agentName).toBe('Test Agent');
+      expect(state?.data.emoji).toBe('🚀');
+      expect(state?.pinnedMessageId).toBe(pinnedMessageId);
+      expect(state?.step).toBe('awaiting_workspace');
+
+      // Step 3: Set workspace
+      groupOnboardingManager.setWorkspace(chatId, telegramUserId, '__sandbox__');
+      groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_model_mode');
+
+      // Verify state
+      state = groupOnboardingManager.getState(chatId);
+      expect(state?.data.agentName).toBe('Test Agent');
+      expect(state?.data.emoji).toBe('🚀');
+      expect(state?.data.workspace).toBe('__sandbox__');
+      expect(state?.pinnedMessageId).toBe(pinnedMessageId);
+      expect(state?.step).toBe('awaiting_model_mode');
+
+      // Step 4: Set model mode
+      groupOnboardingManager.setModelMode(chatId, telegramUserId, 'opus');
+
+      // Verify final state
+      state = groupOnboardingManager.getState(chatId);
+      expect(state?.data.agentName).toBe('Test Agent');
+      expect(state?.data.emoji).toBe('🚀');
+      expect(state?.data.workspace).toBe('__sandbox__');
+      expect(state?.data.modelMode).toBe('opus');
+      expect(state?.pinnedMessageId).toBe(pinnedMessageId);
+      expect(state?.userId).toBe(telegramUserId);
+      expect(state?.chatId).toBe(chatId);
+    });
+
+    it('should return cloned state to prevent external mutation', () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+      groupOnboardingManager.setAgentName(chatId, telegramUserId, 'Original');
+
+      // Get state and try to mutate it
+      const state1 = groupOnboardingManager.getState(chatId);
+      if (state1) {
+        state1.data.agentName = 'Mutated';
+      }
+
+      // Get state again - should still be original
+      const state2 = groupOnboardingManager.getState(chatId);
+      expect(state2?.data.agentName).toBe('Original');
+    });
+
+    it('should return cloned data to prevent external mutation', () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+      groupOnboardingManager.setEmoji(chatId, telegramUserId, '🔥');
+
+      // Get data and try to mutate it
+      const data1 = groupOnboardingManager.getData(chatId);
+      if (data1) {
+        data1.emoji = '💧';
+      }
+
+      // Get data again - should still be original
+      const data2 = groupOnboardingManager.getData(chatId);
+      expect(data2?.emoji).toBe('🔥');
+    });
+  });
+
+  // ============================================
+  // Callback Query Handling
+  // ============================================
+
+  describe('Callback Query: Button Press Handling', () => {
+    /**
+     * Helper to simulate callback query lock validation
+     */
+    function validateCallbackQueryLock(
+      chatId: number,
+      callbackUserId: number,
+      groupOnboardingManager: GroupOnboardingManager
+    ): { valid: boolean; reason?: string } {
+      // Check if there's active onboarding
+      if (!groupOnboardingManager.hasActiveOnboarding(chatId)) {
+        return { valid: false, reason: 'no_active_onboarding' };
+      }
+
+      // Validate lock
+      if (!groupOnboardingManager.isLockedByUser(chatId, callbackUserId)) {
+        return { valid: false, reason: 'locked_by_other_user' };
+      }
+
+      return { valid: true };
+    }
+
+    it('should allow callback from lock owner', () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+
+      const result = validateCallbackQueryLock(chatId, telegramUserId, groupOnboardingManager);
+
+      expect(result.valid).toBe(true);
+      expect(result.reason).toBeUndefined();
+    });
+
+    it('should reject callback from non-lock owner', () => {
+      const lockOwner = 67890;
+      const otherUser = 11111;
+      const chatId = 12345;
+
+      groupOnboardingManager.startOnboarding(chatId, lockOwner, 'awaiting_emoji');
+
+      const result = validateCallbackQueryLock(chatId, otherUser, groupOnboardingManager);
+
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('locked_by_other_user');
+    });
+
+    it('should reject callback when no active onboarding', () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      // No onboarding started
+
+      const result = validateCallbackQueryLock(chatId, telegramUserId, groupOnboardingManager);
+
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('no_active_onboarding');
+    });
+
+    it('should reject callback after onboarding completes', () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+      groupOnboardingManager.completeOnboarding(chatId, telegramUserId);
+
+      const result = validateCallbackQueryLock(chatId, telegramUserId, groupOnboardingManager);
+
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('no_active_onboarding');
+    });
+
+    it('should reject callback after onboarding cancels', () => {
+      const telegramUserId = 67890;
+      const chatId = 12345;
+
+      groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+      groupOnboardingManager.cancelOnboarding(chatId, telegramUserId);
+
+      const result = validateCallbackQueryLock(chatId, telegramUserId, groupOnboardingManager);
+
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('no_active_onboarding');
     });
   });
 });
