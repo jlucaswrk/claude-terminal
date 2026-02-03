@@ -466,7 +466,7 @@ export class PersistenceService {
         // Mark as interrupted and save
         const interruptedLoop: RalphLoopState = {
           ...loop,
-          status: 'failed', // Mark as failed since 'interrupted' is in serialized but not runtime
+          status: 'interrupted',
         };
         this.saveLoop(interruptedLoop);
         interruptedCount++;
@@ -636,14 +636,11 @@ export class PersistenceService {
    * Deserialize loop state from JSON (convert ISO strings to Dates)
    */
   private deserializeLoop(data: SerializedRalphLoopState): RalphLoopState {
-    // Map 'interrupted' status back to 'failed' for runtime (interrupted is storage-only)
-    const status = data.status === 'interrupted' ? 'failed' : data.status;
-
     return {
       id: data.id,
       agentId: data.agentId,
       userId: data.userId,
-      status: status as RalphLoopState['status'],
+      status: data.status,
       task: data.task,
       currentIteration: data.currentIteration,
       maxIterations: data.maxIterations,

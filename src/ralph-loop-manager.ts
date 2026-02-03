@@ -78,6 +78,12 @@ export class RalphLoopManager {
     this.persistenceService = persistenceService;
     this.terminal = terminal;
 
+    // Recover any loops that were running when the process crashed
+    const interruptedCount = this.persistenceService.recoverInterruptedLoops();
+    if (interruptedCount > 0) {
+      console.log(`[ralph] Recovered ${interruptedCount} interrupted loops`);
+    }
+
     // Load any existing active loops from persistence
     this.loadActiveLoops();
   }

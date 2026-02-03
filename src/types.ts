@@ -72,7 +72,7 @@ export interface RalphLoopState {
   id: string;                   // UUID for this loop
   agentId: string;              // Agent running this loop
   userId: string;               // User who initiated the loop
-  status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   task: string;                 // Original task description
   currentIteration: number;     // Current iteration number
   maxIterations: number;        // Maximum iterations allowed

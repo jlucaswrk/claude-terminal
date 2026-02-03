@@ -50,6 +50,13 @@ export class AgentManager {
         // Rebuild agentsByUser from the persisted userId field
         this.trackAgentForUser(agent.userId, agent.id);
       }
+
+      // Clean up orphaned loop files on startup
+      const agentIds = Array.from(this.agents.keys());
+      const deletedCount = persistenceService.cleanupOrphanedLoops(agentIds);
+      if (deletedCount > 0) {
+        console.log(`Cleaned up ${deletedCount} orphaned loop file(s) on startup`);
+      }
     }
   }
 
@@ -132,6 +139,14 @@ export class AgentManager {
 
     this.agents.delete(agentId);
     this.persist();
+
+    // Clean up orphaned loop files for this deleted agent
+    const remainingAgentIds = Array.from(this.agents.keys());
+    const deletedCount = this.persistenceService.cleanupOrphanedLoops(remainingAgentIds);
+    if (deletedCount > 0) {
+      console.log(`Cleaned up ${deletedCount} orphaned loop file(s) after agent deletion`);
+    }
+
     return true;
   }
 
