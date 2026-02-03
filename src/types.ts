@@ -28,11 +28,13 @@ export interface Agent {
   userId: string;               // Owning user ID (phone number)
   name: string;                 // User-provided name
   type: AgentType;              // 'claude' (default) or 'bash'
+  mode: 'conversational' | 'ralph';  // Agent operation mode
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;           // Absolute path (optional, immutable)
   sessionId?: string;           // Claude session ID (managed by SDK)
+  currentLoopId?: string;       // Active Ralph loop ID (if in ralph mode)
   title: string;                // Auto-generated title (3-5 words)
-  status: 'idle' | 'processing' | 'error';
+  status: 'idle' | 'processing' | 'error' | 'ralph-loop' | 'ralph-paused';
   statusDetails: string;        // e.g., "Awaiting prompt", "Creating API endpoints..."
   priority: 'high' | 'medium' | 'low';
   lastActivity: Date;
@@ -42,12 +44,42 @@ export interface Agent {
 }
 
 /**
+ * Represents a single iteration in a Ralph loop
+ */
+export interface RalphIteration {
+  number: number;               // Iteration number (1-based)
+  model: 'haiku' | 'sonnet' | 'opus';
+  action: string;               // What the agent decided to do
+  prompt: string;               // Prompt sent to Claude
+  response: string;             // Claude's response
+  completionPromiseFound: boolean;  // Whether completion was signaled
+  timestamp: Date;
+  duration: number;             // milliseconds
+}
+
+/**
+ * Represents the state of a Ralph autonomous loop
+ */
+export interface RalphLoopState {
+  id: string;                   // UUID for this loop
+  agentId: string;              // Agent running this loop
+  userId: string;               // User who initiated the loop
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  task: string;                 // Original task description
+  currentIteration: number;     // Current iteration number
+  maxIterations: number;        // Maximum iterations allowed
+  iterations: RalphIteration[]; // History of iterations
+  currentModel: 'haiku' | 'sonnet' | 'opus';
+  startTime: Date;
+}
+
+/**
  * Tracks conversational state per user for multi-step flows
  */
 export interface UserContext {
   userId: string;
-  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji';
-  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text';
+  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'configure_ralph';
+  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations';
   flowData?: {
     agentName?: string;
     agentId?: string;
@@ -123,11 +155,13 @@ export interface SerializedAgent {
   userId: string;               // Owning user ID (phone number)
   name: string;
   type?: AgentType;             // 'claude' (default) or 'bash' - optional for backwards compat
+  mode?: 'conversational' | 'ralph';  // Agent operation mode - optional for backwards compat
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;
   sessionId?: string;
+  currentLoopId?: string;       // Active Ralph loop ID (if in ralph mode)
   title: string;
-  status: 'idle' | 'processing' | 'error';
+  status: 'idle' | 'processing' | 'error' | 'ralph-loop' | 'ralph-paused';
   statusDetails: string;
   priority: 'high' | 'medium' | 'low';
   lastActivity: string;         // ISO date string
