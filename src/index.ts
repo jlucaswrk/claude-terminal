@@ -476,12 +476,16 @@ async function handleTelegramCallback(query: any): Promise<void> {
       const agent = agentManager.createAgent(
         userId,
         flowData.agentName as string,
-        (flowData.agentType || 'claude') as AgentType,
-        flowData.emoji as string,
         flowData.workspace as string | undefined,
-        (flowData.agentMode || 'conversational') as 'conversational' | 'ralph',
+        flowData.emoji as string,
+        (flowData.agentType || 'claude') as AgentType,
         (flowData.modelMode || 'selection') as ModelMode
       );
+
+      // Set agent mode (conversational/ralph) separately
+      if (flowData.agentMode) {
+        agentManager.updateAgentMode(agent.id, flowData.agentMode as 'conversational' | 'ralph');
+      }
 
       userContextManager.clearContext(userId);
 
@@ -3522,8 +3526,7 @@ async function handleRoninQuery(
   let roninAgentData = agentManager.listAgents(userId).find(a => a.name === 'Ronin');
 
   if (!roninAgentData) {
-    roninAgentData = agentManager.createAgent(userId, 'Ronin', 'claude', '🥷');
-    agentManager.setModelMode(roninAgentData.id, 'haiku'); // Fixed Haiku
+    roninAgentData = agentManager.createAgent(userId, 'Ronin', undefined, '🥷', 'claude', 'haiku');
   }
 
   // Send to Claude (Ronin uses Haiku for fast, concise responses)
