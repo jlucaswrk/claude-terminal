@@ -175,3 +175,256 @@ export async function setTelegramWebhook(url: string): Promise<boolean> {
     return false;
   }
 }
+
+// ============================================
+// UI Components for Dojo Mode
+// ============================================
+
+/**
+ * Send mode selector (for onboarding via Telegram)
+ */
+export async function sendTelegramModeSelector(chatId: number): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '*Como voce quer organizar seus agentes?*\n\n' +
+    '*Modo Dojo* (recomendado)\n' +
+    'Agentes organizados no Telegram.\n' +
+    'Cada agente em seu proprio territorio.\n' +
+    'WhatsApp so para consultas rapidas.\n\n' +
+    '*Modo Ronin*\n' +
+    'Voce e seus agentes, tudo no WhatsApp.\n' +
+    'Simples, direto, sem estrutura.',
+    [
+      [
+        { text: 'Dojo (recomendado)', callback_data: 'mode_dojo' },
+        { text: 'Ronin', callback_data: 'mode_ronin' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send agent creation flow - name input
+ */
+export async function sendTelegramAgentNamePrompt(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId,
+    '*Criar novo agente*\n\n' +
+    'Qual o nome do agente?\n' +
+    'Exemplo: Backend API, Data Analysis'
+  );
+}
+
+/**
+ * Send agent type selector
+ */
+export async function sendTelegramAgentTypeSelector(chatId: number): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '*Tipo de agente*',
+    [
+      [
+        { text: 'Claude (AI)', callback_data: 'type_claude' },
+        { text: 'Bash (Terminal)', callback_data: 'type_bash' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send agent mode selector (conversational/ralph)
+ */
+export async function sendTelegramAgentModeSelector(chatId: number): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '*Modo de operacao*\n\n' +
+    '*Conversacional*: Responde a cada mensagem\n' +
+    '*Ralph*: Trabalha autonomamente em loops',
+    [
+      [
+        { text: 'Conversacional', callback_data: 'agentmode_conversational' },
+        { text: 'Ralph Loop', callback_data: 'agentmode_ralph' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send emoji selector
+ */
+export async function sendTelegramEmojiSelector(chatId: number): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '*Escolha um emoji*',
+    [
+      [
+        { text: '🤖', callback_data: 'emoji_🤖' },
+        { text: '🔧', callback_data: 'emoji_🔧' },
+        { text: '📊', callback_data: 'emoji_📊' },
+        { text: '💡', callback_data: 'emoji_💡' },
+      ],
+      [
+        { text: '🎯', callback_data: 'emoji_🎯' },
+        { text: '📝', callback_data: 'emoji_📝' },
+        { text: '🚀', callback_data: 'emoji_🚀' },
+        { text: '⚡', callback_data: 'emoji_⚡' },
+      ],
+      [
+        { text: '🔍', callback_data: 'emoji_🔍' },
+        { text: '💻', callback_data: 'emoji_💻' },
+        { text: '🌐', callback_data: 'emoji_🌐' },
+        { text: '📁', callback_data: 'emoji_📁' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send workspace selector
+ */
+export async function sendTelegramWorkspaceSelector(chatId: number): Promise<void> {
+  const home = process.env.HOME || '/home/user';
+  await sendTelegramButtons(chatId,
+    '*Workspace do agente*\n\n' +
+    'Onde o agente vai trabalhar?',
+    [
+      [
+        { text: 'Home', callback_data: `workspace_${home}` },
+        { text: 'Desktop', callback_data: `workspace_${home}/Desktop` },
+      ],
+      [
+        { text: 'Documents', callback_data: `workspace_${home}/Documents` },
+        { text: 'Pular', callback_data: 'workspace_skip' },
+      ],
+      [
+        { text: 'Customizado', callback_data: 'workspace_custom' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send model mode selector
+ */
+export async function sendTelegramModelModeSelector(chatId: number): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '*Modo de modelo*\n\n' +
+    '*Selecao*: Pergunta qual modelo usar\n' +
+    '*Fixo*: Sempre usa o mesmo modelo',
+    [
+      [
+        { text: 'Selecao', callback_data: 'modelmode_selection' },
+      ],
+      [
+        { text: 'Haiku', callback_data: 'modelmode_haiku' },
+        { text: 'Sonnet', callback_data: 'modelmode_sonnet' },
+        { text: 'Opus', callback_data: 'modelmode_opus' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send model selector for prompt
+ */
+export async function sendTelegramModelSelector(chatId: number, agentName: string): Promise<void> {
+  await sendTelegramButtons(chatId,
+    `*Modelo para ${agentName}*`,
+    [
+      [
+        { text: 'Haiku', callback_data: 'model_haiku' },
+        { text: 'Sonnet', callback_data: 'model_sonnet' },
+        { text: 'Opus', callback_data: 'model_opus' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send confirmation for agent creation
+ */
+export async function sendTelegramAgentConfirmation(
+  chatId: number,
+  name: string,
+  emoji: string,
+  type: string,
+  mode: string,
+  workspace: string | undefined,
+  modelMode: string
+): Promise<void> {
+  const workspaceText = workspace || 'Nenhum (flexivel)';
+  await sendTelegramButtons(chatId,
+    `*Confirmar criacao*\n\n` +
+    `${emoji} *${name}*\n` +
+    `Tipo: ${type}\n` +
+    `Modo: ${mode}\n` +
+    `Workspace: ${workspaceText}\n` +
+    `Modelo: ${modelMode}`,
+    [
+      [
+        { text: 'Criar', callback_data: 'confirm_create' },
+        { text: 'Cancelar', callback_data: 'confirm_cancel' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send dojo activated message
+ */
+export async function sendTelegramDojoActivated(chatId: number, whatsAppRoninInfo: string): Promise<void> {
+  await sendTelegramMessage(chatId,
+    '*Dojo ativado!*\n\n' +
+    '*WhatsApp*: consultas rapidas (read-only)\n' +
+    '*Telegram*: seus agentes organizados\n\n' +
+    'Use /criar para criar seu primeiro agente.\n\n' +
+    `_${whatsAppRoninInfo}_`
+  );
+}
+
+/**
+ * Send command list
+ */
+export async function sendTelegramCommandList(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId,
+    '*Comandos do Dojo*\n\n' +
+    '/criar - Criar novo agente\n' +
+    '/agentes - Listar agentes\n' +
+    '/status - Status de todos\n' +
+    '/help - Esta ajuda'
+  );
+}
+
+/**
+ * Send agents list
+ */
+export async function sendTelegramAgentsList(
+  chatId: number,
+  agents: Array<{ id: string; name: string; emoji: string; status: string; workspace?: string }>
+): Promise<void> {
+  if (agents.length === 0) {
+    await sendTelegramMessage(chatId,
+      '*Seus agentes*\n\n' +
+      'Nenhum agente criado ainda.\n' +
+      'Use /criar para criar um.'
+    );
+    return;
+  }
+
+  const statusEmoji: Record<string, string> = {
+    idle: '⚪',
+    processing: '🔵',
+    error: '🔴',
+    'ralph-loop': '🔄',
+    'ralph-paused': '⏸️',
+  };
+
+  let text = '*Seus agentes*\n\n';
+  const buttons: Array<{ text: string; callback_data: string }[]> = [];
+
+  for (const agent of agents) {
+    const status = statusEmoji[agent.status] || '⚪';
+    text += `${agent.emoji} *${agent.name}* ${status}\n`;
+    if (agent.workspace) {
+      text += `   ${agent.workspace}\n`;
+    }
+    buttons.push([{ text: `${agent.emoji} ${agent.name}`, callback_data: `agent_${agent.id}` }]);
+  }
+
+  await sendTelegramButtons(chatId, text, buttons);
+}
