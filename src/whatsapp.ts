@@ -2518,3 +2518,88 @@ export async function sendUnlinkedGroupMessage(to: string): Promise<void> {
 
 Este grupo não está associado a nenhum agente Claude.`);
 }
+
+// =============================================================================
+// Onboarding UI Functions (Ronin/Dojo Mode Selection)
+// =============================================================================
+
+/**
+ * Send mode selector for onboarding (Ronin vs Dojo)
+ */
+export async function sendUserModeSelector(to: string): Promise<void> {
+  await sendButtons(to,
+    `*Como voce quer organizar seus agentes?*
+
+*Modo Dojo* (recomendado)
+Agentes organizados no Telegram.
+Cada agente em seu proprio territorio.
+WhatsApp so para consultas rapidas.
+
+*Modo Ronin*
+Voce e seus agentes, tudo no WhatsApp.
+Simples, direto, sem estrutura.`,
+    [
+      { id: 'usermode_dojo', title: 'Dojo' },
+      { id: 'usermode_ronin', title: 'Ronin' },
+    ]
+  );
+}
+
+/**
+ * Send telegram username prompt
+ */
+export async function sendTelegramUsernamePrompt(to: string): Promise<void> {
+  await sendWhatsApp(to,
+    `*Configurar Dojo*
+
+Qual seu username do Telegram? (sem @)
+
+Exemplo: se voce e @lucas, digite apenas: lucas`
+  );
+}
+
+/**
+ * Send dojo activation confirmation
+ */
+export async function sendDojoActivated(to: string, telegramBotUsername: string): Promise<void> {
+  await sendWhatsApp(to,
+    `*Dojo ativado!*
+
+*WhatsApp*: consultas rapidas com o Ronin
+*Telegram*: seus agentes organizados
+
+Abra o Telegram e inicie conversa com @${telegramBotUsername}
+
+_Dica: O Ronin aqui e read-only e responde curto._`
+  );
+}
+
+/**
+ * Send ronin mode confirmation
+ */
+export async function sendRoninActivated(to: string): Promise<void> {
+  await sendWhatsApp(to,
+    `*Modo Ronin ativado!*
+
+Todos os seus agentes ficam aqui no WhatsApp.
+Use / para criar e gerenciar agentes.`
+  );
+}
+
+/**
+ * Send ronin response (concise, for Dojo mode WhatsApp)
+ */
+export async function sendRoninResponse(to: string, response: string): Promise<void> {
+  // Ronin responses are always short and simple
+  await sendWhatsApp(to, response);
+}
+
+/**
+ * Send ronin rejection (when user tries to do something Ronin can't)
+ */
+export async function sendRoninRejection(to: string, action: string): Promise<void> {
+  await sendWhatsApp(to,
+    `Nao posso ${action} - sou read-only.
+Use o Dojo no Telegram para isso.`
+  );
+}
