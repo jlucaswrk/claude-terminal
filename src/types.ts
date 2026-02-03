@@ -52,6 +52,7 @@ export interface Agent {
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;           // Absolute path (optional, immutable)
   groupId?: string;             // WhatsApp group ID (format: 120363...@g.us, immutable)
+  telegramChatId?: number;      // Telegram group/chat ID for this agent
   modelMode: ModelMode;         // 'selection' (asks each time) or fixed model
   sessionId?: string;           // Claude session ID (managed by SDK)
   currentLoopId?: string;       // Active Ralph loop ID (if in ralph mode)
@@ -141,6 +142,8 @@ export interface UserPreferences {
   telegramUsername?: string;       // Telegram username (without @)
   telegramChatId?: number;         // Telegram chat ID for direct messages
   onboardingComplete: boolean;     // Whether user completed mode selection
+  orphanedTelegramGroups?: number[];  // Telegram groups without linked agents (for cleanup)
+  sandboxAutoCleanup?: boolean;    // Auto-cleanup sandbox directory on agent deletion
 }
 
 /**
@@ -152,6 +155,8 @@ export interface SerializedUserPreferences {
   telegramUsername?: string;
   telegramChatId?: number;
   onboardingComplete: boolean;
+  orphanedTelegramGroups?: number[];
+  sandboxAutoCleanup?: boolean;
 }
 
 /**
@@ -165,7 +170,7 @@ export interface QueueTask {
   priority: number;             // 0-2 (high=0, medium=1, low=2)
   timestamp: Date;
   userId: string;
-  replyTo?: string;             // Where to send response (userId or groupId)
+  replyTo?: string | number;    // Where to send response (userId, groupId, or Telegram chatId)
   images?: Array<{
     data: string; // base64 encoded
     mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
@@ -208,6 +213,7 @@ export interface SerializedAgent {
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;
   groupId?: string;             // WhatsApp group ID (format: 120363...@g.us)
+  telegramChatId?: number;      // Telegram group/chat ID for this agent
   modelMode?: ModelMode;        // Model mode - optional for backwards compat
   sessionId?: string;
   currentLoopId?: string;       // Active Ralph loop ID (if in ralph mode)

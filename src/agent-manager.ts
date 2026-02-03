@@ -369,6 +369,46 @@ export class AgentManager {
   }
 
   /**
+   * Set the Telegram chat ID for an agent
+   */
+  setTelegramChatId(agentId: string, chatId: number): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent) return false;
+
+    agent.telegramChatId = chatId;
+    this.persist();
+    return true;
+  }
+
+  /**
+   * Get an agent by its Telegram chat ID
+   */
+  getAgentByTelegramChatId(chatId: number): Agent | undefined {
+    for (const agent of this.agents.values()) {
+      if (agent.telegramChatId === chatId) {
+        return agent;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Update agent name
+   * @throws AgentValidationError if validation fails
+   */
+  updateAgentName(agentId: string, name: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new AgentValidationError(`Agent not found: ${agentId}`);
+    }
+
+    this.validateName(name);
+    agent.name = name.trim();
+    agent.lastActivity = new Date();
+    this.persist();
+  }
+
+  /**
    * Set the model mode for an agent
    */
   setModelMode(agentId: string, modelMode: ModelMode): boolean {

@@ -6,9 +6,16 @@
  * - Bot initialization
  * - Message sending
  * - Webhook processing
+ * - Group management (via Bot API - limited capabilities)
+ *
+ * Note: Telegram Bot API cannot create groups programmatically.
+ * Only the Client API (MTProto) can create groups. We provide
+ * guided onboarding for manual group creation instead.
  */
 
 import TelegramBot from 'node-telegram-bot-api';
+import { existsSync, mkdirSync, rmSync, readdirSync } from 'fs';
+import { join } from 'path';
 
 // Configuration
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -427,4 +434,256 @@ export async function sendTelegramAgentsList(
   }
 
   await sendTelegramButtons(chatId, text, buttons);
+}
+
+// ============================================
+// Telegram Group Management API
+// ============================================
+
+/**
+ * Link result for group-agent association
+ */
+export interface GroupLinkResult {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Link a Telegram group to an agent
+ * Called when bot detects it was added to a group via my_chat_member update
+ *
+ * Note: This function is for tracking/association only.
+ * The actual linking is done through AgentManager.setTelegramChatId()
+ */
+export function linkTelegramGroupToAgent(chatId: number, agentId: string): GroupLinkResult {
+  // This is a tracking function - actual linking is done through AgentManager
+  // We just validate the inputs here
+  if (!chatId || chatId === 0) {
+    return { success: false, error: 'Invalid chat ID' };
+  }
+  if (!agentId || agentId.trim() === '') {
+    return { success: false, error: 'Invalid agent ID' };
+  }
+  return { success: true };
+}
+
+/**
+ * Bot leaves a Telegram group
+ */
+export async function leaveTelegramGroup(chatId: number): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    await telegramBot.leaveChat(chatId);
+    return true;
+  } catch (error) {
+    console.error('Failed to leave Telegram group:', error);
+    return false;
+  }
+}
+
+/**
+ * Update Telegram group title
+ * Note: Bot must be an admin with change_info permission
+ */
+export async function updateTelegramGroupTitle(chatId: number, title: string): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    await telegramBot.setChatTitle(chatId, title);
+    return true;
+  } catch (error) {
+    console.error('Failed to update Telegram group title:', error);
+    return false;
+  }
+}
+
+/**
+ * Update Telegram group description
+ * Note: Bot must be an admin with change_info permission
+ */
+export async function updateTelegramGroupDescription(chatId: number, description: string): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    await telegramBot.setChatDescription(chatId, description);
+    return true;
+  } catch (error) {
+    console.error('Failed to update Telegram group description:', error);
+    return false;
+  }
+}
+
+/**
+ * Send instructions for manual group creation
+ * Telegram Bot API cannot create groups - only MTProto/Client API can
+ * This guides users through manual group creation and bot addition
+ */
+export async function sendGroupCreationInstructions(
+  chatId: number,
+  agentName: string,
+  agentEmoji: string
+): Promise<void> {
+  const botInfo = await getBotInfo();
+  const botUsername = botInfo?.username || 'seu_bot';
+
+  await sendTelegramMessage(chatId,
+    `*Criar grupo para ${agentEmoji} ${agentName}*\n\n` +
+    `O Telegram nao permite que bots criem grupos automaticamente. ` +
+    `Siga estes passos:\n\n` +
+    `1️⃣ Crie um novo grupo no Telegram\n` +
+    `2️⃣ Nomeie o grupo: "${agentEmoji} ${agentName}"\n` +
+    `3️⃣ Adicione @${botUsername} ao grupo\n` +
+    `4️⃣ Promova o bot para admin (opcional, para editar nome/descricao)\n\n` +
+    `Quando voce adicionar o bot ao grupo, ele sera vinculado automaticamente ao agente.\n\n` +
+    `_Dica: Grupos separados por agente ajudam a organizar conversas e historico._`
+  );
+}
+
+/**
+ * Send confirmation that bot was added to a group
+ */
+export async function sendGroupLinkedConfirmation(
+  chatId: number,
+  agentName: string,
+  agentEmoji: string
+): Promise<void> {
+  await sendTelegramMessage(chatId,
+    `${agentEmoji} *Grupo vinculado!*\n\n` +
+    `Este grupo agora esta conectado ao agente *${agentName}*.\n\n` +
+    `Envie mensagens aqui para interagir diretamente com o agente.\n` +
+    `Use /status para ver o estado do agente.`
+  );
+}
+
+/**
+ * Get chat information
+ */
+export async function getTelegramChat(chatId: number): Promise<TelegramBot.Chat | null> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return null;
+
+  try {
+    return await telegramBot.getChat(chatId);
+  } catch (error) {
+    console.error('Failed to get Telegram chat:', error);
+    return null;
+  }
+}
+
+// ============================================
+// Workspace Sandbox Management
+// ============================================
+
+/**
+ * Default sandbox directory path
+ */
+export const SANDBOX_DIR = join(process.env.HOME || '/tmp', 'temp', 'claude-terminal-sandbox');
+
+/**
+ * Ensure the sandbox directory exists
+ * Creates ~/temp/claude-terminal-sandbox if it doesn't exist
+ */
+export function ensureSandboxDirectory(): string {
+  const tempDir = join(process.env.HOME || '/tmp', 'temp');
+
+  // Create parent temp directory if needed
+  if (!existsSync(tempDir)) {
+    mkdirSync(tempDir, { recursive: true });
+  }
+
+  // Create sandbox directory if needed
+  if (!existsSync(SANDBOX_DIR)) {
+    mkdirSync(SANDBOX_DIR, { recursive: true });
+  }
+
+  return SANDBOX_DIR;
+}
+
+/**
+ * Get or create an agent-specific sandbox directory
+ */
+export function getAgentSandboxPath(agentId: string): string {
+  ensureSandboxDirectory();
+  const agentPath = join(SANDBOX_DIR, agentId);
+
+  if (!existsSync(agentPath)) {
+    mkdirSync(agentPath, { recursive: true });
+  }
+
+  return agentPath;
+}
+
+/**
+ * Clean up an agent's sandbox directory
+ */
+export function cleanupAgentSandbox(agentId: string): boolean {
+  const agentPath = join(SANDBOX_DIR, agentId);
+
+  if (!existsSync(agentPath)) {
+    return true; // Already clean
+  }
+
+  try {
+    rmSync(agentPath, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    console.error(`Failed to cleanup sandbox for agent ${agentId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Clean up all orphaned sandbox directories
+ * Removes directories for agents that no longer exist
+ */
+export function cleanupOrphanedSandboxes(activeAgentIds: string[]): number {
+  if (!existsSync(SANDBOX_DIR)) {
+    return 0;
+  }
+
+  let cleaned = 0;
+  const activeSet = new Set(activeAgentIds);
+
+  try {
+    const entries = readdirSync(SANDBOX_DIR, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (entry.isDirectory() && !activeSet.has(entry.name)) {
+        const orphanPath = join(SANDBOX_DIR, entry.name);
+        try {
+          rmSync(orphanPath, { recursive: true, force: true });
+          cleaned++;
+          console.log(`Cleaned orphaned sandbox: ${entry.name}`);
+        } catch (error) {
+          console.error(`Failed to clean orphaned sandbox ${entry.name}:`, error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Failed to list sandbox directory:', error);
+  }
+
+  return cleaned;
+}
+
+/**
+ * Get sandbox statistics
+ */
+export function getSandboxStats(): { total: number; directories: string[] } {
+  if (!existsSync(SANDBOX_DIR)) {
+    return { total: 0, directories: [] };
+  }
+
+  try {
+    const entries = readdirSync(SANDBOX_DIR, { withFileTypes: true });
+    const directories = entries.filter(e => e.isDirectory()).map(e => e.name);
+    return { total: directories.length, directories };
+  } catch (error) {
+    console.error('Failed to get sandbox stats:', error);
+    return { total: 0, directories: [] };
+  }
 }
