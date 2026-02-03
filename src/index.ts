@@ -503,6 +503,7 @@ async function handleTelegramMessage(message: any): Promise<void> {
   const hasDocument = !!message.document;
   const msgType = hasPhoto ? '[photo]' : hasDocument ? '[document]' : text.slice(0, 50);
   console.log(`[telegram] ${from.username || from.id} (${chatType}): ${msgType}`);
+  console.log(`[telegram] DEBUG: chatId=${chatId}, chatType=${chatType}, from.username=${from.username}, from.id=${from.id}`);
 
   // Find user by telegram username
   const allPrefs = persistenceService.getAllUserPreferences();
@@ -1891,6 +1892,19 @@ async function handleTelegramHistoryCallback(chatId: number, agent: Agent): Prom
  * Must be called from within a group chat
  */
 async function handleTelegramLinkCommand(chatId: number, userId: string): Promise<void> {
+  // Verify this is a group chat (groups have negative IDs in Telegram)
+  if (chatId > 0) {
+    await sendTelegramMessage(chatId,
+      '⚠️ *Comando inválido*\n\n' +
+      'O comando /link só funciona em grupos.\n\n' +
+      '*Para vincular um agente:*\n' +
+      '1️⃣ Crie um grupo no Telegram\n' +
+      '2️⃣ Adicione @ClaudeTerminalBot ao grupo\n' +
+      '3️⃣ Envie /link no grupo'
+    );
+    return;
+  }
+
   // Find user's most recently created agent without a telegram chat ID
   const agents = agentManager.listAgents(userId)
     .filter(a => a.name !== 'Ronin' && !a.telegramChatId)
