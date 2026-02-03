@@ -19,6 +19,8 @@ export type TelegramRouteResult =
   | { action: 'command'; command: string; args: string; chatId: number; userId: string }
   | { action: 'flow_input'; text: string; chatId: number; userId: string }
   | { action: 'unknown_user'; chatId: number }
+  | { action: 'ralph_loop'; agentId: string; task: string; chatId: number; userId: string }
+  | { action: 'bash_command'; agentId: string; command: string; chatId: number; userId: string }
   | { action: 'ignore' };
 
 /**
@@ -59,10 +61,27 @@ export class TelegramCommandHandler {
     // Check if this is a command (starts with /)
     if (text.startsWith('/')) {
       const [command, ...argParts] = text.split(' ');
+      const commandLower = command.toLowerCase();
+      const args = argParts.join(' ');
+
+      // Special handling for /ralph command - parse task inline
+      if (commandLower === '/ralph' && args.trim()) {
+        const agent = this.agentManager.getAgentByTelegramChatId(chatId);
+        if (agent && agent.userId === userId) {
+          return {
+            action: 'ralph_loop',
+            agentId: agent.id,
+            task: args.trim(),
+            chatId,
+            userId,
+          };
+        }
+      }
+
       return {
         action: 'command',
-        command: command.toLowerCase(),
-        args: argParts.join(' '),
+        command: commandLower,
+        args,
         chatId,
         userId,
       };
@@ -83,6 +102,28 @@ export class TelegramCommandHandler {
     // Verify agent belongs to this user
     if (agent.userId !== userId) {
       return { action: 'ignore' };
+    }
+
+    // Check for bash prefix ($ or >) - execute immediately as bash
+    if ((text.startsWith('$ ') || text.startsWith('> ')) && agent.type === 'bash') {
+      return {
+        action: 'bash_command',
+        agentId: agent.id,
+        command: text.slice(2).trim(),
+        chatId,
+        userId,
+      };
+    }
+
+    // For bash agents, all messages are treated as commands
+    if (agent.type === 'bash') {
+      return {
+        action: 'bash_command',
+        agentId: agent.id,
+        command: text.trim(),
+        chatId,
+        userId,
+      };
     }
 
     // Parse model prefix from text

@@ -102,8 +102,8 @@ export interface RalphLoopState {
 export interface UserContext {
   userId: string;
   activeAgentId?: string;         // Persists across clearContext() for continuous conversations
-  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'onboarding';
-  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_mode_selection' | 'awaiting_telegram_username';
+  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'onboarding' | 'ralph_loop' | 'image_action' | 'document_action';
+  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_mode_selection' | 'awaiting_telegram_username' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt';
   flowData?: {
     agentName?: string;
     agentId?: string;
@@ -115,6 +115,13 @@ export interface UserContext {
     priority?: string;
     userMode?: UserMode;           // For onboarding flow
     telegramUsername?: string;     // For onboarding flow
+    ralphTask?: string;            // Ralph loop task description
+    ralphMaxIterations?: number;   // Ralph loop max iterations
+    ralphLoopId?: string;          // Active Ralph loop ID
+    telegramChatId?: number;       // Telegram chat ID for the flow
+    pendingImageFileId?: string;   // Telegram file ID for pending image
+    pendingDocumentFileId?: string; // Telegram file ID for pending document
+    pendingDocumentFilename?: string; // Original filename of pending document
     [key: string]: unknown;
   };
   pendingPrompt?: {

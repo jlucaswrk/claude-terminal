@@ -42,6 +42,13 @@ export class UserContextManager {
   }
 
   /**
+   * Update the context for a user (alias for setContext, clearer intent)
+   */
+  updateContext(userId: string, context: UserContext): void {
+    this.contexts.set(userId, context);
+  }
+
+  /**
    * Clear the context for a user (after flow completion)
    * Preserves activeAgentId and pendingPrompt for continuous conversations
    */

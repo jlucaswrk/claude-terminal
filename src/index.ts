@@ -57,6 +57,7 @@ import {
   getBotInfo,
   sendTelegramMessage,
   sendTelegramPhoto,
+  sendTelegramDocument,
   sendTelegramButtons,
   sendTelegramCommandList,
   sendTelegramAgentNamePrompt,
@@ -83,6 +84,20 @@ import {
   updateTelegramGroupTitle,
   SANDBOX_DIR,
   ensureSandboxDirectory,
+  // Ralph Loop UI
+  sendTelegramRalphConfirmation,
+  sendTelegramRalphIterationsConfig,
+  sendTelegramRalphProgress,
+  sendTelegramRalphPaused,
+  sendTelegramRalphComplete,
+  // Media handling UI
+  sendTelegramImageOptions,
+  sendTelegramDocumentOptions,
+  sendTelegramImageProcessing,
+  sendTelegramDocumentProcessing,
+  // File download
+  downloadTelegramFile,
+  editTelegramMessage,
 } from './telegram';
 import { MessageRouter } from './message-router';
 import { TelegramCommandHandler } from './telegram-command-handler';
@@ -437,10 +452,15 @@ async function handleTelegramUpdate(update: any): Promise<void> {
 async function handleTelegramMessage(message: any): Promise<void> {
   const chatId = message.chat.id;
   const text = message.text || '';
+  const caption = message.caption || '';
   const from = message.from;
   const chatType = message.chat.type || 'private';
 
-  console.log(`[telegram] ${from.username || from.id} (${chatType}): ${text}`);
+  // Log message type
+  const hasPhoto = !!message.photo;
+  const hasDocument = !!message.document;
+  const msgType = hasPhoto ? '[photo]' : hasDocument ? '[document]' : text.slice(0, 50);
+  console.log(`[telegram] ${from.username || from.id} (${chatType}): ${msgType}`);
 
   // Find user by telegram username
   const allPrefs = persistenceService.getAllUserPreferences();
@@ -464,6 +484,18 @@ async function handleTelegramMessage(message: any): Promise<void> {
 
   const userId = userPrefs.userId;
   const isGroup = telegramCommandHandler.isGroupChat(chatType);
+
+  // Handle photo messages in groups
+  if (isGroup && message.photo) {
+    await handleTelegramImageMessage(chatId, userId, message.photo, caption);
+    return;
+  }
+
+  // Handle document messages in groups
+  if (isGroup && message.document) {
+    await handleTelegramDocumentMessage(chatId, userId, message.document, caption);
+    return;
+  }
 
   // Route based on chat type using TelegramCommandHandler
   if (isGroup) {
@@ -496,6 +528,16 @@ async function handleTelegramMessage(message: any): Promise<void> {
         userContextManager.setPendingPrompt(userId, route.text, undefined);
         userContextManager.startPromptFlow(userId, route.agentId);
         await sendTelegramModelSelector(chatId, agentManager.getAgent(route.agentId)?.name || 'Agent');
+        return;
+
+      case 'ralph_loop':
+        // Handle /ralph <task> command - show confirmation UI
+        await handleTelegramRalphCommand(chatId, userId, route.agentId, route.task);
+        return;
+
+      case 'bash_command':
+        // Handle bash command for bash agents
+        await handleTelegramBashCommand(chatId, userId, route.agentId, route.command);
         return;
 
       case 'orphaned_group':
@@ -595,6 +637,454 @@ async function handleTelegramMessage(message: any): Promise<void> {
 
   // Default: show help
   await sendTelegramCommandList(chatId);
+}
+
+// =============================================================================
+// Telegram Ralph Loop Handlers
+// =============================================================================
+
+/**
+ * Handle /ralph <task> command - show confirmation UI
+ */
+async function handleTelegramRalphCommand(
+  chatId: number,
+  userId: string,
+  agentId: string,
+  task: string
+): Promise<void> {
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    await sendTelegramMessage(chatId, '❌ Agente não encontrado.');
+    return;
+  }
+
+  // Store Ralph loop data in user context
+  const context = userContextManager.getContext(userId) || { userId };
+  context.currentFlow = 'ralph_loop';
+  context.flowState = 'awaiting_confirmation';
+  context.flowData = {
+    ...context.flowData,
+    agentId,
+    ralphTask: task,
+    ralphMaxIterations: 10, // Default
+    telegramChatId: chatId,
+  };
+  userContextManager.updateContext(userId, context);
+
+  // Show confirmation UI
+  await sendTelegramRalphConfirmation(chatId, agent.name, task, 10);
+}
+
+/**
+ * Handle Ralph loop start (after confirmation)
+ */
+async function handleTelegramRalphStart(
+  chatId: number,
+  userId: string
+): Promise<void> {
+  const context = userContextManager.getContext(userId);
+  const flowData = context?.flowData;
+
+  if (!flowData?.agentId || !flowData?.ralphTask) {
+    await sendTelegramMessage(chatId, '❌ Dados do loop não encontrados.');
+    return;
+  }
+
+  const agent = agentManager.getAgent(flowData.agentId);
+  if (!agent) {
+    await sendTelegramMessage(chatId, '❌ Agente não encontrado.');
+    return;
+  }
+
+  const maxIterations = (flowData.ralphMaxIterations as number) || 10;
+
+  try {
+    // Create the loop
+    const loopId = ralphLoopManager.start(
+      flowData.agentId,
+      flowData.ralphTask,
+      maxIterations,
+      'sonnet' // Default model for Ralph loops
+    );
+
+    // Store loop ID
+    flowData.ralphLoopId = loopId;
+    userContextManager.updateContext(userId, context!);
+
+    // Send started message
+    await sendTelegramMessage(chatId,
+      `🔄 *Ralph Loop iniciado*\n\n` +
+      `*Agente:* ${agent.name}\n` +
+      `*Máx. iterações:* ${maxIterations}`
+    );
+
+    // Clear the flow state (loop is now running independently)
+    userContextManager.clearContext(userId);
+
+    // Execute the loop (async - will send progress updates)
+    const startTime = Date.now();
+
+    // Set up progress callback for this specific loop
+    const originalCallback = ralphLoopManager['progressCallback'];
+    ralphLoopManager.setProgressCallback(async (loopIdCallback, iteration, max, action) => {
+      if (loopIdCallback === loopId) {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        await sendTelegramRalphProgress(chatId, loopId, iteration, max, action, elapsed);
+      }
+      // Call original callback too
+      if (originalCallback) {
+        originalCallback(loopIdCallback, iteration, max, action);
+      }
+    });
+
+    // Execute and handle completion
+    const result = await ralphLoopManager.execute(loopId);
+
+    // Restore original callback
+    if (originalCallback) {
+      ralphLoopManager.setProgressCallback(originalCallback);
+    }
+
+    const durationSeconds = Math.floor((Date.now() - startTime) / 1000);
+
+    // Send completion message
+    await sendTelegramRalphComplete(
+      chatId,
+      result.iterations,
+      durationSeconds,
+      result.status as 'completed' | 'cancelled' | 'blocked' | 'failed',
+      result.error
+    );
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendTelegramMessage(chatId, `❌ Erro ao iniciar loop: ${errorMessage}`);
+    userContextManager.clearContext(userId);
+  }
+}
+
+/**
+ * Handle Ralph loop pause
+ */
+async function handleTelegramRalphPause(chatId: number, loopId: string): Promise<void> {
+  try {
+    const loop = ralphLoopManager.getLoop(loopId);
+    if (!loop) {
+      await sendTelegramMessage(chatId, '❌ Loop não encontrado.');
+      return;
+    }
+
+    await ralphLoopManager.pause(loopId);
+    await sendTelegramRalphPaused(chatId, loopId, loop.currentIteration, loop.maxIterations);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendTelegramMessage(chatId, `❌ Erro ao pausar: ${errorMessage}`);
+  }
+}
+
+/**
+ * Handle Ralph loop resume
+ */
+async function handleTelegramRalphResume(chatId: number, loopId: string): Promise<void> {
+  try {
+    const loop = ralphLoopManager.getLoop(loopId);
+    if (!loop) {
+      await sendTelegramMessage(chatId, '❌ Loop não encontrado.');
+      return;
+    }
+
+    await sendTelegramMessage(chatId, '▶️ Retomando loop...');
+
+    const startTime = Date.now() - (loop.currentIteration * 30000); // Estimate previous time
+    const result = await ralphLoopManager.resume(loopId);
+    const durationSeconds = Math.floor((Date.now() - startTime) / 1000);
+
+    await sendTelegramRalphComplete(
+      chatId,
+      result.iterations,
+      durationSeconds,
+      result.status as 'completed' | 'cancelled' | 'blocked' | 'failed',
+      result.error
+    );
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendTelegramMessage(chatId, `❌ Erro ao retomar: ${errorMessage}`);
+  }
+}
+
+/**
+ * Handle Ralph loop cancel/stop
+ */
+async function handleTelegramRalphStop(chatId: number, loopId: string): Promise<void> {
+  try {
+    const loop = ralphLoopManager.getLoop(loopId);
+    if (!loop) {
+      await sendTelegramMessage(chatId, '❌ Loop não encontrado.');
+      return;
+    }
+
+    await ralphLoopManager.cancel(loopId);
+    await sendTelegramMessage(chatId, '🛑 Loop cancelado.');
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendTelegramMessage(chatId, `❌ Erro ao cancelar: ${errorMessage}`);
+  }
+}
+
+// =============================================================================
+// Telegram Bash Command Handler
+// =============================================================================
+
+/**
+ * Handle bash command for bash agents in Telegram groups
+ */
+async function handleTelegramBashCommand(
+  chatId: number,
+  userId: string,
+  agentId: string,
+  command: string
+): Promise<void> {
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    await sendTelegramMessage(chatId, '❌ Agente não encontrado.');
+    return;
+  }
+
+  await sendTelegramMessage(chatId, `🔧 Executando: \`${command.slice(0, 50)}${command.length > 50 ? '...' : ''}\``);
+
+  try {
+    // Execute the bash command
+    const result = await executeCommand(command, {
+      timeout: DEFAULTS.BASH_TIMEOUT,
+      maxOutput: DEFAULTS.BASH_MAX_OUTPUT,
+      cwd: agent.workspace,
+    });
+
+    // Format the result
+    const formattedOutput = formatBashResult(result);
+
+    // Check if output needs truncation
+    if (formattedOutput.length > DEFAULTS.BASH_TRUNCATE_AT) {
+      // Send truncated version
+      const truncated = formattedOutput.slice(0, DEFAULTS.BASH_TRUNCATE_AT);
+      await sendTelegramMessage(chatId,
+        `\`\`\`\n${truncated}\n\`\`\`\n\n` +
+        `⚠️ _Saída truncada. Arquivo completo enviado abaixo._`
+      );
+
+      // Send full output as document
+      const fullOutputFilename = getFullOutputFilename(command);
+      await sendTelegramDocument(
+        chatId,
+        Buffer.from(result.output, 'utf-8'),
+        fullOutputFilename,
+        `Saída completa de: ${command.slice(0, 30)}...`
+      );
+    } else {
+      // Send normal output
+      const statusIcon = result.exitCode === 0 ? '✅' : '❌';
+      await sendTelegramMessage(chatId,
+        `${statusIcon} \`exit ${result.exitCode}\`\n\n` +
+        `\`\`\`\n${formattedOutput || '(sem saída)'}\n\`\`\``
+      );
+    }
+
+    // Update agent status
+    agentManager.updateAgentStatus(agentId, 'idle', `Executou: ${command.slice(0, 30)}...`);
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendTelegramMessage(chatId, `❌ Erro: ${errorMessage}`);
+    agentManager.updateAgentStatus(agentId, 'error', errorMessage);
+  }
+}
+
+// =============================================================================
+// Telegram Media Handlers
+// =============================================================================
+
+/**
+ * Handle image message in Telegram group
+ */
+async function handleTelegramImageMessage(
+  chatId: number,
+  userId: string,
+  photo: any[],
+  caption?: string
+): Promise<void> {
+  // Get the largest photo (last in array)
+  const largestPhoto = photo[photo.length - 1];
+  const fileId = largestPhoto.file_id;
+
+  // Find the agent linked to this group
+  const agent = agentManager.getAgentByTelegramChatId(chatId);
+  if (!agent) {
+    await sendTelegramMessage(chatId, '⚠️ Grupo não vinculado a um agente.');
+    return;
+  }
+
+  // If there's a caption, use it as the prompt
+  if (caption && caption.trim()) {
+    await processTelegramImageWithPrompt(chatId, userId, agent.id, fileId, caption.trim());
+    return;
+  }
+
+  // No caption - show options
+  await sendTelegramImageOptions(chatId, fileId);
+
+  // Store the image file ID in user context for later
+  const context = userContextManager.getContext(userId) || { userId };
+  context.currentFlow = 'image_action';
+  context.flowData = {
+    ...context.flowData,
+    pendingImageFileId: fileId,
+    agentId: agent.id,
+    telegramChatId: chatId,
+  };
+  userContextManager.updateContext(userId, context);
+}
+
+/**
+ * Process image with a given prompt
+ */
+async function processTelegramImageWithPrompt(
+  chatId: number,
+  userId: string,
+  agentId: string,
+  fileId: string,
+  prompt: string
+): Promise<void> {
+  await sendTelegramImageProcessing(chatId);
+
+  try {
+    // Download the image
+    const fileData = await downloadTelegramFile(fileId);
+    if (!fileData) {
+      await sendTelegramMessage(chatId, '❌ Erro ao baixar imagem.');
+      return;
+    }
+
+    // Convert to base64
+    const base64Data = fileData.buffer.toString('base64');
+
+    // Validate MIME type for Claude
+    const validMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
+    type ValidMimeType = (typeof validMimeTypes)[number];
+    const validMimeType: ValidMimeType = validMimeTypes.includes(fileData.mimeType as ValidMimeType)
+      ? (fileData.mimeType as ValidMimeType)
+      : 'image/jpeg';
+
+    const images = [{ data: base64Data, mimeType: validMimeType }];
+
+    // Queue the prompt with image
+    queueManager.enqueue({
+      agentId,
+      prompt,
+      model: 'sonnet', // Default model for image analysis
+      userId,
+      replyTo: chatId,
+      images,
+    });
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendTelegramMessage(chatId, `❌ Erro: ${errorMessage}`);
+  }
+}
+
+/**
+ * Handle document message in Telegram group
+ */
+async function handleTelegramDocumentMessage(
+  chatId: number,
+  userId: string,
+  document: any,
+  caption?: string
+): Promise<void> {
+  const fileId = document.file_id;
+  const filename = document.file_name || 'documento';
+
+  // Find the agent linked to this group
+  const agent = agentManager.getAgentByTelegramChatId(chatId);
+  if (!agent) {
+    await sendTelegramMessage(chatId, '⚠️ Grupo não vinculado a um agente.');
+    return;
+  }
+
+  // If there's a caption, use it as the prompt
+  if (caption && caption.trim()) {
+    await processTelegramDocumentWithPrompt(chatId, userId, agent.id, fileId, filename, caption.trim());
+    return;
+  }
+
+  // No caption - show options
+  await sendTelegramDocumentOptions(chatId, fileId, filename);
+
+  // Store the document info in user context for later
+  const context = userContextManager.getContext(userId) || { userId };
+  context.currentFlow = 'document_action';
+  context.flowData = {
+    ...context.flowData,
+    pendingDocumentFileId: fileId,
+    pendingDocumentFilename: filename,
+    agentId: agent.id,
+    telegramChatId: chatId,
+  };
+  userContextManager.updateContext(userId, context);
+}
+
+/**
+ * Process document with a given prompt/action
+ */
+async function processTelegramDocumentWithPrompt(
+  chatId: number,
+  userId: string,
+  agentId: string,
+  fileId: string,
+  filename: string,
+  prompt: string
+): Promise<void> {
+  await sendTelegramDocumentProcessing(chatId, filename);
+
+  try {
+    // Download the document
+    const fileData = await downloadTelegramFile(fileId);
+    if (!fileData) {
+      await sendTelegramMessage(chatId, '❌ Erro ao baixar documento.');
+      return;
+    }
+
+    // Convert content to text (for text-based files)
+    const textMimeTypes = [
+      'text/plain', 'text/markdown', 'text/html', 'text/css',
+      'text/javascript', 'text/typescript', 'text/x-python',
+      'application/json', 'text/csv',
+    ];
+
+    let fileContent: string;
+    if (textMimeTypes.includes(fileData.mimeType)) {
+      fileContent = fileData.buffer.toString('utf-8');
+    } else {
+      // For binary files, include base64 reference
+      fileContent = `[Arquivo binário: ${filename} (${fileData.buffer.length} bytes)]`;
+    }
+
+    // Build prompt with file content
+    const fullPrompt = `Arquivo: ${filename}\n\nConteúdo:\n\`\`\`\n${fileContent.slice(0, 50000)}\n\`\`\`\n\nInstrução: ${prompt}`;
+
+    // Queue the prompt
+    queueManager.enqueue({
+      agentId,
+      prompt: fullPrompt,
+      model: 'sonnet', // Default model for document analysis
+      userId,
+      replyTo: chatId,
+    });
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendTelegramMessage(chatId, `❌ Erro: ${errorMessage}`);
+  }
 }
 
 /**
@@ -768,6 +1258,33 @@ async function handleTelegramFlowInput(chatId: number, userId: string, text: str
           const errorMessage = error instanceof Error ? error.message : String(error);
           await sendTelegramMessage(chatId, `❌ Erro: ${errorMessage}`);
         }
+      }
+    }
+  }
+  // Handle custom iterations input for Ralph loop
+  else if (flow === 'ralph_loop' && state === 'awaiting_custom_iterations') {
+    const iterations = parseInt(text.trim(), 10);
+
+    if (isNaN(iterations) || iterations < 1 || iterations > 100) {
+      await sendTelegramMessage(chatId, '❌ Número inválido. Envie um valor entre 1 e 100.');
+      return;
+    }
+
+    const context = userContextManager.getContext(userId);
+    if (context?.flowData) {
+      context.flowData.ralphMaxIterations = iterations;
+      context.flowState = 'awaiting_confirmation';
+      userContextManager.updateContext(userId, context);
+
+      // Show updated confirmation
+      const agent = agentManager.getAgent(context.flowData.agentId as string);
+      if (agent && context.flowData.ralphTask) {
+        await sendTelegramRalphConfirmation(
+          chatId,
+          agent.name,
+          context.flowData.ralphTask as string,
+          iterations
+        );
       }
     }
   }
@@ -1143,6 +1660,122 @@ async function handleTelegramCallback(query: any): Promise<void> {
     } else {
       await sendTelegramMessage(chatId, 'Erro ao sair do grupo.');
     }
+  }
+  // =============================================================================
+  // Ralph Loop Callbacks
+  // =============================================================================
+  else if (data === 'ralph_start') {
+    // Start the Ralph loop
+    await handleTelegramRalphStart(chatId, userId);
+  }
+  else if (data === 'ralph_config') {
+    // Show iterations configuration
+    await sendTelegramRalphIterationsConfig(chatId);
+  }
+  else if (data === 'ralph_cancel') {
+    // Cancel Ralph loop setup
+    userContextManager.clearContext(userId);
+    await sendTelegramMessage(chatId, 'Loop cancelado.');
+  }
+  else if (data.startsWith('ralph_iter_')) {
+    // Handle iteration count selection
+    const iterValue = data.replace('ralph_iter_', '');
+
+    if (iterValue === 'custom') {
+      // Ask for custom iteration count
+      const context = userContextManager.getContext(userId);
+      if (context) {
+        context.flowState = 'awaiting_custom_iterations';
+        userContextManager.updateContext(userId, context);
+      }
+      await sendTelegramMessage(chatId,
+        '✏️ *Iterações personalizadas*\n\n' +
+        'Envie um número entre 1 e 100:'
+      );
+    } else {
+      const iterations = parseInt(iterValue, 10);
+      const context = userContextManager.getContext(userId);
+      if (context?.flowData) {
+        context.flowData.ralphMaxIterations = iterations;
+        userContextManager.updateContext(userId, context);
+
+        // Show updated confirmation
+        const agent = agentManager.getAgent(context.flowData.agentId as string);
+        if (agent && context.flowData.ralphTask) {
+          await sendTelegramRalphConfirmation(
+            chatId,
+            agent.name,
+            context.flowData.ralphTask as string,
+            iterations
+          );
+        }
+      }
+    }
+  }
+  else if (data.startsWith('ralph_pause_')) {
+    const loopId = data.replace('ralph_pause_', '');
+    await handleTelegramRalphPause(chatId, loopId);
+  }
+  else if (data.startsWith('ralph_resume_')) {
+    const loopId = data.replace('ralph_resume_', '');
+    await handleTelegramRalphResume(chatId, loopId);
+  }
+  else if (data.startsWith('ralph_stop_')) {
+    const loopId = data.replace('ralph_stop_', '');
+    await handleTelegramRalphStop(chatId, loopId);
+  }
+  // =============================================================================
+  // Image Action Callbacks
+  // =============================================================================
+  else if (data.startsWith('img_analyze_') || data.startsWith('img_describe_') || data.startsWith('img_bugs_')) {
+    const context = userContextManager.getContext(userId);
+    const fileId = context?.flowData?.pendingImageFileId as string;
+    const agentId = context?.flowData?.agentId as string;
+
+    if (!fileId || !agentId) {
+      await sendTelegramMessage(chatId, '❌ Imagem não encontrada. Envie novamente.');
+      return;
+    }
+
+    // Determine prompt based on action
+    let prompt: string;
+    if (data.startsWith('img_analyze_')) {
+      prompt = 'Analise esta imagem detalhadamente. O que você vê? Quais são os elementos principais?';
+    } else if (data.startsWith('img_describe_')) {
+      prompt = 'Descreva esta imagem de forma clara e objetiva.';
+    } else {
+      prompt = 'Analise esta imagem procurando por possíveis bugs, erros, problemas de UI/UX ou inconsistências. Liste os problemas encontrados.';
+    }
+
+    userContextManager.clearContext(userId);
+    await processTelegramImageWithPrompt(chatId, userId, agentId, fileId, prompt);
+  }
+  // =============================================================================
+  // Document Action Callbacks
+  // =============================================================================
+  else if (data.startsWith('doc_read_') || data.startsWith('doc_analyze_') || data.startsWith('doc_edit_')) {
+    const context = userContextManager.getContext(userId);
+    const fileId = context?.flowData?.pendingDocumentFileId as string;
+    const filename = context?.flowData?.pendingDocumentFilename as string || 'documento';
+    const agentId = context?.flowData?.agentId as string;
+
+    if (!fileId || !agentId) {
+      await sendTelegramMessage(chatId, '❌ Documento não encontrado. Envie novamente.');
+      return;
+    }
+
+    // Determine prompt based on action
+    let prompt: string;
+    if (data.startsWith('doc_read_')) {
+      prompt = 'Leia e resuma o conteúdo deste arquivo.';
+    } else if (data.startsWith('doc_analyze_')) {
+      prompt = 'Analise este arquivo detalhadamente. Explique sua estrutura, propósito e conteúdo principal.';
+    } else {
+      prompt = 'Analise este arquivo e sugira melhorias ou correções. Liste as alterações recomendadas.';
+    }
+
+    userContextManager.clearContext(userId);
+    await processTelegramDocumentWithPrompt(chatId, userId, agentId, fileId, filename, prompt);
   }
 }
 

@@ -916,3 +916,346 @@ export function getSandboxStats(): { total: number; directories: string[] } {
     return { total: 0, directories: [] };
   }
 }
+
+// ============================================
+// Ralph Loop UI Components
+// ============================================
+
+/**
+ * Send Ralph loop confirmation with task preview
+ */
+export async function sendTelegramRalphConfirmation(
+  chatId: number,
+  agentName: string,
+  task: string,
+  maxIterations: number = 10
+): Promise<void> {
+  const taskPreview = task.length > 200 ? task.slice(0, 200) + '...' : task;
+
+  await sendTelegramButtons(chatId,
+    `🔄 *Ralph Loop*\n\n` +
+    `*Agente:* ${agentName}\n` +
+    `*Iterações:* ${maxIterations}\n\n` +
+    `*Tarefa:*\n${taskPreview}`,
+    [
+      [
+        { text: '▶️ Iniciar', callback_data: 'ralph_start' },
+        { text: '⚙️ Configurar', callback_data: 'ralph_config' },
+      ],
+      [
+        { text: '❌ Cancelar', callback_data: 'ralph_cancel' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send Ralph loop max iterations configuration prompt
+ */
+export async function sendTelegramRalphIterationsConfig(chatId: number): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '⚙️ *Configurar iterações*\n\n' +
+    'Quantas iterações máximas?\n' +
+    '_(1-100, padrão: 10)_',
+    [
+      [
+        { text: '5', callback_data: 'ralph_iter_5' },
+        { text: '10', callback_data: 'ralph_iter_10' },
+        { text: '20', callback_data: 'ralph_iter_20' },
+      ],
+      [
+        { text: '50', callback_data: 'ralph_iter_50' },
+        { text: '100', callback_data: 'ralph_iter_100' },
+        { text: '✏️ Custom', callback_data: 'ralph_iter_custom' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Generate a progress bar string
+ */
+function generateProgressBar(current: number, max: number, length: number = 10): string {
+  const filled = Math.round((current / max) * length);
+  const empty = length - filled;
+  return '█'.repeat(filled) + '░'.repeat(empty);
+}
+
+/**
+ * Send Ralph loop progress update
+ */
+export async function sendTelegramRalphProgress(
+  chatId: number,
+  loopId: string,
+  iteration: number,
+  maxIterations: number,
+  action: string,
+  elapsedSeconds?: number
+): Promise<void> {
+  const percentage = Math.round((iteration / maxIterations) * 100);
+  const progressBar = generateProgressBar(iteration, maxIterations);
+  const timeText = elapsedSeconds ? ` (${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s)` : '';
+
+  await sendTelegramButtons(chatId,
+    `🔄 *Ralph Loop em execução*${timeText}\n\n` +
+    `*Iteração ${iteration}/${maxIterations}*\n` +
+    `${progressBar} ${percentage}%\n\n` +
+    `*Ação:* ${action}`,
+    [
+      [
+        { text: '⏸️ Pausar', callback_data: `ralph_pause_${loopId}` },
+        { text: '❌ Cancelar', callback_data: `ralph_stop_${loopId}` },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send Ralph loop paused message with resume option
+ */
+export async function sendTelegramRalphPaused(
+  chatId: number,
+  loopId: string,
+  iteration: number,
+  maxIterations: number
+): Promise<void> {
+  await sendTelegramButtons(chatId,
+    `⏸️ *Ralph Loop pausado*\n\n` +
+    `Iteração ${iteration}/${maxIterations}\n\n` +
+    `O que deseja fazer?`,
+    [
+      [
+        { text: '▶️ Retomar', callback_data: `ralph_resume_${loopId}` },
+        { text: '❌ Cancelar', callback_data: `ralph_stop_${loopId}` },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send Ralph loop completion summary
+ */
+export async function sendTelegramRalphComplete(
+  chatId: number,
+  iterations: number,
+  durationSeconds: number,
+  status: 'completed' | 'cancelled' | 'blocked' | 'failed',
+  errorMessage?: string
+): Promise<void> {
+  const statusEmoji: Record<string, string> = {
+    completed: '✅',
+    cancelled: '🛑',
+    blocked: '⚠️',
+    failed: '❌',
+  };
+
+  const statusText: Record<string, string> = {
+    completed: 'Concluído com sucesso',
+    cancelled: 'Cancelado pelo usuário',
+    blocked: 'Bloqueado (máximo de iterações)',
+    failed: 'Falhou com erro',
+  };
+
+  const minutes = Math.floor(durationSeconds / 60);
+  const seconds = durationSeconds % 60;
+  const timeText = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+
+  let text = `${statusEmoji[status]} *Ralph Loop ${statusText[status]}*\n\n` +
+    `*Iterações:* ${iterations}\n` +
+    `*Tempo:* ${timeText}`;
+
+  if (errorMessage) {
+    text += `\n\n*Erro:* ${errorMessage}`;
+  }
+
+  await sendTelegramMessage(chatId, text);
+}
+
+// ============================================
+// Media Handling UI Components
+// ============================================
+
+/**
+ * Send image received confirmation with action options (when no caption)
+ */
+export async function sendTelegramImageOptions(
+  chatId: number,
+  imageFileId: string
+): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '📷 *Imagem recebida*\n\n' +
+    'O que você quer saber sobre esta imagem?',
+    [
+      [
+        { text: '🔍 Analisar', callback_data: `img_analyze_${imageFileId}` },
+        { text: '📝 Descrever', callback_data: `img_describe_${imageFileId}` },
+      ],
+      [
+        { text: '🐛 Encontrar bugs', callback_data: `img_bugs_${imageFileId}` },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send document received confirmation with action options
+ */
+export async function sendTelegramDocumentOptions(
+  chatId: number,
+  documentFileId: string,
+  filename: string
+): Promise<void> {
+  await sendTelegramButtons(chatId,
+    `📄 *Arquivo recebido:* ${filename}\n\n` +
+    'O que deseja fazer?',
+    [
+      [
+        { text: '📖 Ler conteúdo', callback_data: `doc_read_${documentFileId}` },
+        { text: '🔍 Analisar', callback_data: `doc_analyze_${documentFileId}` },
+      ],
+      [
+        { text: '✏️ Editar', callback_data: `doc_edit_${documentFileId}` },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send image processing confirmation
+ */
+export async function sendTelegramImageProcessing(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId, '📷 Imagem recebida. Analisando...');
+}
+
+/**
+ * Send document processing confirmation
+ */
+export async function sendTelegramDocumentProcessing(chatId: number, filename: string): Promise<void> {
+  await sendTelegramMessage(chatId, `📄 Processando *${filename}*...`);
+}
+
+// ============================================
+// Telegram File Download API
+// ============================================
+
+/**
+ * Get file path from Telegram servers
+ * Returns the file_path that can be used to download the file
+ */
+export async function getTelegramFilePath(fileId: string): Promise<string | null> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return null;
+
+  try {
+    const file = await telegramBot.getFile(fileId);
+    return file.file_path || null;
+  } catch (error) {
+    console.error('Failed to get Telegram file path:', error);
+    return null;
+  }
+}
+
+/**
+ * Download file from Telegram servers
+ * Returns the file content as a Buffer
+ */
+export async function downloadTelegramFile(fileId: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot || !TELEGRAM_BOT_TOKEN) return null;
+
+  try {
+    const file = await telegramBot.getFile(fileId);
+    if (!file.file_path) {
+      console.error('No file_path in Telegram file response');
+      return null;
+    }
+
+    // Construct download URL
+    const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+
+    // Download the file
+    const response = await fetch(downloadUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to download file: ${response.status}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // Infer MIME type from file path
+    const mimeType = inferMimeType(file.file_path);
+
+    console.log(`[telegram] Downloaded file: ${file.file_path} (${buffer.length} bytes, ${mimeType})`);
+
+    return { buffer, mimeType };
+  } catch (error) {
+    console.error('Failed to download Telegram file:', error);
+    return null;
+  }
+}
+
+/**
+ * Infer MIME type from file path/extension
+ */
+function inferMimeType(filePath: string): string {
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+  const mimeTypes: Record<string, string> = {
+    // Images
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    // Documents
+    'pdf': 'application/pdf',
+    'doc': 'application/msword',
+    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'xls': 'application/vnd.ms-excel',
+    'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'txt': 'text/plain',
+    'json': 'application/json',
+    'csv': 'text/csv',
+    // Code
+    'js': 'text/javascript',
+    'ts': 'text/typescript',
+    'py': 'text/x-python',
+    'html': 'text/html',
+    'css': 'text/css',
+    'md': 'text/markdown',
+  };
+
+  return mimeTypes[ext] || 'application/octet-stream';
+}
+
+/**
+ * Edit an existing message (for updating progress)
+ */
+export async function editTelegramMessage(
+  chatId: number | string,
+  messageId: number,
+  text: string,
+  buttons?: Array<{ text: string; callback_data: string }[]>
+): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    const options: TelegramBot.EditMessageTextOptions = {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'Markdown',
+    };
+
+    if (buttons) {
+      options.reply_markup = {
+        inline_keyboard: buttons,
+      };
+    }
+
+    await telegramBot.editMessageText(text, options);
+    return true;
+  } catch (error) {
+    console.error('Failed to edit Telegram message:', error);
+    return false;
+  }
+}
