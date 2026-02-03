@@ -384,6 +384,48 @@ export class UserContextManager {
   }
 
   // ============================================
+  // Edit Agent Name Flow
+  // States: awaiting_name
+  // ============================================
+
+  /**
+   * Start the edit agent name flow
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
+   */
+  startEditNameFlow(userId: string, agentId: string): void {
+    const existingContext = this.contexts.get(userId);
+    this.contexts.set(userId, {
+      userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
+      currentFlow: 'edit_name',
+      flowState: 'awaiting_name',
+      flowData: { agentId },
+    });
+  }
+
+  /**
+   * Get the data for edit name flow
+   */
+  getEditNameData(userId: string): { agentId?: string } | undefined {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'edit_name') {
+      return undefined;
+    }
+    return {
+      agentId: context.flowData?.agentId as string | undefined,
+    };
+  }
+
+  /**
+   * Check if we're awaiting name input for edit
+   */
+  isAwaitingEditName(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'edit_name' && context?.flowState === 'awaiting_name';
+  }
+
+  // ============================================
   // Configure Priority Flow
   // States: awaiting_selection (if no agentId) → awaiting_priority
   // ============================================

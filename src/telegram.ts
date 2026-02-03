@@ -437,6 +437,234 @@ export async function sendTelegramAgentsList(
   await sendTelegramButtons(chatId, text, buttons);
 }
 
+/**
+ * Send expanded agent menu with all options
+ */
+export async function sendTelegramAgentMenu(
+  chatId: number,
+  agent: {
+    id: string;
+    name: string;
+    emoji: string;
+    status: string;
+    statusDetails?: string;
+    workspace?: string;
+    modelMode?: string;
+    telegramChatId?: number;
+  }
+): Promise<void> {
+  const statusEmoji: Record<string, string> = {
+    idle: '⚪',
+    processing: '🔵',
+    error: '🔴',
+    'ralph-loop': '🔄',
+    'ralph-paused': '⏸️',
+  };
+
+  const status = statusEmoji[agent.status] || '⚪';
+  const workspaceText = agent.workspace || 'Sem workspace';
+  const modelModeText = agent.modelMode === 'selection' ? 'Seleção' :
+    agent.modelMode === 'haiku' ? 'Haiku fixo' :
+    agent.modelMode === 'sonnet' ? 'Sonnet fixo' :
+    agent.modelMode === 'opus' ? 'Opus fixo' : 'Seleção';
+
+  const text = `${agent.emoji} *${agent.name}*\n\n` +
+    `📂 ${workspaceText}\n` +
+    `🧠 ${modelModeText}\n` +
+    `${status} ${agent.statusDetails || agent.status}`;
+
+  const buttons: Array<{ text: string; callback_data: string }[]> = [
+    [
+      { text: '📜 Histórico', callback_data: `history_${agent.id}` },
+      { text: '🔄 Reset sessão', callback_data: `reset_${agent.id}` },
+    ],
+    [
+      { text: '⚙️ Configurações', callback_data: `config_${agent.id}` },
+      { text: '🗑️ Deletar', callback_data: `delete_${agent.id}` },
+    ],
+  ];
+
+  // Add "Go to group" button if linked
+  if (agent.telegramChatId) {
+    buttons.push([
+      { text: '🔗 Ir para grupo', callback_data: `gotogroup_${agent.id}` },
+    ]);
+  }
+
+  await sendTelegramButtons(chatId, text, buttons);
+}
+
+/**
+ * Send agent configuration submenu
+ */
+export async function sendTelegramAgentConfigMenu(
+  chatId: number,
+  agent: { id: string; name: string; emoji: string }
+): Promise<void> {
+  const text = `⚙️ *Configurações de ${agent.emoji} ${agent.name}*`;
+
+  const buttons: Array<{ text: string; callback_data: string }[]> = [
+    [
+      { text: '✏️ Editar emoji', callback_data: `editemoji_${agent.id}` },
+      { text: '📝 Editar nome', callback_data: `editname_${agent.id}` },
+    ],
+    [
+      { text: '⬅️ Voltar', callback_data: `agent_${agent.id}` },
+    ],
+  ];
+
+  await sendTelegramButtons(chatId, text, buttons);
+}
+
+/**
+ * Send agent history (last 5 outputs)
+ */
+export async function sendTelegramAgentHistory(
+  chatId: number,
+  agentName: string,
+  outputs: Array<{
+    id: string;
+    summary: string;
+    prompt: string;
+    status: string;
+    model: string;
+    timestamp: Date;
+  }>
+): Promise<void> {
+  if (outputs.length === 0) {
+    await sendTelegramMessage(chatId, `📜 *Histórico de ${agentName}*\n\nNenhuma interação ainda.`);
+    return;
+  }
+
+  const statusEmoji: Record<string, string> = {
+    success: '✅',
+    warning: '⚠️',
+    error: '❌',
+  };
+
+  let text = `📜 *Histórico de ${agentName}*\n\n`;
+
+  for (const output of outputs.slice(-5).reverse()) {
+    const status = statusEmoji[output.status] || '•';
+    const promptPreview = output.prompt.length > 40
+      ? output.prompt.slice(0, 40) + '...'
+      : output.prompt;
+    text += `${status} *${output.summary}*\n`;
+    text += `   _${promptPreview}_\n`;
+    text += `   ${output.model.toUpperCase()}\n\n`;
+  }
+
+  await sendTelegramMessage(chatId, text);
+}
+
+/**
+ * Send delete confirmation with group options
+ */
+export async function sendTelegramDeleteConfirmation(
+  chatId: number,
+  agent: { id: string; name: string; emoji: string; telegramChatId?: number }
+): Promise<void> {
+  const text = `⚠️ *Deletar ${agent.emoji} ${agent.name}?*\n\n` +
+    (agent.telegramChatId
+      ? 'O que fazer com o grupo Telegram?'
+      : 'Esta ação não pode ser desfeita.');
+
+  const buttons: Array<{ text: string; callback_data: string }[]> = [];
+
+  if (agent.telegramChatId) {
+    buttons.push([
+      { text: '📁 Manter grupo', callback_data: `confirmdelete_keep_${agent.id}` },
+    ]);
+    buttons.push([
+      { text: '🗑️ Deletar grupo', callback_data: `confirmdelete_leave_${agent.id}` },
+    ]);
+  } else {
+    buttons.push([
+      { text: '✅ Confirmar', callback_data: `confirmdelete_keep_${agent.id}` },
+    ]);
+  }
+
+  buttons.push([
+    { text: '❌ Cancelar', callback_data: 'canceldelete' },
+  ]);
+
+  await sendTelegramButtons(chatId, text, buttons);
+}
+
+/**
+ * Send orphaned group warning message
+ */
+export async function sendTelegramOrphanedGroupWarning(
+  chatId: number,
+  groupChatId: number
+): Promise<void> {
+  const text = '⚠️ *Grupo inativo*\n\n' +
+    'O agente vinculado a este grupo foi deletado.\n\n' +
+    'O que deseja fazer?';
+
+  const buttons: Array<{ text: string; callback_data: string }[]> = [
+    [
+      { text: '🔄 Recriar agente', callback_data: `orphan_recreate_${groupChatId}` },
+      { text: '🗑️ Deletar grupo', callback_data: `orphan_leave_${groupChatId}` },
+    ],
+  ];
+
+  await sendTelegramButtons(chatId, text, buttons);
+}
+
+/**
+ * Send status overview for all agents
+ */
+export async function sendTelegramStatusOverview(
+  chatId: number,
+  agents: Array<{
+    name: string;
+    emoji: string;
+    status: string;
+    statusDetails?: string;
+  }>
+): Promise<void> {
+  if (agents.length === 0) {
+    await sendTelegramMessage(chatId, '*Status dos Agentes*\n\nNenhum agente criado ainda.');
+    return;
+  }
+
+  const statusEmoji: Record<string, string> = {
+    idle: '⚪',
+    processing: '🔵',
+    error: '🔴',
+    'ralph-loop': '🔄',
+    'ralph-paused': '⏸️',
+  };
+
+  let text = '*Status dos Agentes*\n\n';
+
+  for (const agent of agents) {
+    const status = statusEmoji[agent.status] || '⚪';
+    text += `${agent.emoji} *${agent.name}* ${status}\n`;
+    if (agent.statusDetails) {
+      text += `   ${agent.statusDetails}\n`;
+    }
+  }
+
+  await sendTelegramMessage(chatId, text);
+}
+
+/**
+ * Send name edit prompt
+ */
+export async function sendTelegramEditNamePrompt(
+  chatId: number,
+  agentName: string
+): Promise<void> {
+  await sendTelegramMessage(chatId,
+    `📝 *Editar nome*\n\n` +
+    `Nome atual: *${agentName}*\n\n` +
+    `Envie o novo nome do agente:\n` +
+    `_(máximo 50 caracteres)_`
+  );
+}
+
 // ============================================
 // Telegram Group Management API
 // ============================================

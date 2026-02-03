@@ -73,6 +73,14 @@ import {
   leaveTelegramGroup,
   sendGroupCreationInstructions,
   sendGroupLinkedConfirmation,
+  sendTelegramAgentMenu,
+  sendTelegramAgentConfigMenu,
+  sendTelegramAgentHistory,
+  sendTelegramDeleteConfirmation,
+  sendTelegramOrphanedGroupWarning,
+  sendTelegramStatusOverview,
+  sendTelegramEditNamePrompt,
+  updateTelegramGroupTitle,
   SANDBOX_DIR,
   ensureSandboxDirectory,
 } from './telegram';
@@ -687,7 +695,7 @@ async function handleTelegramCommand(chatId: number, userId: string, text: strin
 }
 
 /**
- * Handle Telegram flow input (agent creation steps)
+ * Handle Telegram flow input (agent creation steps and edit flows)
  */
 async function handleTelegramFlowInput(chatId: number, userId: string, text: string): Promise<void> {
   const flow = userContextManager.getCurrentFlow(userId);
@@ -724,6 +732,43 @@ async function handleTelegramFlowInput(chatId: number, userId: string, text: str
           ],
         ]
       );
+    }
+  }
+  // Handle edit name flow
+  else if (userContextManager.isAwaitingEditName(userId)) {
+    const flowData = userContextManager.getEditNameData(userId);
+    if (flowData?.agentId) {
+      const agent = agentManager.getAgent(flowData.agentId);
+      if (agent) {
+        const newName = text.trim();
+
+        // Validate name length
+        if (newName.length > 50) {
+          await sendTelegramMessage(chatId, '❌ Nome muito longo. Máximo 50 caracteres.');
+          return;
+        }
+
+        if (newName.length === 0) {
+          await sendTelegramMessage(chatId, '❌ Nome não pode ser vazio.');
+          return;
+        }
+
+        try {
+          agentManager.updateAgentName(flowData.agentId, newName);
+
+          // Update Telegram group title if linked
+          if (agent.telegramChatId) {
+            const newTitle = `${agent.emoji || '🤖'} ${newName}`;
+            await updateTelegramGroupTitle(agent.telegramChatId, newTitle);
+          }
+
+          userContextManager.clearContext(userId);
+          await sendTelegramMessage(chatId, `✅ Nome atualizado para *${newName}*`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          await sendTelegramMessage(chatId, `❌ Erro: ${errorMessage}`);
+        }
+      }
     }
   }
   // Other states are handled by callback queries (button presses)
@@ -842,21 +887,44 @@ async function handleTelegramCallback(query: any): Promise<void> {
         agentManager.updateAgentMode(agent.id, flowData.agentMode as 'conversational' | 'ralph');
       }
 
-      // Track this agent for /link command
-      pendingAgentLink.set(userId, agent.id);
+      // Check if there's a pending group link (from orphaned group recreation)
+      const pendingGroupLink = flowData.pendingGroupLink as number | undefined;
+      if (pendingGroupLink) {
+        // Link to the existing group
+        agentManager.setTelegramChatId(agent.id, pendingGroupLink);
 
-      userContextManager.clearContext(userId);
+        // Update group title
+        const newTitle = `${flowData.emoji || '🤖'} ${agent.name}`;
+        await updateTelegramGroupTitle(pendingGroupLink, newTitle);
 
-      // Send success message with group creation instructions
-      await sendTelegramMessage(chatId,
-        `✅ *Agente criado!*\n\n` +
-        `${flowData.emoji || '🤖'} *${agent.name}*\n\n` +
-        `📱 *Próximo passo: Criar grupo*\n\n` +
-        `1️⃣ Crie um novo grupo no Telegram\n` +
-        `2️⃣ Adicione @ClaudeTerminalBot ao grupo\n` +
-        `3️⃣ Envie /link no grupo\n\n` +
-        `_O grupo será vinculado ao agente ${agent.name}._`
-      );
+        userContextManager.clearContext(userId);
+
+        // Send confirmation
+        await sendTelegramMessage(chatId,
+          `✅ *Agente criado e vinculado!*\n\n` +
+          `${flowData.emoji || '🤖'} *${agent.name}*\n\n` +
+          `O grupo existente foi vinculado ao novo agente.`
+        );
+
+        // Also notify the group
+        await sendGroupLinkedConfirmation(pendingGroupLink, agent.name, agent.emoji || '🤖');
+      } else {
+        // Track this agent for /link command
+        pendingAgentLink.set(userId, agent.id);
+
+        userContextManager.clearContext(userId);
+
+        // Send success message with group creation instructions
+        await sendTelegramMessage(chatId,
+          `✅ *Agente criado!*\n\n` +
+          `${flowData.emoji || '🤖'} *${agent.name}*\n\n` +
+          `📱 *Próximo passo: Criar grupo*\n\n` +
+          `1️⃣ Crie um novo grupo no Telegram\n` +
+          `2️⃣ Adicione @ClaudeTerminalBot ao grupo\n` +
+          `3️⃣ Envie /link no grupo\n\n` +
+          `_O grupo será vinculado ao agente ${agent.name}._`
+        );
+      }
     }
   }
   else if (data === 'confirm_cancel') {
@@ -865,7 +933,7 @@ async function handleTelegramCallback(query: any): Promise<void> {
   }
   else if (data.startsWith('agent_')) {
     const agentId = data.replace('agent_', '');
-    await handleTelegramAgentMenu(chatId, userId, agentId);
+    await handleTelegramAgentMenuCallback(chatId, userId, agentId);
   }
   else if (data.startsWith('prompt_')) {
     const agentId = data.replace('prompt_', '');
@@ -883,54 +951,156 @@ async function handleTelegramCallback(query: any): Promise<void> {
     const agentId = data.replace('history_', '');
     const agent = agentManager.getAgent(agentId);
     if (agent && agent.userId === userId) {
-      if (agent.outputs.length === 0) {
-        await sendTelegramMessage(chatId, 'Nenhum historico ainda.');
-      } else {
-        let text = `*Historico de ${agent.name}*\n\n`;
-        for (const output of agent.outputs.slice(-5)) {
-          const status = output.status === 'success' ? '✅' : output.status === 'error' ? '❌' : '⚠️';
-          text += `${status} *${output.summary}*\n`;
-          text += `_${output.prompt.slice(0, 50)}${output.prompt.length > 50 ? '...' : ''}_\n\n`;
-        }
-        await sendTelegramMessage(chatId, text);
-      }
+      await handleTelegramHistoryCallback(chatId, agent);
     }
   }
   else if (data.startsWith('reset_')) {
     const agentId = data.replace('reset_', '');
     const agent = agentManager.getAgent(agentId);
     if (agent && agent.userId === userId) {
-      agentManager.resetSession(agentId);
-      await sendTelegramMessage(chatId, `Sessao de *${agent.name}* resetada.`);
+      terminal.clearSession(userId, agentId);
+      await sendTelegramMessage(chatId, `✅ Sessão de *${agent.name}* resetada.`);
     }
   }
   else if (data.startsWith('delete_')) {
     const agentId = data.replace('delete_', '');
     const agent = agentManager.getAgent(agentId);
     if (agent && agent.userId === userId) {
-      // Ask for confirmation
-      await sendTelegramButtons(chatId,
-        `Deletar *${agent.name}*?\n\nEsta acao nao pode ser desfeita.`,
-        [
-          [
-            { text: 'Sim, deletar', callback_data: `confirmdelete_${agentId}` },
-            { text: 'Cancelar', callback_data: 'canceldelete' },
-          ],
-        ]
-      );
+      // Use enhanced delete confirmation with group options
+      await sendTelegramDeleteConfirmation(chatId, {
+        id: agent.id,
+        name: agent.name,
+        emoji: agent.emoji || '🤖',
+        telegramChatId: agent.telegramChatId,
+      });
     }
   }
-  else if (data.startsWith('confirmdelete_')) {
-    const agentId = data.replace('confirmdelete_', '');
+  else if (data.startsWith('confirmdelete_keep_')) {
+    // Delete agent but keep the group
+    const agentId = data.replace('confirmdelete_keep_', '');
     const agent = agentManager.getAgent(agentId);
     if (agent && agent.userId === userId) {
       const name = agent.name;
+      const telegramChatId = agent.telegramChatId;
+
+      // Track as orphaned group if it has one
+      if (telegramChatId) {
+        const prefs = persistenceService.loadUserPreferences(userId);
+        if (prefs) {
+          prefs.orphanedTelegramGroups = prefs.orphanedTelegramGroups || [];
+          if (!prefs.orphanedTelegramGroups.includes(telegramChatId)) {
+            prefs.orphanedTelegramGroups.push(telegramChatId);
+          }
+          persistenceService.saveUserPreferences(prefs);
+        }
+      }
+
       agentManager.deleteAgent(agentId);
-      await sendTelegramMessage(chatId, `Agente *${name}* deletado.`);
+      await sendTelegramMessage(chatId, `✅ Agente *${name}* deletado.${telegramChatId ? '\n\n_O grupo foi mantido._' : ''}`);
+    }
+  }
+  else if (data.startsWith('confirmdelete_leave_')) {
+    // Delete agent AND leave the group
+    const agentId = data.replace('confirmdelete_leave_', '');
+    const agent = agentManager.getAgent(agentId);
+    if (agent && agent.userId === userId) {
+      const name = agent.name;
+      const telegramChatId = agent.telegramChatId;
+
+      // Leave the group first
+      if (telegramChatId) {
+        await leaveTelegramGroup(telegramChatId);
+      }
+
+      agentManager.deleteAgent(agentId);
+      await sendTelegramMessage(chatId, `✅ Agente *${name}* e grupo deletados.`);
     }
   }
   else if (data === 'canceldelete') {
-    await sendTelegramMessage(chatId, 'Delecao cancelada.');
+    await sendTelegramMessage(chatId, 'Deleção cancelada.');
+  }
+  // Config menu callback
+  else if (data.startsWith('config_')) {
+    const agentId = data.replace('config_', '');
+    const agent = agentManager.getAgent(agentId);
+    if (agent && agent.userId === userId) {
+      await sendTelegramAgentConfigMenu(chatId, {
+        id: agent.id,
+        name: agent.name,
+        emoji: agent.emoji || '🤖',
+      });
+    }
+  }
+  // Edit emoji callback
+  else if (data.startsWith('editemoji_')) {
+    const agentId = data.replace('editemoji_', '');
+    const agent = agentManager.getAgent(agentId);
+    if (agent && agent.userId === userId) {
+      userContextManager.startEditEmojiFlow(userId, agentId);
+      await sendTelegramEmojiSelector(chatId);
+    }
+  }
+  // Emoji selection during edit flow
+  else if (data.startsWith('emoji_') && userContextManager.isAwaitingEmojiText(userId)) {
+    const emoji = data.replace('emoji_', '');
+    const flowData = userContextManager.getEditEmojiData(userId);
+    if (flowData?.agentId) {
+      const agent = agentManager.getAgent(flowData.agentId);
+      if (agent) {
+        agentManager.updateEmoji(flowData.agentId, emoji);
+
+        // Update Telegram group title if linked
+        if (agent.telegramChatId) {
+          const newTitle = `${emoji} ${agent.name}`;
+          await updateTelegramGroupTitle(agent.telegramChatId, newTitle);
+        }
+
+        userContextManager.clearContext(userId);
+        await sendTelegramMessage(chatId, `✅ Emoji atualizado para ${emoji}`);
+      }
+    }
+  }
+  // Edit name callback
+  else if (data.startsWith('editname_')) {
+    const agentId = data.replace('editname_', '');
+    const agent = agentManager.getAgent(agentId);
+    if (agent && agent.userId === userId) {
+      userContextManager.startEditNameFlow(userId, agentId);
+      await sendTelegramEditNamePrompt(chatId, agent.name);
+    }
+  }
+  // Go to group callback
+  else if (data.startsWith('gotogroup_')) {
+    const agentId = data.replace('gotogroup_', '');
+    const agent = agentManager.getAgent(agentId);
+    if (agent && agent.userId === userId && agent.telegramChatId) {
+      // Send a link to the group (Telegram deep link format)
+      await sendTelegramMessage(chatId,
+        `🔗 *Ir para grupo de ${agent.emoji || '🤖'} ${agent.name}*\n\n` +
+        `Toque para abrir: t.me/c/${String(agent.telegramChatId).replace('-100', '')}`
+      );
+    }
+  }
+  // Orphaned group recreate callback
+  else if (data.startsWith('orphan_recreate_')) {
+    const groupChatId = parseInt(data.replace('orphan_recreate_', ''), 10);
+
+    // Remove from orphaned list
+    const prefs = persistenceService.loadUserPreferences(userId);
+    if (prefs?.orphanedTelegramGroups) {
+      prefs.orphanedTelegramGroups = prefs.orphanedTelegramGroups.filter(id => id !== groupChatId);
+      persistenceService.saveUserPreferences(prefs);
+    }
+
+    // Start agent creation flow with the group pre-linked
+    userContextManager.startCreateAgentFlow(userId);
+    // Store the group chat ID to link after creation
+    const context = userContextManager.getContext(userId);
+    if (context) {
+      context.flowData = { ...context.flowData, pendingGroupLink: groupChatId };
+    }
+
+    await sendTelegramAgentNamePrompt(chatId);
   }
   else if (data.startsWith('model_')) {
     // Handle model selection for pending prompt
@@ -982,55 +1152,53 @@ async function handleTelegramCallback(query: any): Promise<void> {
 async function handleTelegramStatus(chatId: number, userId: string): Promise<void> {
   const agents = agentManager.listAgents(userId).filter(a => a.name !== 'Ronin');
 
-  if (agents.length === 0) {
-    await sendTelegramMessage(chatId, 'Nenhum agente criado ainda.');
-    return;
-  }
-
-  const statusEmoji: Record<string, string> = {
-    idle: '⚪',
-    processing: '🔵',
-    error: '🔴',
-    'ralph-loop': '🔄',
-    'ralph-paused': '⏸️',
-  };
-
-  let text = '*Status dos Agentes*\n\n';
-  for (const agent of agents) {
-    const status = statusEmoji[agent.status] || '⚪';
-    text += `${agent.emoji || '🤖'} *${agent.name}* ${status}\n`;
-    text += `   ${agent.statusDetails}\n`;
-  }
-
-  await sendTelegramMessage(chatId, text);
+  await sendTelegramStatusOverview(chatId, agents.map(a => ({
+    name: a.name,
+    emoji: a.emoji || '🤖',
+    status: a.status,
+    statusDetails: a.statusDetails,
+  })));
 }
 
 /**
- * Handle Telegram agent menu
+ * Handle Telegram agent menu callback (uses enhanced UI)
  */
-async function handleTelegramAgentMenu(chatId: number, userId: string, agentId: string): Promise<void> {
+async function handleTelegramAgentMenuCallback(chatId: number, userId: string, agentId: string): Promise<void> {
   const agent = agentManager.getAgent(agentId);
   if (!agent || agent.userId !== userId) {
-    await sendTelegramMessage(chatId, 'Agente nao encontrado.');
+    await sendTelegramMessage(chatId, 'Agente não encontrado.');
     return;
   }
 
-  await sendTelegramButtons(chatId,
-    `${agent.emoji || '🤖'} *${agent.name}*\n\n` +
-    `Workspace: ${agent.workspace || 'Sem workspace'}\n` +
-    `Modelo: ${agent.modelMode}\n` +
-    `Status: ${agent.status}`,
-    [
-      [
-        { text: 'Enviar prompt', callback_data: `prompt_${agentId}` },
-        { text: 'Historico', callback_data: `history_${agentId}` },
-      ],
-      [
-        { text: 'Reset', callback_data: `reset_${agentId}` },
-        { text: 'Deletar', callback_data: `delete_${agentId}` },
-      ],
-    ]
-  );
+  await sendTelegramAgentMenu(chatId, {
+    id: agent.id,
+    name: agent.name,
+    emoji: agent.emoji || '🤖',
+    status: agent.status,
+    statusDetails: agent.statusDetails,
+    workspace: agent.workspace,
+    modelMode: agent.modelMode,
+    telegramChatId: agent.telegramChatId,
+  });
+}
+
+/**
+ * Handle Telegram history callback
+ */
+async function handleTelegramHistoryCallback(chatId: number, agent: Agent): Promise<void> {
+  if (agent.outputs.length === 0) {
+    await sendTelegramMessage(chatId, `📜 *Histórico de ${agent.name}*\n\nNenhuma interação ainda.`);
+    return;
+  }
+
+  await sendTelegramAgentHistory(chatId, agent.name, agent.outputs.slice(-5).map(o => ({
+    id: o.id,
+    summary: o.summary,
+    prompt: o.prompt,
+    status: o.status,
+    model: o.model,
+    timestamp: o.timestamp,
+  })));
 }
 
 /**
