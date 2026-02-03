@@ -1284,6 +1284,323 @@ export function startTypingIndicator(chatId: number): () => void {
 }
 
 // ============================================
+// Forum Topic Management API
+// ============================================
+
+/**
+ * Topic colors for Telegram forums (icon_color parameter)
+ * These are the only 6 colors available in Telegram's API
+ */
+export const TOPIC_COLORS = {
+  BLUE: 0x6FB9F0,      // Light blue - used for Session topics
+  YELLOW: 0xFFD67E,    // Yellow/orange - used for Ralph topics
+  PURPLE: 0xCB86DB,    // Purple - used for Worktree topics
+  GREEN: 0x8EEE98,     // Green
+  PINK: 0xFF93B2,      // Pink
+  RED: 0xFB6F5F,       // Red
+} as const;
+
+/**
+ * Response from createForumTopic API call
+ */
+export interface ForumTopicCreated {
+  message_thread_id: number;
+  name: string;
+  icon_color?: number;
+  icon_custom_emoji_id?: string;
+}
+
+/**
+ * Create a forum topic in a supergroup
+ * Requires the bot to have can_manage_topics permission
+ *
+ * @param chatId - The supergroup chat ID
+ * @param name - Topic name (1-128 characters)
+ * @param iconColor - Optional color from TOPIC_COLORS
+ * @param iconCustomEmojiId - Optional custom emoji ID for the topic icon
+ * @returns The created topic info or null on failure
+ */
+export async function createForumTopic(
+  chatId: number,
+  name: string,
+  iconColor?: number,
+  iconCustomEmojiId?: string
+): Promise<ForumTopicCreated | null> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return null;
+
+  // Validate name length (Telegram API limit)
+  if (name.length < 1 || name.length > 128) {
+    console.error('Topic name must be between 1 and 128 characters');
+    return null;
+  }
+
+  try {
+    // node-telegram-bot-api doesn't have built-in createForumTopic, use raw API call
+    const params: Record<string, unknown> = {
+      chat_id: chatId,
+      name,
+    };
+
+    if (iconColor !== undefined) {
+      params.icon_color = iconColor;
+    }
+
+    if (iconCustomEmojiId) {
+      params.icon_custom_emoji_id = iconCustomEmojiId;
+    }
+
+    // Use the underlying request method to call the API
+    const result = await (telegramBot as unknown as {
+      _request: (method: string, params: Record<string, unknown>) => Promise<ForumTopicCreated>
+    })._request('createForumTopic', params);
+
+    console.log(`[telegram] Created forum topic "${name}" in chat ${chatId}, thread_id: ${result.message_thread_id}`);
+    return result;
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    // Check for common errors
+    if (errorMessage.includes('CHAT_NOT_FORUM')) {
+      console.error(`[telegram] Chat ${chatId} is not a forum (topics not enabled)`);
+    } else if (errorMessage.includes('CHAT_ADMIN_REQUIRED') || errorMessage.includes('not enough rights')) {
+      console.error(`[telegram] Bot lacks manage_topics permission in chat ${chatId}`);
+    } else {
+      console.error('Failed to create forum topic:', error);
+    }
+    return null;
+  }
+}
+
+/**
+ * Close a forum topic
+ * Requires the bot to have can_manage_topics permission
+ *
+ * @param chatId - The supergroup chat ID
+ * @param messageThreadId - The topic's message_thread_id
+ * @returns true on success, false on failure
+ */
+export async function closeForumTopic(
+  chatId: number,
+  messageThreadId: number
+): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    await (telegramBot as unknown as {
+      _request: (method: string, params: Record<string, unknown>) => Promise<boolean>
+    })._request('closeForumTopic', {
+      chat_id: chatId,
+      message_thread_id: messageThreadId,
+    });
+
+    console.log(`[telegram] Closed topic ${messageThreadId} in chat ${chatId}`);
+    return true;
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    if (errorMessage.includes('TOPIC_NOT_MODIFIED')) {
+      // Topic already closed - not an error
+      console.log(`[telegram] Topic ${messageThreadId} was already closed`);
+      return true;
+    }
+
+    if (errorMessage.includes('CHAT_ADMIN_REQUIRED') || errorMessage.includes('not enough rights')) {
+      console.warn(`[telegram] Bot lacks manage_topics permission in chat ${chatId}`);
+    } else {
+      console.error('Failed to close forum topic:', error);
+    }
+    return false;
+  }
+}
+
+/**
+ * Reopen a closed forum topic
+ * Requires the bot to have can_manage_topics permission
+ *
+ * @param chatId - The supergroup chat ID
+ * @param messageThreadId - The topic's message_thread_id
+ * @returns true on success, false on failure
+ */
+export async function reopenForumTopic(
+  chatId: number,
+  messageThreadId: number
+): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    await (telegramBot as unknown as {
+      _request: (method: string, params: Record<string, unknown>) => Promise<boolean>
+    })._request('reopenForumTopic', {
+      chat_id: chatId,
+      message_thread_id: messageThreadId,
+    });
+
+    console.log(`[telegram] Reopened topic ${messageThreadId} in chat ${chatId}`);
+    return true;
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    if (errorMessage.includes('TOPIC_NOT_MODIFIED')) {
+      // Topic already open - not an error
+      console.log(`[telegram] Topic ${messageThreadId} was already open`);
+      return true;
+    }
+
+    if (errorMessage.includes('CHAT_ADMIN_REQUIRED') || errorMessage.includes('not enough rights')) {
+      console.warn(`[telegram] Bot lacks manage_topics permission in chat ${chatId}`);
+    } else {
+      console.error('Failed to reopen forum topic:', error);
+    }
+    return false;
+  }
+}
+
+/**
+ * Edit a forum topic name and/or icon
+ * Requires the bot to have can_manage_topics permission
+ *
+ * @param chatId - The supergroup chat ID
+ * @param messageThreadId - The topic's message_thread_id
+ * @param name - New topic name (optional, 1-128 characters)
+ * @param iconCustomEmojiId - New custom emoji ID (optional, empty string to remove)
+ * @returns true on success, false on failure
+ */
+export async function editForumTopic(
+  chatId: number,
+  messageThreadId: number,
+  name?: string,
+  iconCustomEmojiId?: string
+): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  // Validate name length if provided
+  if (name !== undefined && (name.length < 1 || name.length > 128)) {
+    console.error('Topic name must be between 1 and 128 characters');
+    return false;
+  }
+
+  try {
+    const params: Record<string, unknown> = {
+      chat_id: chatId,
+      message_thread_id: messageThreadId,
+    };
+
+    if (name !== undefined) {
+      params.name = name;
+    }
+
+    if (iconCustomEmojiId !== undefined) {
+      params.icon_custom_emoji_id = iconCustomEmojiId;
+    }
+
+    await (telegramBot as unknown as {
+      _request: (method: string, params: Record<string, unknown>) => Promise<boolean>
+    })._request('editForumTopic', params);
+
+    console.log(`[telegram] Edited topic ${messageThreadId} in chat ${chatId}`);
+    return true;
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    if (errorMessage.includes('CHAT_ADMIN_REQUIRED') || errorMessage.includes('not enough rights')) {
+      console.warn(`[telegram] Bot lacks manage_topics permission in chat ${chatId}`);
+    } else {
+      console.error('Failed to edit forum topic:', error);
+    }
+    return false;
+  }
+}
+
+/**
+ * Delete a forum topic and all its messages
+ * Requires the bot to have can_delete_messages permission
+ * WARNING: This permanently deletes all messages in the topic
+ *
+ * @param chatId - The supergroup chat ID
+ * @param messageThreadId - The topic's message_thread_id
+ * @returns true on success, false on failure
+ */
+export async function deleteForumTopic(
+  chatId: number,
+  messageThreadId: number
+): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    await (telegramBot as unknown as {
+      _request: (method: string, params: Record<string, unknown>) => Promise<boolean>
+    })._request('deleteForumTopic', {
+      chat_id: chatId,
+      message_thread_id: messageThreadId,
+    });
+
+    console.log(`[telegram] Deleted topic ${messageThreadId} from chat ${chatId}`);
+    return true;
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    if (errorMessage.includes('CHAT_ADMIN_REQUIRED') || errorMessage.includes('not enough rights')) {
+      console.warn(`[telegram] Bot lacks delete permission in chat ${chatId}`);
+    } else {
+      console.error('Failed to delete forum topic:', error);
+    }
+    return false;
+  }
+}
+
+/**
+ * Extended chat information including forum status
+ */
+export interface ExtendedChat {
+  id: number;
+  type: string;
+  title?: string;
+  username?: string;
+  is_forum?: boolean;
+  permissions?: {
+    can_send_messages?: boolean;
+    can_manage_topics?: boolean;
+  };
+}
+
+/**
+ * Get extended chat information including forum status
+ * Uses the existing getTelegramChat function
+ *
+ * @param chatId - The chat ID to get info for
+ * @returns Extended chat info or null on failure
+ */
+export async function getExtendedChat(chatId: number): Promise<ExtendedChat | null> {
+  const chat = await getTelegramChat(chatId);
+  if (!chat) return null;
+
+  return {
+    id: chat.id,
+    type: chat.type,
+    title: chat.title,
+    username: chat.username,
+    is_forum: (chat as unknown as { is_forum?: boolean }).is_forum,
+    permissions: (chat as unknown as { permissions?: ExtendedChat['permissions'] }).permissions,
+  };
+}
+
+/**
+ * Check if a chat is a forum (has topics enabled)
+ *
+ * @param chatId - The chat ID to check
+ * @returns true if forum, false otherwise or on error
+ */
+export async function isChatForum(chatId: number): Promise<boolean> {
+  const chat = await getExtendedChat(chatId);
+  return chat?.is_forum === true;
+}
+
+// ============================================
 // Queue Feedback UI
 // ============================================
 
