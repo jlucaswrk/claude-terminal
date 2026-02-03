@@ -710,6 +710,7 @@ export class UserContextManager {
     agentId?: string;
     ralphTask?: string;
     ralphMaxIterations?: number;
+    ralphModel?: 'haiku' | 'sonnet' | 'opus';
   } | undefined {
     const context = this.contexts.get(userId);
     if (!context || context.currentFlow !== 'configure_ralph') {
@@ -719,6 +720,7 @@ export class UserContextManager {
       agentId: context.flowData?.agentId as string | undefined,
       ralphTask: context.flowData?.ralphTask as string | undefined,
       ralphMaxIterations: context.flowData?.ralphMaxIterations as number | undefined,
+      ralphModel: context.flowData?.ralphModel as 'haiku' | 'sonnet' | 'opus' | undefined,
     };
   }
 

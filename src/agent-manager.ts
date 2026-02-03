@@ -109,7 +109,7 @@ export class AgentManager {
 
   /**
    * Delete an agent
-   * @throws AgentValidationError if agent has an active Ralph loop (must pause first)
+   * @throws AgentValidationError if agent has an actively running Ralph loop (must pause first)
    */
   deleteAgent(agentId: string): boolean {
     const agent = this.agents.get(agentId);
@@ -117,12 +117,17 @@ export class AgentManager {
       return false;
     }
 
-    // Prevent deleting agents with active Ralph loops (must pause/cancel first)
+    // Prevent deleting agents with actively running Ralph loops (must pause/cancel first)
     if (agent.mode === 'ralph' && agent.currentLoopId) {
       if (agent.status === 'ralph-loop') {
         throw new AgentValidationError(
           `Cannot delete agent with active Ralph loop. Pause or cancel the loop first.`
         );
+      }
+      // If paused, clean up the loop file before deletion
+      if (agent.status === 'ralph-paused') {
+        this.persistenceService.deleteLoop(agent.currentLoopId);
+        console.log(`Deleted paused loop ${agent.currentLoopId} before agent deletion`);
       }
     }
 
@@ -247,6 +252,12 @@ export class AgentManager {
       throw new AgentValidationError(
         `Cannot demote agent with active Ralph loop. Pause or cancel the loop first.`
       );
+    }
+
+    // If agent has a paused loop, clean up the loop file before demotion
+    if (agent.currentLoopId && agent.status === 'ralph-paused') {
+      this.persistenceService.deleteLoop(agent.currentLoopId);
+      console.log(`Deleted paused loop ${agent.currentLoopId} before agent demotion`);
     }
 
     agent.mode = 'conversational';
