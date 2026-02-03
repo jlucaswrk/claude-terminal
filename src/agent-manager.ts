@@ -1,6 +1,6 @@
 import { existsSync } from 'fs';
 import { PersistenceService } from './persistence';
-import type { Agent, AgentType, Output, OutputType, SystemConfig } from './types';
+import type { Agent, AgentType, ModelMode, Output, OutputType, SystemConfig } from './types';
 import { DEFAULTS, PRIORITY_VALUES } from './types';
 
 /**
@@ -64,7 +64,14 @@ export class AgentManager {
    * Create a new agent
    * @throws AgentValidationError if validation fails
    */
-  createAgent(userId: string, name: string, workspace?: string, emoji?: string, type: AgentType = 'claude'): Agent {
+  createAgent(
+    userId: string,
+    name: string,
+    workspace?: string,
+    emoji?: string,
+    type: AgentType = 'claude',
+    modelMode: ModelMode = 'selection'
+  ): Agent {
     // Validate name
     this.validateName(name);
 
@@ -90,6 +97,7 @@ export class AgentManager {
       mode: 'conversational',
       emoji,
       workspace,
+      modelMode,
       title: '',
       status: 'idle',
       statusDetails: type === 'bash' ? 'Terminal pronto' : 'Aguardando prompt',
@@ -334,6 +342,42 @@ export class AgentManager {
 
     agent.lastActivity = new Date();
     this.persist();
+  }
+
+  /**
+   * Set the WhatsApp group ID for an agent
+   */
+  setGroupId(agentId: string, groupId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent) return false;
+
+    agent.groupId = groupId;
+    this.persist();
+    return true;
+  }
+
+  /**
+   * Get an agent by its WhatsApp group ID
+   */
+  getAgentByGroupId(groupId: string): Agent | undefined {
+    for (const agent of this.agents.values()) {
+      if (agent.groupId === groupId) {
+        return agent;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Set the model mode for an agent
+   */
+  setModelMode(agentId: string, modelMode: ModelMode): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent) return false;
+
+    agent.modelMode = modelMode;
+    this.persist();
+    return true;
   }
 
   /**
