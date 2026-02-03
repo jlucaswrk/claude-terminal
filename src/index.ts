@@ -583,20 +583,27 @@ async function handleTelegramMessage(message: any): Promise<void> {
         return;
 
       case 'orphaned_group':
-        await sendTelegramMessage(chatId,
-          '⚠️ *Grupo sem agente vinculado*\n\n' +
-          'Este grupo não está conectado a nenhum agente.\n' +
-          'Crie um novo agente e vincule a este grupo, ou remova o bot.'
-        );
-        await sendTelegramButtons(chatId,
-          'O que deseja fazer?',
-          [
+        // Check if this is a known orphaned group (from agent deletion)
+        if (userPrefs.orphanedTelegramGroups?.includes(chatId)) {
+          // Use dedicated orphaned group warning with recreate/leave options
+          await sendTelegramOrphanedGroupWarning(chatId, chatId);
+        } else {
+          // Generic unlinked group - never had an agent or was delinked
+          await sendTelegramMessage(chatId,
+            '⚠️ *Grupo sem agente vinculado*\n\n' +
+            'Este grupo não está conectado a nenhum agente.\n' +
+            'Crie um novo agente e vincule a este grupo, ou remova o bot.'
+          );
+          await sendTelegramButtons(chatId,
+            'O que deseja fazer?',
             [
-              { text: 'Criar agente', callback_data: 'orphan_create' },
-              { text: 'Remover bot', callback_data: `orphan_leave_${chatId}` },
-            ],
-          ]
-        );
+              [
+                { text: 'Criar agente', callback_data: 'orphan_create' },
+                { text: 'Remover bot', callback_data: `orphan_leave_${chatId}` },
+              ],
+            ]
+          );
+        }
         return;
 
       case 'ignore':
@@ -1697,6 +1704,12 @@ async function handleTelegramCallback(query: any): Promise<void> {
   }
   else if (data.startsWith('orphan_leave_')) {
     const targetChatId = parseInt(data.replace('orphan_leave_', ''), 10);
+    // Remove from orphaned list before leaving
+    const prefs = persistenceService.loadUserPreferences(userId);
+    if (prefs?.orphanedTelegramGroups) {
+      prefs.orphanedTelegramGroups = prefs.orphanedTelegramGroups.filter(id => id !== targetChatId);
+      persistenceService.saveUserPreferences(prefs);
+    }
     // Leave the group using the exported function
     const success = await leaveTelegramGroup(targetChatId);
     if (success) {
