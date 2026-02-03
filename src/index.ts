@@ -78,7 +78,7 @@ import { QueueManager } from './queue-manager';
 import { UserContextManager } from './user-context-manager';
 import { Semaphore } from './semaphore';
 import { RalphLoopManager } from './ralph-loop-manager';
-import { DEFAULTS } from './types';
+import { DEFAULTS, PRIORITY_VALUES } from './types';
 import type { Agent, AgentType, ModelMode, UserMode, UserPreferences } from './types';
 import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
 import { uploadToKapso, downloadFromKapso } from './storage';
@@ -423,6 +423,7 @@ async function handleTelegramMessage(message: any): Promise<void> {
     console.log(`[telegram-debug] agentId=${agentId}, agent=${agent?.name || 'null'}, agent.userId=${agent?.userId}`);
 
     if (agent) {
+      console.log(`[telegram-debug] agent.modelMode=${agent.modelMode}`);
       // Store the prompt and ask for model if agent uses selection mode
       if (agent.modelMode === 'selection') {
         userContextManager.setPendingPrompt(userId, text, undefined);
@@ -432,8 +433,10 @@ async function handleTelegramMessage(message: any): Promise<void> {
         userContextManager.clearContext(userId);
         await sendTelegramMessage(chatId, `Processando com *${agent.modelMode}*...`);
 
+        const taskId = `tg-${Date.now()}`;
+        console.log(`[telegram-debug] Enqueueing task ${taskId} for agent ${agent.name}`);
         queueManager.enqueue({
-          id: `tg-${Date.now()}`,
+          id: taskId,
           agentId: agent.id,
           prompt: text,
           model: agent.modelMode as 'haiku' | 'sonnet' | 'opus',
