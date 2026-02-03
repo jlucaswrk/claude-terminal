@@ -328,10 +328,36 @@ app.post('/telegram', async (c) => {
   }
 });
 
+// Deduplication cache for Telegram messages (prevents double processing)
+const processedTelegramMessages = new Set<string>();
+const TELEGRAM_DEDUP_TTL = 60000; // 1 minute
+
+function getTelegramMessageKey(update: any): string | null {
+  if (update.callback_query) {
+    return `cb:${update.callback_query.id}`;
+  }
+  if (update.message) {
+    return `msg:${update.message.chat.id}:${update.message.message_id}`;
+  }
+  return null;
+}
+
 /**
  * Handle Telegram update
  */
 async function handleTelegramUpdate(update: any): Promise<void> {
+  // Deduplicate - Telegram sometimes sends the same update twice
+  const key = getTelegramMessageKey(update);
+  if (key) {
+    if (processedTelegramMessages.has(key)) {
+      console.log(`[telegram] Skipping duplicate: ${key}`);
+      return;
+    }
+    processedTelegramMessages.add(key);
+    // Clean up after TTL
+    setTimeout(() => processedTelegramMessages.delete(key), TELEGRAM_DEDUP_TTL);
+  }
+
   // Handle callback queries (button presses)
   if (update.callback_query) {
     await handleTelegramCallback(update.callback_query);
@@ -390,9 +416,11 @@ async function handleTelegramMessage(message: any): Promise<void> {
   }
 
   // Handle pending prompt flow (user selected agent, waiting for text)
+  console.log(`[telegram-debug] userId=${userId}, hasPendingPromptFlow=${userContextManager.hasPendingPromptFlow(userId)}`);
   if (userContextManager.hasPendingPromptFlow(userId)) {
     const agentId = userContextManager.getPendingAgentId(userId);
     const agent = agentId ? agentManager.getAgent(agentId) : null;
+    console.log(`[telegram-debug] agentId=${agentId}, agent=${agent?.name || 'null'}, agent.userId=${agent?.userId}`);
 
     if (agent) {
       // Store the prompt and ask for model if agent uses selection mode
