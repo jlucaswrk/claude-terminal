@@ -1323,7 +1323,15 @@ async function handleConfirmation(
       return { status: 'no_loop_configured' };
     }
 
-    await sendWhatsApp(userId, `🔄 Loop do agente *${agent.name}* iniciado!`);
+    // Send loop started confirmation with action buttons
+    await sendButtons(
+      userId,
+      `🔄 Loop do agente *${agent.name}* iniciado!\n\nO agente está executando a tarefa configurada.`,
+      [
+        { id: `agentmenu_pause_loop_${agent.id}`, title: '⏸️ Pausar Loop' },
+        { id: `agent_${agent.id}`, title: '📊 Ver Detalhes' },
+      ]
+    );
 
     const loopId = agent.currentLoopId;
 

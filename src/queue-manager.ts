@@ -660,6 +660,10 @@ export class QueueManager {
       case 'Bash': {
         const command = input?.command as string | undefined;
         if (command) {
+          // Handle sleep commands specially - they indicate waiting
+          if (command.startsWith('sleep ')) {
+            return 'Aguardando...';
+          }
           const shortCmd = command.split(' ')[0].split('/').pop() || command;
           return `Executando ${this.truncatePrompt(shortCmd, 20)}...`;
         }

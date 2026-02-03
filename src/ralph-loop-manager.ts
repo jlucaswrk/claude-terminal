@@ -111,10 +111,6 @@ export class RalphLoopManager {
       throw new Error(`Agent not found: ${agentId}`);
     }
 
-    if (agent.mode !== 'ralph') {
-      throw new Error(`Agent ${agentId} is not in ralph mode`);
-    }
-
     // Check if agent already has an active loop
     if (agent.currentLoopId) {
       const existingLoop = this.getLoop(agent.currentLoopId);
@@ -400,18 +396,30 @@ Continue with the next step of the task.`;
     // Try to find a summary at the beginning
     const lines = response.split('\n').filter(l => l.trim().length > 0);
     if (lines.length === 0) {
-      return 'Processou iteração';
+      return 'Processando...';
     }
 
-    // Use first line, truncated
-    const firstLine = lines[0].trim();
+    // Find the first meaningful line (skip empty/punctuation-only lines)
+    let cleaned = '';
+    for (const line of lines) {
+      const trimmed = line.trim()
+        .replace(/^#+\s*/, '')  // Remove heading markers
+        .replace(/^\*+\s*/, '') // Remove bold/italic markers
+        .replace(/^-+\s*/, '')  // Remove list markers and dashes
+        .replace(/^`+/, '')     // Remove code markers
+        .trim();
 
-    // Remove markdown formatting
-    const cleaned = firstLine
-      .replace(/^#+\s*/, '')  // Remove heading markers
-      .replace(/^\*+\s*/, '') // Remove bold/italic markers
-      .replace(/^-\s*/, '')   // Remove list markers
-      .trim();
+      // Skip lines that are too short, only punctuation, or only dashes
+      if (trimmed.length >= 3 && !/^[-=_.*`]+$/.test(trimmed)) {
+        cleaned = trimmed;
+        break;
+      }
+    }
+
+    // If no meaningful text found, return default
+    if (!cleaned) {
+      return 'Processando...';
+    }
 
     return this.truncate(cleaned, 100);
   }

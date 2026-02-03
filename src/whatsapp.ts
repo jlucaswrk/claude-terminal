@@ -1965,11 +1965,10 @@ export async function sendLoopProgress(
 ): Promise<void> {
   const progress = Math.round((iteration / maxIterations) * 100);
   const progressBar = generateProgressBar(progress);
-  const modelEmoji = model === 'opus' ? '🎼' : model === 'sonnet' ? '🎭' : '⚡';
 
   const text = `🔄 *${agentName}* - Ralph Loop\n\n` +
-    `${progressBar} ${iteration}/${maxIterations}\n\n` +
-    `${modelEmoji} ${model.toUpperCase()}: ${truncate(action, 200)}`;
+    `${progressBar} ${progress}% ${iteration}/${maxIterations}\n\n` +
+    `${truncate(action, 200)}`;
 
   await sendWhatsApp(to, text);
 }
