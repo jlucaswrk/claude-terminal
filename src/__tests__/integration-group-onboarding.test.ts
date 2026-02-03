@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { AgentManager } from '../agent-manager';
 import { GroupOnboardingManager } from '../group-onboarding-manager';
+import { TelegramCommandHandler } from '../telegram-command-handler';
 import { PersistenceService } from '../persistence';
 import { unlinkSync, existsSync } from 'fs';
 import type { UserPreferences } from '../types';
@@ -21,6 +22,7 @@ const TEST_STATE_FILE = './.test-group-onboarding-state.json';
 const mockSendTelegramMessage = mock(() => Promise.resolve(null));
 const mockSendTelegramButtons = mock(() => Promise.resolve({ message_id: 12345 }));
 const mockPinTelegramMessage = mock(() => Promise.resolve(true));
+const mockEditTelegramMessage = mock(() => Promise.resolve(true));
 
 /**
  * Helper to simulate handleBotAddedToGroup behavior
@@ -2145,6 +2147,485 @@ describe('Integration: Group Onboarding Flow', () => {
         // Should get group_onboarding_locked (silently ignored, no chat message)
         expect(result).toBe('group_onboarding_locked');
         expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // ============================================
+  // /cancelar Command Tests
+  // ============================================
+
+  describe('/cancelar Command: Cancellation flow', () => {
+    /**
+     * Helper to simulate handleGroupCancelarCommand behavior
+     * This mirrors the logic in index.ts for testing purposes
+     */
+    async function simulateHandleGroupCancelarCommand(
+      chatId: number,
+      userId: string,
+      telegramUserId: number,
+      groupOnboardingManager: GroupOnboardingManager,
+      agentManager: AgentManager,
+      mockSendMessage: typeof mockSendTelegramMessage,
+      mockEditMessage: typeof mockEditTelegramMessage
+    ): Promise<{ cancelled: boolean; pinnedEdited: boolean }> {
+      // Check if there's an active onboarding for this group
+      if (!groupOnboardingManager.hasActiveOnboarding(chatId)) {
+        await mockSendMessage(chatId, '⚠️ Nenhum processo de configuração em andamento.');
+        return { cancelled: false, pinnedEdited: false };
+      }
+
+      // Validate lock - only the user who started onboarding can cancel
+      if (!groupOnboardingManager.isLockedByUser(chatId, telegramUserId)) {
+        // Different user - silently ignore
+        return { cancelled: false, pinnedEdited: false };
+      }
+
+      // Get the pinned message ID to edit it back
+      const pinnedMessageId = groupOnboardingManager.getPinnedMessageId(chatId);
+
+      // Cancel the onboarding state
+      groupOnboardingManager.cancelOnboarding(chatId, telegramUserId);
+
+      // Determine which buttons to show based on user's existing agents
+      const existingAgents = agentManager.listAgents(userId);
+      const hasExistingAgents = existingAgents.length > 0;
+
+      // Edit pinned message back to initial state
+      let pinnedEdited = false;
+      if (pinnedMessageId) {
+        let messageText: string;
+        let buttons: Array<{ text: string; callback_data: string }[]>;
+
+        if (!hasExistingAgents) {
+          messageText = '🎉 *Seu primeiro agente!*\n\nVamos criar um agente para este grupo.';
+          buttons = [
+            [{ text: '✨ Criar agora', callback_data: `onboard_create_${telegramUserId}` }],
+          ];
+        } else {
+          messageText = '👋 *Esse grupo não tem agente ainda*\n\nVocê pode criar um novo ou vincular um existente.';
+          buttons = [
+            [
+              { text: '✨ Criar um', callback_data: `onboard_create_${telegramUserId}` },
+              { text: '🔗 Vincular existente', callback_data: `onboard_link_${telegramUserId}` },
+            ],
+          ];
+        }
+
+        await mockEditMessage(chatId, pinnedMessageId, messageText, buttons);
+        pinnedEdited = true;
+      }
+
+      // Send confirmation
+      await mockSendMessage(chatId, '❌ *Cancelado*');
+
+      return { cancelled: true, pinnedEdited };
+    }
+
+    beforeEach(() => {
+      mockSendTelegramMessage.mockClear();
+      mockEditTelegramMessage.mockClear();
+    });
+
+    describe('Lock validation', () => {
+      it('should allow locked user to cancel onboarding', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 11111;
+
+        // Setup: Start onboarding and set pinned message
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(true);
+
+        // Locked user cancels
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId,
+          userId,
+          telegramUserId,
+          groupOnboardingManager,
+          agentManager,
+          mockSendTelegramMessage,
+          mockEditTelegramMessage
+        );
+
+        expect(result.cancelled).toBe(true);
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+        expect(mockSendTelegramMessage).toHaveBeenCalledWith(chatId, '❌ *Cancelado*');
+      });
+
+      it('should silently reject cancellation from non-locked user', async () => {
+        const userId = '+5581999999999';
+        const lockOwner = 67890;
+        const otherUser = 99999;
+        const chatId = 12345;
+
+        // Setup: User 67890 starts onboarding
+        groupOnboardingManager.startOnboarding(chatId, lockOwner, 'awaiting_emoji');
+
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(true);
+
+        // Different user tries to cancel
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId,
+          userId,
+          otherUser, // Different telegram user
+          groupOnboardingManager,
+          agentManager,
+          mockSendTelegramMessage,
+          mockEditTelegramMessage
+        );
+
+        // Should be silently rejected
+        expect(result.cancelled).toBe(false);
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(true);
+        expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+        expect(mockEditTelegramMessage).not.toHaveBeenCalled();
+      });
+
+      it('should show error when no onboarding is active', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // No onboarding started
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId,
+          userId,
+          telegramUserId,
+          groupOnboardingManager,
+          agentManager,
+          mockSendTelegramMessage,
+          mockEditTelegramMessage
+        );
+
+        expect(result.cancelled).toBe(false);
+        expect(mockSendTelegramMessage).toHaveBeenCalledWith(
+          chatId,
+          '⚠️ Nenhum processo de configuração em andamento.'
+        );
+      });
+    });
+
+    describe('Pinned message editing', () => {
+      it('should edit pinned message to first-time user state when no existing agents', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 11111;
+
+        // Setup: No existing agents, onboarding in progress at emoji step
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId,
+          userId,
+          telegramUserId,
+          groupOnboardingManager,
+          agentManager,
+          mockSendTelegramMessage,
+          mockEditTelegramMessage
+        );
+
+        expect(result.pinnedEdited).toBe(true);
+
+        // Verify edit was called with correct parameters
+        const editCall = mockEditTelegramMessage.mock.calls[0];
+        expect(editCall[0]).toBe(chatId);
+        expect(editCall[1]).toBe(pinnedMessageId);
+        expect(editCall[2]).toContain('Seu primeiro agente');
+        // Should have single button for first-time user
+        expect(editCall[3].length).toBe(1);
+        expect(editCall[3][0].length).toBe(1);
+        expect(editCall[3][0][0].callback_data).toBe(`onboard_create_${telegramUserId}`);
+      });
+
+      it('should edit pinned message to existing user state when user has agents', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 11111;
+
+        // Setup: User has existing agent
+        agentManager.createAgent(userId, 'ExistingAgent', undefined, '🤖');
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_workspace');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId,
+          userId,
+          telegramUserId,
+          groupOnboardingManager,
+          agentManager,
+          mockSendTelegramMessage,
+          mockEditTelegramMessage
+        );
+
+        expect(result.pinnedEdited).toBe(true);
+
+        // Verify edit was called with correct parameters
+        const editCall = mockEditTelegramMessage.mock.calls[0];
+        expect(editCall[0]).toBe(chatId);
+        expect(editCall[1]).toBe(pinnedMessageId);
+        expect(editCall[2]).toContain('Esse grupo não tem agente ainda');
+        // Should have two buttons for existing user
+        expect(editCall[3].length).toBe(1);
+        expect(editCall[3][0].length).toBe(2);
+        expect(editCall[3][0][0].callback_data).toBe(`onboard_create_${telegramUserId}`);
+        expect(editCall[3][0][1].callback_data).toBe(`onboard_link_${telegramUserId}`);
+      });
+
+      it('should skip pinned message edit when no pinnedMessageId stored', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Setup: Onboarding started but no pinned message ID
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        // NOT calling setPinnedMessageId
+
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId,
+          userId,
+          telegramUserId,
+          groupOnboardingManager,
+          agentManager,
+          mockSendTelegramMessage,
+          mockEditTelegramMessage
+        );
+
+        expect(result.cancelled).toBe(true);
+        expect(result.pinnedEdited).toBe(false);
+        expect(mockEditTelegramMessage).not.toHaveBeenCalled();
+        // Should still send confirmation
+        expect(mockSendTelegramMessage).toHaveBeenCalledWith(chatId, '❌ *Cancelado*');
+      });
+    });
+
+    describe('Cancellation at different steps', () => {
+      it('should cancel at awaiting_name step', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 11111;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('awaiting_name');
+
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId, userId, telegramUserId,
+          groupOnboardingManager, agentManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        expect(result.cancelled).toBe(true);
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+      });
+
+      it('should cancel at awaiting_emoji step', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 11111;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        groupOnboardingManager.setAgentName(chatId, telegramUserId, 'TestAgent');
+        groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_emoji');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('awaiting_emoji');
+
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId, userId, telegramUserId,
+          groupOnboardingManager, agentManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        expect(result.cancelled).toBe(true);
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+      });
+
+      it('should cancel at awaiting_workspace step', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 11111;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        groupOnboardingManager.setAgentName(chatId, telegramUserId, 'TestAgent');
+        groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_emoji');
+        groupOnboardingManager.setEmoji(chatId, telegramUserId, '🤖');
+        groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_workspace');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('awaiting_workspace');
+
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId, userId, telegramUserId,
+          groupOnboardingManager, agentManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        expect(result.cancelled).toBe(true);
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+      });
+
+      it('should cancel at awaiting_model_mode step', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 11111;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        groupOnboardingManager.setAgentName(chatId, telegramUserId, 'TestAgent');
+        groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_model_mode');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('awaiting_model_mode');
+
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId, userId, telegramUserId,
+          groupOnboardingManager, agentManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        expect(result.cancelled).toBe(true);
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+      });
+
+      it('should cancel at awaiting_confirmation step', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 11111;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        groupOnboardingManager.setAgentName(chatId, telegramUserId, 'TestAgent');
+        groupOnboardingManager.setEmoji(chatId, telegramUserId, '🤖');
+        groupOnboardingManager.setWorkspace(chatId, telegramUserId, '/tmp/workspace');
+        groupOnboardingManager.setModelMode(chatId, telegramUserId, 'sonnet');
+        groupOnboardingManager.advanceStep(chatId, telegramUserId, 'awaiting_confirmation');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('awaiting_confirmation');
+
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId, userId, telegramUserId,
+          groupOnboardingManager, agentManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        expect(result.cancelled).toBe(true);
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+      });
+
+      it('should cancel at linking_agent step', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 11111;
+
+        // Create an agent to link
+        const agent = agentManager.createAgent(userId, 'ExistingAgent', undefined, '🤖');
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'linking_agent');
+        groupOnboardingManager.setSelectedAgentId(chatId, telegramUserId, agent.id);
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        expect(groupOnboardingManager.getCurrentStep(chatId)).toBe('linking_agent');
+
+        const result = await simulateHandleGroupCancelarCommand(
+          chatId, userId, telegramUserId,
+          groupOnboardingManager, agentManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        expect(result.cancelled).toBe(true);
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+      });
+    });
+
+    describe('Command routing: /cancelar during onboarding', () => {
+      it('should route /cancelar as command even during active onboarding', () => {
+        const chatId = 12345;
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+
+        // Start onboarding
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_emoji');
+
+        // Create handler with onboarding manager
+        const handler = new TelegramCommandHandler(agentManager, groupOnboardingManager);
+
+        // Route /cancelar command from locked user
+        const result = handler.routeGroupMessage(chatId, userId, '/cancelar', telegramUserId);
+
+        // Should be routed as command, not flow_input
+        expect(result.action).toBe('command');
+        if (result.action === 'command') {
+          expect(result.command).toBe('/cancelar');
+        }
+      });
+
+      it('should route /cancelar as command even from non-locked user', () => {
+        const chatId = 12345;
+        const userId = '+5581999999999';
+        const lockOwner = 67890;
+        const otherUser = 99999;
+
+        // Start onboarding as one user
+        groupOnboardingManager.startOnboarding(chatId, lockOwner, 'awaiting_emoji');
+
+        const handler = new TelegramCommandHandler(agentManager, groupOnboardingManager);
+
+        // Route /cancelar from different user
+        const result = handler.routeGroupMessage(chatId, userId, '/cancelar', otherUser);
+
+        // Should still be routed as command (validation happens in handler)
+        expect(result.action).toBe('command');
+        if (result.action === 'command') {
+          expect(result.command).toBe('/cancelar');
+        }
+      });
+
+      it('should route other commands as flow_input for locked user during onboarding', () => {
+        const chatId = 12345;
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_workspace');
+
+        const handler = new TelegramCommandHandler(agentManager, groupOnboardingManager);
+
+        // Route a path (which starts with /) from locked user
+        const result = handler.routeGroupMessage(chatId, userId, '/Users/lucas/projects', telegramUserId);
+
+        // Should be flow_input to allow workspace path input
+        expect(result.action).toBe('flow_input');
+      });
+
+      it('should route other commands as group_onboarding_locked for non-locked user', () => {
+        const chatId = 12345;
+        const userId = '+5581999999999';
+        const lockOwner = 67890;
+        const otherUser = 99999;
+
+        groupOnboardingManager.startOnboarding(chatId, lockOwner, 'awaiting_workspace');
+
+        const handler = new TelegramCommandHandler(agentManager, groupOnboardingManager);
+
+        // Route /help from non-locked user
+        const result = handler.routeGroupMessage(chatId, userId, '/help', otherUser);
+
+        // Should be locked (silently ignored)
+        expect(result.action).toBe('group_onboarding_locked');
       });
     });
   });

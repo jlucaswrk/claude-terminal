@@ -150,7 +150,6 @@ export interface UserPreferences {
   telegramUsername?: string;       // Telegram username (without @)
   telegramChatId?: number;         // Telegram chat ID for direct messages
   onboardingComplete: boolean;     // Whether user completed mode selection
-  orphanedTelegramGroups?: number[];  // Telegram groups without linked agents (for cleanup)
   sandboxAutoCleanup?: boolean;    // Auto-cleanup sandbox directory on agent deletion
 }
 
@@ -163,7 +162,6 @@ export interface SerializedUserPreferences {
   telegramUsername?: string;
   telegramChatId?: number;
   onboardingComplete: boolean;
-  orphanedTelegramGroups?: number[];
   sandboxAutoCleanup?: boolean;
 }
 

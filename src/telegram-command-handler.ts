@@ -64,36 +64,46 @@ export class TelegramCommandHandler {
    * @returns TelegramRouteResult indicating what action to take
    */
   routeGroupMessage(chatId: number, userId: string, text: string, telegramUserId?: number): TelegramRouteResult {
-    // Check for active group onboarding before routing
-    if (this.groupOnboardingManager && telegramUserId !== undefined) {
-      if (this.groupOnboardingManager.hasActiveOnboarding(chatId)) {
-        // Check if message is from the user who has the lock
-        if (this.groupOnboardingManager.isLockedByUser(chatId, telegramUserId)) {
-          // Same user - treat as flow input
+    // Check if this is a command (starts with /)
+    if (text.startsWith('/')) {
+      const [command, ...argParts] = text.split(' ');
+      const commandLower = command.toLowerCase();
+      const args = argParts.join(' ');
+
+      // /cancelar always goes through as a command (lock validation happens in handler)
+      if (commandLower === '/cancelar') {
+        return {
+          action: 'command',
+          command: commandLower,
+          args,
+          chatId,
+          userId,
+        };
+      }
+
+      // For other commands during active onboarding, check lock
+      if (this.groupOnboardingManager && telegramUserId !== undefined) {
+        if (this.groupOnboardingManager.hasActiveOnboarding(chatId)) {
+          // Check if message is from the user who has the lock
+          if (!this.groupOnboardingManager.isLockedByUser(chatId, telegramUserId)) {
+            // Different user - group is locked, silently ignore
+            const lockedByUserId = this.groupOnboardingManager.getLockedByUserId(chatId)!;
+            return {
+              action: 'group_onboarding_locked',
+              chatId,
+              userId,
+              lockedByUserId,
+            };
+          }
+          // User has lock - treat command as flow input (allows workspace paths like /Users/...)
           return {
             action: 'flow_input',
             text,
             chatId,
             userId,
           };
-        } else {
-          // Different user - group is locked
-          const lockedByUserId = this.groupOnboardingManager.getLockedByUserId(chatId)!;
-          return {
-            action: 'group_onboarding_locked',
-            chatId,
-            userId,
-            lockedByUserId,
-          };
         }
       }
-    }
-
-    // Check if this is a command (starts with /)
-    if (text.startsWith('/')) {
-      const [command, ...argParts] = text.split(' ');
-      const commandLower = command.toLowerCase();
-      const args = argParts.join(' ');
 
       // Special handling for /ralph command - parse task inline
       if (commandLower === '/ralph' && args.trim()) {
@@ -116,6 +126,31 @@ export class TelegramCommandHandler {
         chatId,
         userId,
       };
+    }
+
+    // For non-command text during active onboarding, check lock
+    if (this.groupOnboardingManager && telegramUserId !== undefined) {
+      if (this.groupOnboardingManager.hasActiveOnboarding(chatId)) {
+        // Check if message is from the user who has the lock
+        if (this.groupOnboardingManager.isLockedByUser(chatId, telegramUserId)) {
+          // Same user - treat as flow input
+          return {
+            action: 'flow_input',
+            text,
+            chatId,
+            userId,
+          };
+        } else {
+          // Different user - group is locked
+          const lockedByUserId = this.groupOnboardingManager.getLockedByUserId(chatId)!;
+          return {
+            action: 'group_onboarding_locked',
+            chatId,
+            userId,
+            lockedByUserId,
+          };
+        }
+      }
     }
 
     // Find agent linked to this group

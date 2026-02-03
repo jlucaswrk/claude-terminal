@@ -78,7 +78,6 @@ import {
   sendTelegramAgentConfigMenu,
   sendTelegramAgentHistory,
   sendTelegramDeleteConfirmation,
-  sendTelegramOrphanedGroupWarning,
   sendTelegramStatusOverview,
   sendTelegramEditNamePrompt,
   updateTelegramGroupTitle,
@@ -699,6 +698,11 @@ async function handleTelegramMessage(message: any): Promise<void> {
 
     switch (route.action) {
       case 'command':
+        // Handle /cancelar specially as it needs telegram user ID for lock validation
+        if (route.command === '/cancelar') {
+          await handleGroupCancelarCommand(chatId, userId, from.id);
+          return;
+        }
         await handleTelegramCommand(chatId, userId, `${route.command} ${route.args}`.trim());
         return;
 
@@ -747,27 +751,21 @@ async function handleTelegramMessage(message: any): Promise<void> {
         return;
 
       case 'orphaned_group':
-        // Check if this is a known orphaned group (from agent deletion)
-        if (userPrefs.orphanedTelegramGroups?.includes(chatId)) {
-          // Use dedicated orphaned group warning with recreate/leave options
-          await sendTelegramOrphanedGroupWarning(chatId, chatId);
-        } else {
-          // Generic unlinked group - never had an agent or was delinked
-          await sendTelegramMessage(chatId,
-            '⚠️ *Grupo sem agente vinculado*\n\n' +
-            'Este grupo não está conectado a nenhum agente.\n' +
-            'Crie um novo agente e vincule a este grupo, ou remova o bot.'
-          );
-          await sendTelegramButtons(chatId,
-            'O que deseja fazer?',
+        // Unlinked group - show create/link options
+        await sendTelegramMessage(chatId,
+          '⚠️ *Grupo sem agente vinculado*\n\n' +
+          'Este grupo não está conectado a nenhum agente.\n' +
+          'Crie um novo agente e vincule a este grupo, ou remova o bot.'
+        );
+        await sendTelegramButtons(chatId,
+          'O que deseja fazer?',
+          [
             [
-              [
-                { text: 'Criar agente', callback_data: `orphan_recreate_${chatId}` },
-                { text: 'Remover bot', callback_data: `orphan_leave_${chatId}` },
-              ],
-            ]
-          );
-        }
+              { text: 'Criar agente', callback_data: `orphan_recreate_${chatId}` },
+              { text: 'Remover bot', callback_data: `orphan_leave_${chatId}` },
+            ],
+          ]
+        );
         return;
 
       case 'ignore':
@@ -1301,6 +1299,64 @@ async function processTelegramDocumentWithPrompt(
 }
 
 /**
+ * Handle /cancelar command in groups
+ * Cancels the onboarding flow and resets the pinned message to initial state
+ */
+async function handleGroupCancelarCommand(chatId: number, userId: string, telegramUserId: number): Promise<void> {
+  // Check if there's an active onboarding for this group
+  if (!groupOnboardingManager.hasActiveOnboarding(chatId)) {
+    await sendTelegramMessage(chatId, '⚠️ Nenhum processo de configuração em andamento.');
+    return;
+  }
+
+  // Validate lock - only the user who started onboarding can cancel
+  if (!groupOnboardingManager.isLockedByUser(chatId, telegramUserId)) {
+    // Different user - silently ignore (don't show error to avoid confusion in group)
+    return;
+  }
+
+  // Get the pinned message ID to edit it back
+  const pinnedMessageId = groupOnboardingManager.getPinnedMessageId(chatId);
+
+  // Cancel the onboarding state
+  groupOnboardingManager.cancelOnboarding(chatId, telegramUserId);
+
+  // Determine which buttons to show based on user's existing agents
+  const existingAgents = agentManager.listAgents(userId);
+  const hasExistingAgents = existingAgents.length > 0;
+
+  // Edit pinned message back to initial state
+  if (pinnedMessageId) {
+    let messageText: string;
+    let buttons: Array<{ text: string; callback_data: string }[]>;
+
+    if (!hasExistingAgents) {
+      // First-time user: single [Criar agora] button
+      messageText = '🎉 *Seu primeiro agente!*\n\n' +
+        'Vamos criar um agente para este grupo.';
+      buttons = [
+        [{ text: '✨ Criar agora', callback_data: `onboard_create_${telegramUserId}` }],
+      ];
+    } else {
+      // Existing user: [Criar um] [Vincular existente] buttons
+      messageText = '👋 *Esse grupo não tem agente ainda*\n\n' +
+        'Você pode criar um novo ou vincular um existente.';
+      buttons = [
+        [
+          { text: '✨ Criar um', callback_data: `onboard_create_${telegramUserId}` },
+          { text: '🔗 Vincular existente', callback_data: `onboard_link_${telegramUserId}` },
+        ],
+      ];
+    }
+
+    await editTelegramMessage(chatId, pinnedMessageId, messageText, buttons);
+  }
+
+  // Send confirmation
+  await sendTelegramMessage(chatId, '❌ *Cancelado*');
+}
+
+/**
  * Handle Telegram commands
  */
 async function handleTelegramCommand(chatId: number, userId: string, text: string): Promise<void> {
@@ -1322,7 +1378,7 @@ async function handleTelegramCommand(chatId: number, userId: string, text: strin
           telegramTokenManager.deleteToken(args);
 
           // Update user preferences with telegram chat ID and mark onboarding complete
-          // Merge with existing preferences to preserve fields like sandboxAutoCleanup, orphanedTelegramGroups
+          // Merge with existing preferences to preserve fields like sandboxAutoCleanup
           const existingPrefs = persistenceService.loadUserPreferences(linkedUserId);
           const prefs: UserPreferences = {
             ...existingPrefs,
@@ -1715,18 +1771,6 @@ async function handleTelegramCallback(query: any): Promise<void> {
       const name = agent.name;
       const telegramChatId = agent.telegramChatId;
 
-      // Track as orphaned group if it has one
-      if (telegramChatId) {
-        const prefs = persistenceService.loadUserPreferences(userId);
-        if (prefs) {
-          prefs.orphanedTelegramGroups = prefs.orphanedTelegramGroups || [];
-          if (!prefs.orphanedTelegramGroups.includes(telegramChatId)) {
-            prefs.orphanedTelegramGroups.push(telegramChatId);
-          }
-          persistenceService.saveUserPreferences(prefs);
-        }
-      }
-
       agentManager.deleteAgent(agentId);
       await sendTelegramMessage(chatId, `✅ Agente *${name}* deletado.${telegramChatId ? '\n\n_O grupo foi mantido._' : ''}`);
     }
@@ -1817,13 +1861,6 @@ async function handleTelegramCallback(query: any): Promise<void> {
   else if (data.startsWith('orphan_recreate_')) {
     const groupChatId = parseInt(data.replace('orphan_recreate_', ''), 10);
 
-    // Remove from orphaned list
-    const prefs = persistenceService.loadUserPreferences(userId);
-    if (prefs?.orphanedTelegramGroups) {
-      prefs.orphanedTelegramGroups = prefs.orphanedTelegramGroups.filter(id => id !== groupChatId);
-      persistenceService.saveUserPreferences(prefs);
-    }
-
     // Start agent creation flow with the group pre-linked
     userContextManager.startCreateAgentFlow(userId);
     // Store the group chat ID to link after creation
@@ -1863,12 +1900,6 @@ async function handleTelegramCallback(query: any): Promise<void> {
   // Handle orphaned group callbacks
   else if (data.startsWith('orphan_leave_')) {
     const targetChatId = parseInt(data.replace('orphan_leave_', ''), 10);
-    // Remove from orphaned list before leaving
-    const prefs = persistenceService.loadUserPreferences(userId);
-    if (prefs?.orphanedTelegramGroups) {
-      prefs.orphanedTelegramGroups = prefs.orphanedTelegramGroups.filter(id => id !== targetChatId);
-      persistenceService.saveUserPreferences(prefs);
-    }
     // Leave the group using the exported function
     const success = await leaveTelegramGroup(targetChatId);
     if (success) {
