@@ -13,6 +13,11 @@ export type AgentType = 'claude' | 'bash';
 export type OutputType = 'standard' | 'ralph-loop';
 
 /**
+ * Model mode - selection (asks each time) or fixed model
+ */
+export type ModelMode = 'selection' | 'haiku' | 'sonnet' | 'opus';
+
+/**
  * Represents a single output/response from an agent
  */
 export interface Output {
