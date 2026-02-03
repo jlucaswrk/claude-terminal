@@ -1,342 +1,75 @@
-# Claude Terminal
+# CLAUDE.md
 
-WhatsApp como interface para múltiplos agentes Claude Code. Cada agente é uma sessão independente com contexto próprio, capaz de executar código, navegar na web e gerar arquivos.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Arquitetura
-
-```
-                                    ┌─────────────────────────────────────────┐
-                                    │              Claude Terminal            │
-                                    ├─────────────────────────────────────────┤
-WhatsApp ──→ Kapso ──→ Tailscale ──→│  Webhook Handler (index.ts)             │
-                                    │         │                               │
-                                    │         ▼                               │
-                                    │  UserContextManager ←→ AgentManager     │
-                                    │  (multi-step flows)    (CRUD, state)    │
-                                    │         │                               │
-                                    │         ▼                               │
-                                    │  QueueManager ←→ Semaphore              │
-                                    │  (priority queue)  (concurrency)        │
-                                    │         │                               │
-                                    │         ▼                               │
-                                    │  ClaudeTerminal (SDK sessions)          │
-                                    │         │                               │
-                                    │         ├──→ MCP Servers                │
-                                    │         │    (firecrawl, browser, auggie)│
-                                    │         │                               │
-                                    │         ▼                               │
-                                    │  Storage (Kapso Media)                  │
-                                    │  (upload de arquivos gerados)           │
-                                    └─────────────────────────────────────────┘
-                                              │
-WhatsApp ←── Kapso ←──────────────────────────┘
-   (texto, imagens, documentos)
-```
-
-## Funcionalidades
-
-### Agentes Inteligentes
-
-Cada agente é uma sessão Claude independente com:
-- **Nome**: identificador do usuário (ex: "API Backend", "Frontend")
-- **Workspace**: diretório de trabalho opcional para projetos específicos
-- **Sessão persistente**: contexto mantido entre mensagens
-- **Prioridade**: high/medium/low para ordenação na fila
-- **Status**: idle/processing/error com detalhes
-- **Histórico**: últimas 10 interações com prompt/resposta
-
-### Ferramentas Disponíveis
-
-Os agentes têm acesso a:
-- **Bash**: execução de comandos no terminal
-- **Read/Write/Edit**: manipulação de arquivos
-- **Glob/Grep**: busca em arquivos e diretórios
-
-### MCP Servers Integrados
-
-- **Firecrawl**: scraping e crawling de websites
-- **Browser MCP**: automação de navegador (screenshots, interação)
-- **Auggie**: integração com Augment para contexto de código
-
-### Envio de Mídia
-
-O sistema detecta e envia automaticamente:
-- **Screenshots**: capturados de ferramentas de browser
-- **Arquivos gerados**: planilhas, PDFs, documentos, código
-- Formatos suportados: xlsx, csv, pdf, docx, txt, json, imagens, etc.
-
-### Fila com Prioridade
-
-Tasks são ordenadas por:
-1. Prioridade (high=0, medium=1, low=2)
-2. Timestamp (FIFO dentro da mesma prioridade)
-
-### Controle de Concorrência
-
-O `Semaphore` limita execuções simultâneas:
-- **Modo limitado**: 1-N permits configuráveis
-- **Modo ilimitado**: maxPermits=0 desabilita limite
-
-### Fluxos Conversacionais
-
-O `UserContextManager` rastreia estados multi-step:
-- Criação de agente (nome → workspace → confirmação)
-- Configuração de prioridade
-- Configuração de limite de concorrência
-- Deleção de agente com confirmação
-
-### Modos de Operação (Opcional)
-
-O sistema suporta dois modos de operação para novos usuários:
-
-#### Modo Ronin (Padrão)
-- Todos os agentes no WhatsApp
-- Comportamento completo com todos os modelos (Haiku/Sonnet/Opus)
-- Acesso total a todas as ferramentas
-
-#### Modo Dojo
-- Agentes gerenciados via Telegram Bot
-- WhatsApp apenas com agente **Ronin** (read-only):
-  - Modelo: Haiku apenas
-  - Respostas curtas (máximo 3 linhas)
-  - Ferramentas permitidas: `Read`, `Glob`, `Grep`, `LS`, `WebSearch`, `WebFetch`
-  - Para modificações: "Use o Dojo no Telegram"
-
-**Onboarding**: Novos usuários (sem agentes existentes) recebem opção de escolher o modo. Usuários existentes continuam no modo Ronin automaticamente (backwards compatible).
-
-## Estrutura
-
-```
-src/
-├── index.ts              # Servidor HTTP, webhook handler, orquestração
-├── types.ts              # Tipos e interfaces do sistema
-├── agent-manager.ts      # CRUD de agentes, persistência, estado
-├── queue-manager.ts      # Fila prioritária, processamento de tasks
-├── semaphore.ts          # Controle de concorrência (bounded/unbounded)
-├── terminal.ts           # Wrapper do Claude SDK com sessões e detecção de arquivos
-├── user-context-manager.ts  # Estado conversacional multi-step
-├── whatsapp.ts           # Cliente Kapso (menus interativos, botões, mídia)
-├── telegram.ts           # Cliente Telegram Bot API (modo Dojo)
-├── ronin-agent.ts        # Agente read-only para WhatsApp no modo Dojo
-├── persistence.ts        # Serialização/deserialização de estado e preferências
-├── storage.ts            # Upload de arquivos para Kapso Media Storage
-└── title-extractor.ts    # Extração de títulos de respostas
-```
-
-## Interface WhatsApp
-
-### Comandos
-
-| Comando | Descrição |
-|---------|-----------|
-| `/` | Menu principal (lista agentes e ações) |
-| `/reset` | Limpar sessão de um ou todos os agentes |
-| `/compact` | Compactar contexto da conversa |
-| `/help` | Mostrar ajuda |
-
-### Fluxo de Uso
-
-1. **Primeiro uso**: envie qualquer mensagem → agente "General" criado automaticamente
-2. **Enviar prompt**: digite mensagem → selecione agente → escolha modelo (Haiku/Sonnet/Opus)
-3. **Gerenciar**: use `/` para criar agentes, configurar prioridades, ver histórico
-
-### Menus Interativos
-
-- Lista de agentes com status e última ação (ex: "Criou 3 arquivos")
-- Menu de ações por agente (prompt, histórico, prioridade, reset, deletar)
-- Seletor de modelo (Haiku/Sonnet/Opus)
-- Confirmações para ações destrutivas
-
-### Updates de Progresso
-
-Durante o processamento, o sistema envia atualizações a cada 30 segundos:
-- Formato: `🔧 Agente X: Lendo arquivo.ts... (45s)`
-- Mostra qual ferramenta está sendo usada
-- Inclui tempo decorrido desde o início
-
-## Modelos de Dados
-
-```typescript
-interface Agent {
-  id: string;
-  userId: string;           // Telefone do usuário
-  name: string;
-  workspace?: string;       // Diretório de trabalho
-  sessionId?: string;       // ID da sessão Claude SDK
-  title: string;            // Título auto-gerado
-  status: 'idle' | 'processing' | 'error';
-  statusDetails: string;    // Última ação realizada (ex: "Criou 3 arquivos")
-  priority: 'high' | 'medium' | 'low';
-  messageCount: number;
-  outputs: Output[];        // Últimas 10 respostas
-  lastActivity: Date;
-  createdAt: Date;
-}
-
-interface Output {
-  id: string;
-  summary: string;          // Resumo da ação
-  prompt: string;           // Prompt original
-  response: string;         // Resposta completa
-  model: 'haiku' | 'sonnet' | 'opus';
-  status: 'success' | 'warning' | 'error';
-  timestamp: Date;
-}
-
-interface CreatedFile {
-  path: string;             // Caminho do arquivo criado
-  mediaId: string;          // ID no Kapso Media Storage
-  filename: string;         // Nome do arquivo
-  mimeType: string;         // Tipo MIME
-  mediaType: 'image' | 'video' | 'audio' | 'document';
-}
-
-type UserMode = 'ronin' | 'dojo';
-
-interface UserPreferences {
-  userId: string;           // Telefone do usuário
-  mode: UserMode;           // Modo de operação
-  telegramUsername?: string; // Username para modo Dojo
-  telegramChatId?: number;   // Chat ID do Telegram
-  onboardingComplete: boolean;
-}
-```
-
-## Setup
+## Commands
 
 ```bash
-# Instalar dependências
-bun install
+# Development
+bun run dev                    # Hot reload development server
+bun run start                  # Production server
 
-# Desenvolvimento (hot reload)
-bun run dev
+# Testing
+bun test                       # Run all tests
+bun test <pattern>             # Run tests matching pattern (e.g., bun test agent)
+bun test --only                # Run tests marked with test.only()
+bun test -t "test name regex"  # Run tests matching name pattern
 
-# Produção
-bun run start
-
-# Testes
-bun test
+# Production (PM2)
+pm2 logs claude-terminal       # View logs
+pm2 restart claude-terminal --update-env  # Restart with new env vars
 ```
 
-### Variáveis de Ambiente
+## Architecture
 
-```env
-# WhatsApp (Kapso)
-KAPSO_API_KEY=xxx              # API key do Kapso
-KAPSO_PHONE_NUMBER_ID=xxx      # ID do telefone no Kapso
-KAPSO_WEBHOOK_SECRET=xxx       # Token de verificação do webhook
-USER_PHONE_NUMBER=xxx          # Telefone autorizado (ex: +5581999999999)
+WhatsApp/Telegram bot that spawns independent Claude Code agent sessions. Each agent maintains its own SDK session and conversation context.
 
-# Telegram (opcional, para modo Dojo)
-TELEGRAM_BOT_TOKEN=xxx         # Token do bot via @BotFather
-```
-
-### Expor Servidor
-
-```bash
-tailscale funnel 3000
-```
-
-Configurar URL do funnel como webhook no Kapso.
-
-### PM2 (Gerenciador de Processos)
-
-**IMPORTANTE**: O servidor roda via PM2, não manualmente com `bun run`.
-
-```bash
-# Ver status
-pm2 list
-
-# Ver logs em tempo real
-pm2 logs claude-terminal
-
-# Reiniciar (aplica novas variáveis de ambiente)
-pm2 restart claude-terminal --update-env
-
-# Parar
-pm2 stop claude-terminal
-
-# Iniciar
-pm2 start claude-terminal
-```
-
-PM2 cuida de:
-- **Logs**: `pm2 logs` para ver output
-- **Auto-restart**: reinicia automaticamente se crashar
-- **Variáveis de ambiente**: usar `--update-env` ao reiniciar para aplicar novas vars
-
-Para adicionar/alterar variáveis de ambiente, edite o ecosystem ou use:
-```bash
-TELEGRAM_BOT_TOKEN=xxx pm2 restart claude-terminal --update-env
-```
-
-## Fluxo de Mensagem
+### Request Flow
 
 ```
-1. Webhook recebe mensagem do WhatsApp via Kapso
-2. Valida origem (apenas USER_PHONE_NUMBER autorizado)
-3. UserContextManager verifica se há fluxo em andamento
-   - Se sim: processa step do fluxo
-   - Se não: interpreta como prompt ou comando
-4. Se for prompt:
-   - Usuário seleciona agente e modelo
-   - QueueManager enfileira task com prioridade
-   - Semaphore controla concorrência
-   - ClaudeTerminal executa via SDK
-   - Detecta arquivos criados (Write tool)
-   - Upload de arquivos para Kapso Media
-5. Envia resposta via WhatsApp:
-   - Screenshots (se houver)
-   - Texto da resposta
-   - Arquivos gerados (documentos, planilhas, etc.)
-6. AgentManager atualiza e persiste estado
+WhatsApp/Telegram → Webhook (index.ts)
+                         ↓
+              UserContextManager (multi-step flows)
+                         ↓
+                   AgentManager (CRUD)
+                         ↓
+              QueueManager + Semaphore (concurrency)
+                         ↓
+              ClaudeTerminal (SDK sessions)
+                         ↓
+                   Storage (file upload)
+                         ↓
+              WhatsApp/Telegram response
 ```
 
-## Fluxo de Arquivos
+### Key Patterns
 
-```
-Claude usa Write tool para criar arquivo
-           ↓
-terminal.ts detecta evento tool_use
-           ↓
-Após execução, verifica se arquivo existe
-           ↓
-storage.ts faz upload para Kapso Media
-           ↓
-queue-manager.ts envia via WhatsApp
-           ↓
-Usuário recebe documento no chat
-```
+**State Management**: Three persistence files track different concerns:
+- `.claude-terminal-state.json` - Agent definitions and outputs
+- `.claude-terminal-sessions.json` - SDK session IDs
+- `.claude-terminal-preferences.json` - User mode preferences
 
-### MIME Types Suportados
+**Multi-Step Flows**: `UserContextManager` tracks conversation state for flows that span multiple messages (agent creation, configuration, onboarding). The `currentFlow` and `flowState` fields in `UserContext` define the state machine.
 
-| Extensão | Tipo | WhatsApp Media Type |
-|----------|------|---------------------|
-| .xlsx, .xls | Planilhas | document |
-| .pdf | PDF | document |
-| .docx, .doc | Word | document |
-| .csv, .txt, .json | Texto | document |
-| .png, .jpg, .gif | Imagens | image |
-| .mp4, .webm | Vídeo | video |
-| .mp3, .wav | Áudio | audio |
+**Queue Priority**: Tasks ordered by priority (high=0, medium=1, low=2) then timestamp. `Semaphore` limits concurrent executions.
 
-## Recuperação de Erros
+**Dual Platform Support**:
+- WhatsApp (Kapso API) via `whatsapp.ts` - interactive menus, buttons, lists
+- Telegram Bot API via `telegram.ts` - inline keyboards, callbacks
+- Telegram groups can be linked to agents via `groupId`/`telegramChatId`
 
-- **Crash recovery**: agentes em 'processing' são resetados para 'idle' no startup
-- **Error recovery**: botões de retry/ignorar quando um prompt falha
-- **Backup de estado**: arquivo .bak para recuperação de corrupção
+**Agent Modes**:
+- `conversational` - Standard Claude chat
+- `ralph` - Autonomous loop with iteration limits (see `ralph-loop-manager.ts`)
 
-## Testes
+**File Detection**: `terminal.ts` monitors Write tool usage to detect created files, uploads to Kapso Media, sends to user.
 
-402 testes cobrindo:
-- `agent-manager.test.ts`: CRUD, persistência, outputs
-- `queue-manager.test.ts`: prioridade, processamento, erros
-- `semaphore.test.ts`: permits, blocking, unbounded mode
-- `terminal.test.ts`: sessões, modelos, workspaces
-- `user-context-manager.test.ts`: fluxos multi-step
-- `whatsapp.test.ts`: menus interativos, formatação
-- `telegram.test.ts`: Telegram Bot API
-- `ronin-agent.test.ts`: agente read-only
-- `persistence.test.ts`: serialização, backup, recovery, preferências
-- `integration-onboarding.test.ts`: fluxo de onboarding
-- `index.test.ts`: integração de fluxos completos
+### Type System
+
+Core types in `types.ts`:
+- `Agent` - Session definition with status, priority, outputs
+- `UserContext` - Conversation state machine
+- `QueueTask` - Execution queue item
+- `GroupOnboardingState` - Telegram group setup flow
+
+Serialized variants (`SerializedAgent`, etc.) use ISO strings for dates - required for JSON persistence.
