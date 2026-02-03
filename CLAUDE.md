@@ -85,6 +85,25 @@ O `UserContextManager` rastreia estados multi-step:
 - Configuração de limite de concorrência
 - Deleção de agente com confirmação
 
+### Modos de Operação (Opcional)
+
+O sistema suporta dois modos de operação para novos usuários:
+
+#### Modo Ronin (Padrão)
+- Todos os agentes no WhatsApp
+- Comportamento completo com todos os modelos (Haiku/Sonnet/Opus)
+- Acesso total a todas as ferramentas
+
+#### Modo Dojo
+- Agentes gerenciados via Telegram Bot
+- WhatsApp apenas com agente **Ronin** (read-only):
+  - Modelo: Haiku apenas
+  - Respostas curtas (máximo 3 linhas)
+  - Ferramentas permitidas: `Read`, `Glob`, `Grep`, `LS`, `WebSearch`, `WebFetch`
+  - Para modificações: "Use o Dojo no Telegram"
+
+**Onboarding**: Novos usuários (sem agentes existentes) recebem opção de escolher o modo. Usuários existentes continuam no modo Ronin automaticamente (backwards compatible).
+
 ## Estrutura
 
 ```
@@ -97,7 +116,9 @@ src/
 ├── terminal.ts           # Wrapper do Claude SDK com sessões e detecção de arquivos
 ├── user-context-manager.ts  # Estado conversacional multi-step
 ├── whatsapp.ts           # Cliente Kapso (menus interativos, botões, mídia)
-├── persistence.ts        # Serialização/deserialização de estado
+├── telegram.ts           # Cliente Telegram Bot API (modo Dojo)
+├── ronin-agent.ts        # Agente read-only para WhatsApp no modo Dojo
+├── persistence.ts        # Serialização/deserialização de estado e preferências
 ├── storage.ts            # Upload de arquivos para Kapso Media Storage
 └── title-extractor.ts    # Extração de títulos de respostas
 ```
@@ -169,6 +190,16 @@ interface CreatedFile {
   mimeType: string;         // Tipo MIME
   mediaType: 'image' | 'video' | 'audio' | 'document';
 }
+
+type UserMode = 'ronin' | 'dojo';
+
+interface UserPreferences {
+  userId: string;           // Telefone do usuário
+  mode: UserMode;           // Modo de operação
+  telegramUsername?: string; // Username para modo Dojo
+  telegramChatId?: number;   // Chat ID do Telegram
+  onboardingComplete: boolean;
+}
 ```
 
 ## Setup
@@ -190,10 +221,14 @@ bun test
 ### Variáveis de Ambiente
 
 ```env
+# WhatsApp (Kapso)
 KAPSO_API_KEY=xxx              # API key do Kapso
 KAPSO_PHONE_NUMBER_ID=xxx      # ID do telefone no Kapso
 KAPSO_WEBHOOK_SECRET=xxx       # Token de verificação do webhook
 USER_PHONE_NUMBER=xxx          # Telefone autorizado (ex: +5581999999999)
+
+# Telegram (opcional, para modo Dojo)
+TELEGRAM_BOT_TOKEN=xxx         # Token do bot via @BotFather
 ```
 
 ### Expor Servidor
@@ -262,12 +297,15 @@ Usuário recebe documento no chat
 
 ## Testes
 
-263 testes cobrindo:
+402 testes cobrindo:
 - `agent-manager.test.ts`: CRUD, persistência, outputs
 - `queue-manager.test.ts`: prioridade, processamento, erros
 - `semaphore.test.ts`: permits, blocking, unbounded mode
 - `terminal.test.ts`: sessões, modelos, workspaces
 - `user-context-manager.test.ts`: fluxos multi-step
 - `whatsapp.test.ts`: menus interativos, formatação
-- `persistence.test.ts`: serialização, backup, recovery
+- `telegram.test.ts`: Telegram Bot API
+- `ronin-agent.test.ts`: agente read-only
+- `persistence.test.ts`: serialização, backup, recovery, preferências
+- `integration-onboarding.test.ts`: fluxo de onboarding
 - `index.test.ts`: integração de fluxos completos

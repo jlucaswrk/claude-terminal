@@ -159,10 +159,17 @@ function getUserMode(userId: string): UserMode {
 
 /**
  * Check if user needs onboarding
+ * Backwards compatible: users with existing agents skip onboarding
  */
 function needsOnboarding(userId: string): boolean {
   const prefs = persistenceService.loadUserPreferences(userId);
-  return !prefs?.onboardingComplete;
+  if (prefs?.onboardingComplete) return false;
+
+  // Backwards compatibility: existing users with agents don't need onboarding
+  const existingAgents = agentManager.listAgents(userId);
+  if (existingAgents.length > 0) return false;
+
+  return true;
 }
 
 /**
