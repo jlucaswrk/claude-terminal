@@ -2022,18 +2022,48 @@ async function handleTelegramCallback(query: any): Promise<void> {
     const agents = agentManager.listAgents(userId)
       .filter(a => a.name !== 'Ronin' && !a.telegramChatId);
 
+    // Case C: No available agents - show message + [criar um] button
     if (agents.length === 0) {
-      await sendTelegramMessage(chatId, '❌ Nenhum agente disponível para vincular.\n\nTodos os seus agentes já estão vinculados a grupos.');
+      await sendTelegramButtons(chatId,
+        '✅ *Todos os agentes já estão vinculados*\n\n' +
+        'Crie um novo agente para este grupo.',
+        [
+          [{ text: '✨ Criar um', callback_data: `onboard_create_${from.id}` }],
+        ]
+      );
       return;
     }
 
-    // Show agent selection buttons
-    const buttons = agents.slice(0, 8).map(a => ([{
-      text: `${a.emoji || '🤖'} ${a.name}`,
-      callback_data: `grp_link_agent_${a.id}`,
-    }]));
+    // Case A: 1-3 agents - show inline buttons with "[emoji] [name]" format
+    if (agents.length <= 3) {
+      const buttons = agents.map(a => ([{
+        text: `${a.emoji || '🤖'} ${a.name}`,
+        callback_data: `grp_link_agent_${a.id}`,
+      }]));
 
-    await sendTelegramButtons(chatId, '*Escolha um agente para vincular:*', buttons);
+      await sendTelegramButtons(chatId, '*Escolha um agente para vincular:*', buttons);
+    }
+    // Case B: 4+ agents - show numbered list + number buttons in rows of 4
+    else {
+      // Build numbered list message
+      const listLines = agents.slice(0, 8).map((a, i) =>
+        `${i + 1}. ${a.emoji || '🤖'} ${a.name}`
+      );
+      const message = '*Escolha um agente para vincular:*\n\n' + listLines.join('\n');
+
+      // Build number buttons in rows of 4
+      const buttons: { text: string; callback_data: string }[][] = [];
+      const agentsToShow = agents.slice(0, 8);
+      for (let i = 0; i < agentsToShow.length; i += 4) {
+        const row = agentsToShow.slice(i, i + 4).map((a, idx) => ({
+          text: String(i + idx + 1),
+          callback_data: `grp_link_agent_${a.id}`,
+        }));
+        buttons.push(row);
+      }
+
+      await sendTelegramButtons(chatId, message, buttons);
+    }
 
     // Update state to linking_agent
     groupOnboardingManager.updateState(chatId, from.id, { step: 'linking_agent' });
@@ -2045,6 +2075,28 @@ async function handleTelegramCallback(query: any): Promise<void> {
 
     if (!agent || agent.userId !== userId) {
       await sendTelegramMessage(chatId, '❌ Agente não encontrado.');
+      return;
+    }
+
+    // Guard: prevent hijacking already-linked agents
+    if (agent.telegramChatId !== undefined && agent.telegramChatId !== chatId) {
+      await sendTelegramMessage(chatId, '❌ Este agente já está vinculado a outro grupo.');
+      return;
+    }
+
+    // If agent is already linked to THIS chat, just complete onboarding without reassigning
+    if (agent.telegramChatId === chatId) {
+      // Edit pinned message to show success
+      const pinnedMessageId = groupOnboardingManager.getPinnedMessageId(chatId);
+      if (pinnedMessageId) {
+        await editTelegramMessage(chatId, pinnedMessageId,
+          `✅ *${agent.emoji || '🤖'} ${agent.name}* vinculado a este grupo!\n\n` +
+          `Envie mensagens para interagir com o agente.`
+        );
+      }
+
+      // Complete onboarding
+      groupOnboardingManager.completeOnboarding(chatId, from.id);
       return;
     }
 

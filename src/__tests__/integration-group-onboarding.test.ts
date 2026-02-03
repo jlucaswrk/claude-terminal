@@ -1261,4 +1261,567 @@ describe('Integration: Group Onboarding Flow', () => {
       expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
     });
   });
+
+  describe('Agent Linking: Connect Existing Agents to Groups', () => {
+    // Mock for editTelegramMessage
+    const mockEditTelegramMessage = mock(() => Promise.resolve(true));
+
+    beforeEach(() => {
+      mockEditTelegramMessage.mockClear();
+    });
+
+    /**
+     * Helper to simulate the onboard_link callback handling
+     * This mirrors the logic in index.ts for the "Vincular existente" button
+     */
+    async function simulateOnboardLinkCallback(
+      chatId: number,
+      telegramUserId: number,
+      userId: string,
+      agentManager: AgentManager,
+      groupOnboardingManager: GroupOnboardingManager,
+      mockSendButtons: typeof mockSendTelegramButtons
+    ): Promise<void> {
+      // Get user's unlinked agents
+      const agents = agentManager.listAgents(userId)
+        .filter(a => a.name !== 'Ronin' && !a.telegramChatId);
+
+      // Case C: No available agents
+      if (agents.length === 0) {
+        await mockSendButtons(chatId,
+          '✅ *Todos os agentes já estão vinculados*\n\n' +
+          'Crie um novo agente para este grupo.',
+          [
+            [{ text: '✨ Criar um', callback_data: `onboard_create_${telegramUserId}` }],
+          ]
+        );
+        return;
+      }
+
+      // Case A: 1-3 agents
+      if (agents.length <= 3) {
+        const buttons = agents.map(a => ([{
+          text: `${a.emoji || '🤖'} ${a.name}`,
+          callback_data: `grp_link_agent_${a.id}`,
+        }]));
+
+        await mockSendButtons(chatId, '*Escolha um agente para vincular:*', buttons);
+      }
+      // Case B: 4+ agents
+      else {
+        const listLines = agents.slice(0, 8).map((a, i) =>
+          `${i + 1}. ${a.emoji || '🤖'} ${a.name}`
+        );
+        const message = '*Escolha um agente para vincular:*\n\n' + listLines.join('\n');
+
+        const buttons: { text: string; callback_data: string }[][] = [];
+        const agentsToShow = agents.slice(0, 8);
+        for (let i = 0; i < agentsToShow.length; i += 4) {
+          const row = agentsToShow.slice(i, i + 4).map((a, idx) => ({
+            text: String(i + idx + 1),
+            callback_data: `grp_link_agent_${a.id}`,
+          }));
+          buttons.push(row);
+        }
+
+        await mockSendButtons(chatId, message, buttons);
+      }
+
+      // Update state to linking_agent
+      groupOnboardingManager.updateState(chatId, telegramUserId, { step: 'linking_agent' });
+    }
+
+    /**
+     * Helper to simulate the grp_link_agent callback handling
+     * This links an existing agent to the group
+     */
+    async function simulateLinkAgentCallback(
+      chatId: number,
+      telegramUserId: number,
+      userId: string,
+      agentId: string,
+      agentManager: AgentManager,
+      groupOnboardingManager: GroupOnboardingManager,
+      mockSendMessage: typeof mockSendTelegramMessage,
+      mockEditMessage: typeof mockEditTelegramMessage
+    ): Promise<boolean> {
+      const agent = agentManager.getAgent(agentId);
+
+      if (!agent || agent.userId !== userId) {
+        await mockSendMessage(chatId, '❌ Agente não encontrado.');
+        return false;
+      }
+
+      // Guard: prevent hijacking already-linked agents
+      if (agent.telegramChatId !== undefined && agent.telegramChatId !== chatId) {
+        await mockSendMessage(chatId, '❌ Este agente já está vinculado a outro grupo.');
+        return false;
+      }
+
+      // If agent is already linked to THIS chat, just complete onboarding without reassigning
+      if (agent.telegramChatId === chatId) {
+        // Edit pinned message to show success
+        const pinnedMessageId = groupOnboardingManager.getPinnedMessageId(chatId);
+        if (pinnedMessageId) {
+          await mockEditMessage(chatId, pinnedMessageId,
+            `✅ *${agent.emoji || '🤖'} ${agent.name}* vinculado a este grupo!\n\n` +
+            `Envie mensagens para interagir com o agente.`
+          );
+        }
+
+        // Complete onboarding
+        groupOnboardingManager.completeOnboarding(chatId, telegramUserId);
+        return true;
+      }
+
+      // Link agent to this group
+      agentManager.setTelegramChatId(agentId, chatId);
+
+      // Edit pinned message to show success
+      const pinnedMessageId = groupOnboardingManager.getPinnedMessageId(chatId);
+      if (pinnedMessageId) {
+        await mockEditMessage(chatId, pinnedMessageId,
+          `✅ *${agent.emoji || '🤖'} ${agent.name}* vinculado a este grupo!\n\n` +
+          `Envie mensagens para interagir com o agente.`
+        );
+      }
+
+      // Complete onboarding
+      groupOnboardingManager.completeOnboarding(chatId, telegramUserId);
+      return true;
+    }
+
+    describe('Case A: 1-3 unlinked agents', () => {
+      it('should show inline buttons with [emoji] [name] format for 1 agent', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Create 1 unlinked agent
+        const agent = agentManager.createAgent(userId, 'MyAgent', undefined, '🚀');
+
+        // Start onboarding first
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        await simulateOnboardLinkCallback(
+          chatId, telegramUserId, userId,
+          agentManager, groupOnboardingManager, mockSendTelegramButtons
+        );
+
+        expect(mockSendTelegramButtons).toHaveBeenCalledTimes(1);
+        const call = mockSendTelegramButtons.mock.calls[0];
+        expect(call[0]).toBe(chatId);
+        expect(call[1]).toBe('*Escolha um agente para vincular:*');
+        expect(call[2]).toHaveLength(1); // 1 row
+        expect(call[2][0]).toHaveLength(1); // 1 button per row
+        expect(call[2][0][0].text).toBe('🚀 MyAgent');
+        expect(call[2][0][0].callback_data).toBe(`grp_link_agent_${agent.id}`);
+      });
+
+      it('should show inline buttons with [emoji] [name] format for 2 agents', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Create 2 unlinked agents
+        const agent1 = agentManager.createAgent(userId, 'Agent1', undefined, '1️⃣');
+        const agent2 = agentManager.createAgent(userId, 'Agent2', undefined, '2️⃣');
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        await simulateOnboardLinkCallback(
+          chatId, telegramUserId, userId,
+          agentManager, groupOnboardingManager, mockSendTelegramButtons
+        );
+
+        expect(mockSendTelegramButtons).toHaveBeenCalledTimes(1);
+        const call = mockSendTelegramButtons.mock.calls[0];
+        expect(call[2]).toHaveLength(2); // 2 rows
+        expect(call[2][0][0].text).toBe('1️⃣ Agent1');
+        expect(call[2][1][0].text).toBe('2️⃣ Agent2');
+      });
+
+      it('should show inline buttons with [emoji] [name] format for 3 agents', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Create 3 unlinked agents
+        agentManager.createAgent(userId, 'Agent1', undefined, '1️⃣');
+        agentManager.createAgent(userId, 'Agent2', undefined, '2️⃣');
+        agentManager.createAgent(userId, 'Agent3', undefined, '3️⃣');
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        await simulateOnboardLinkCallback(
+          chatId, telegramUserId, userId,
+          agentManager, groupOnboardingManager, mockSendTelegramButtons
+        );
+
+        expect(mockSendTelegramButtons).toHaveBeenCalledTimes(1);
+        const call = mockSendTelegramButtons.mock.calls[0];
+        expect(call[2]).toHaveLength(3); // 3 rows, one button each
+        expect(call[2][0][0].text).toBe('1️⃣ Agent1');
+        expect(call[2][1][0].text).toBe('2️⃣ Agent2');
+        expect(call[2][2][0].text).toBe('3️⃣ Agent3');
+      });
+
+      it('should use default emoji when agent has no emoji', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Create agent without emoji
+        agentManager.createAgent(userId, 'NoEmojiAgent');
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        await simulateOnboardLinkCallback(
+          chatId, telegramUserId, userId,
+          agentManager, groupOnboardingManager, mockSendTelegramButtons
+        );
+
+        const call = mockSendTelegramButtons.mock.calls[0];
+        expect(call[2][0][0].text).toBe('🤖 NoEmojiAgent');
+      });
+    });
+
+    describe('Case B: 4+ unlinked agents', () => {
+      it('should show numbered list + number buttons in rows of 4', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Create 4 unlinked agents
+        agentManager.createAgent(userId, 'Agent1', undefined, '1️⃣');
+        agentManager.createAgent(userId, 'Agent2', undefined, '2️⃣');
+        agentManager.createAgent(userId, 'Agent3', undefined, '3️⃣');
+        agentManager.createAgent(userId, 'Agent4', undefined, '4️⃣');
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        await simulateOnboardLinkCallback(
+          chatId, telegramUserId, userId,
+          agentManager, groupOnboardingManager, mockSendTelegramButtons
+        );
+
+        expect(mockSendTelegramButtons).toHaveBeenCalledTimes(1);
+        const call = mockSendTelegramButtons.mock.calls[0];
+
+        // Check message contains numbered list
+        expect(call[1]).toContain('*Escolha um agente para vincular:*');
+        expect(call[1]).toContain('1. 1️⃣ Agent1');
+        expect(call[1]).toContain('2. 2️⃣ Agent2');
+        expect(call[1]).toContain('3. 3️⃣ Agent3');
+        expect(call[1]).toContain('4. 4️⃣ Agent4');
+
+        // Check buttons are in a single row of 4
+        expect(call[2]).toHaveLength(1); // 1 row
+        expect(call[2][0]).toHaveLength(4); // 4 buttons
+        expect(call[2][0][0].text).toBe('1');
+        expect(call[2][0][1].text).toBe('2');
+        expect(call[2][0][2].text).toBe('3');
+        expect(call[2][0][3].text).toBe('4');
+      });
+
+      it('should show 2 rows for 5-8 agents', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Create 6 unlinked agents
+        for (let i = 1; i <= 6; i++) {
+          agentManager.createAgent(userId, `Agent${i}`, undefined, `${i}️⃣`);
+        }
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        await simulateOnboardLinkCallback(
+          chatId, telegramUserId, userId,
+          agentManager, groupOnboardingManager, mockSendTelegramButtons
+        );
+
+        const call = mockSendTelegramButtons.mock.calls[0];
+
+        // Check message contains numbered list
+        expect(call[1]).toContain('6. 6️⃣ Agent6');
+
+        // Check buttons are in 2 rows
+        expect(call[2]).toHaveLength(2); // 2 rows
+        expect(call[2][0]).toHaveLength(4); // First row: 4 buttons
+        expect(call[2][1]).toHaveLength(2); // Second row: 2 buttons
+        expect(call[2][0][0].text).toBe('1');
+        expect(call[2][1][0].text).toBe('5');
+        expect(call[2][1][1].text).toBe('6');
+      });
+
+      it('should limit to 8 agents maximum', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Create 10 unlinked agents
+        for (let i = 1; i <= 10; i++) {
+          agentManager.createAgent(userId, `Agent${i}`);
+        }
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        await simulateOnboardLinkCallback(
+          chatId, telegramUserId, userId,
+          agentManager, groupOnboardingManager, mockSendTelegramButtons
+        );
+
+        const call = mockSendTelegramButtons.mock.calls[0];
+
+        // Should only show 8 agents in the list
+        expect(call[1]).toContain('8.');
+        expect(call[1]).not.toContain('9.');
+
+        // Check buttons: 2 rows of 4
+        expect(call[2]).toHaveLength(2);
+        expect(call[2][0]).toHaveLength(4);
+        expect(call[2][1]).toHaveLength(4);
+      });
+    });
+
+    describe('Case C: No unlinked agents available', () => {
+      it('should show "todos os agentes já estão vinculados" + [criar um] button', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const linkedChatId = 99999;
+
+        // Create an agent but link it to another group
+        const agent = agentManager.createAgent(userId, 'LinkedAgent', undefined, '🔗');
+        agentManager.setTelegramChatId(agent.id, linkedChatId);
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        await simulateOnboardLinkCallback(
+          chatId, telegramUserId, userId,
+          agentManager, groupOnboardingManager, mockSendTelegramButtons
+        );
+
+        expect(mockSendTelegramButtons).toHaveBeenCalledTimes(1);
+        const call = mockSendTelegramButtons.mock.calls[0];
+        expect(call[0]).toBe(chatId);
+        expect(call[1]).toContain('Todos os agentes já estão vinculados');
+        expect(call[1]).toContain('Crie um novo agente para este grupo');
+        expect(call[2]).toHaveLength(1); // 1 row
+        expect(call[2][0]).toHaveLength(1); // 1 button
+        expect(call[2][0][0].text).toBe('✨ Criar um');
+        expect(call[2][0][0].callback_data).toBe(`onboard_create_${telegramUserId}`);
+      });
+
+      it('should exclude Ronin agent from available agents', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Create only a Ronin agent (should be excluded)
+        agentManager.createAgent(userId, 'Ronin', undefined, '⚔️');
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        await simulateOnboardLinkCallback(
+          chatId, telegramUserId, userId,
+          agentManager, groupOnboardingManager, mockSendTelegramButtons
+        );
+
+        // Should show "all agents linked" message since Ronin is excluded
+        const call = mockSendTelegramButtons.mock.calls[0];
+        expect(call[1]).toContain('Todos os agentes já estão vinculados');
+      });
+
+      it('should show create button when all agents are already linked', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Create multiple agents and link them all
+        const agent1 = agentManager.createAgent(userId, 'Agent1', undefined, '1️⃣');
+        const agent2 = agentManager.createAgent(userId, 'Agent2', undefined, '2️⃣');
+        agentManager.setTelegramChatId(agent1.id, 11111);
+        agentManager.setTelegramChatId(agent2.id, 22222);
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        await simulateOnboardLinkCallback(
+          chatId, telegramUserId, userId,
+          agentManager, groupOnboardingManager, mockSendTelegramButtons
+        );
+
+        const call = mockSendTelegramButtons.mock.calls[0];
+        expect(call[2][0][0].text).toBe('✨ Criar um');
+      });
+    });
+
+    describe('Agent linking completion', () => {
+      it('should link agent and edit pinned message on success', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 99999;
+
+        // Create an unlinked agent
+        const agent = agentManager.createAgent(userId, 'MyAgent', undefined, '🚀');
+
+        // Start onboarding and set pinned message
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        const success = await simulateLinkAgentCallback(
+          chatId, telegramUserId, userId, agent.id,
+          agentManager, groupOnboardingManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        expect(success).toBe(true);
+
+        // Verify agent was linked
+        expect(agent.telegramChatId).toBe(chatId);
+
+        // Verify pinned message was edited
+        expect(mockEditTelegramMessage).toHaveBeenCalledTimes(1);
+        const editCall = mockEditTelegramMessage.mock.calls[0];
+        expect(editCall[0]).toBe(chatId);
+        expect(editCall[1]).toBe(pinnedMessageId);
+        expect(editCall[2]).toContain('🚀 MyAgent');
+        expect(editCall[2]).toContain('vinculado a este grupo');
+
+        // Verify onboarding was completed
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+      });
+
+      it('should reject linking agent that belongs to another user', async () => {
+        const userId1 = '+5581999999999';
+        const userId2 = '+5581888888888';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        // Create agent belonging to user2
+        const agent = agentManager.createAgent(userId2, 'OtherUserAgent', undefined, '⚠️');
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        const success = await simulateLinkAgentCallback(
+          chatId, telegramUserId, userId1, agent.id,
+          agentManager, groupOnboardingManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        expect(success).toBe(false);
+        expect(mockSendTelegramMessage).toHaveBeenCalledWith(chatId, '❌ Agente não encontrado.');
+
+        // Agent should not be linked
+        expect(agent.telegramChatId).toBeUndefined();
+      });
+
+      it('should reject linking non-existent agent', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+
+        const success = await simulateLinkAgentCallback(
+          chatId, telegramUserId, userId, 'non-existent-id',
+          agentManager, groupOnboardingManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        expect(success).toBe(false);
+        expect(mockSendTelegramMessage).toHaveBeenCalledWith(chatId, '❌ Agente não encontrado.');
+      });
+
+      it('should reject linking agent already linked to another chat (prevent hijacking)', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const originalChatId = 11111;
+        const attackerChatId = 99999;
+
+        // Create agent and link it to originalChatId
+        const agent = agentManager.createAgent(userId, 'LinkedAgent', undefined, '🔒');
+        agentManager.setTelegramChatId(agent.id, originalChatId);
+
+        // Verify agent is linked to originalChatId
+        expect(agent.telegramChatId).toBe(originalChatId);
+
+        // Attacker tries to hijack via crafted grp_link_agent_ callback
+        groupOnboardingManager.startOnboarding(attackerChatId, telegramUserId, 'awaiting_name');
+
+        const success = await simulateLinkAgentCallback(
+          attackerChatId, telegramUserId, userId, agent.id,
+          agentManager, groupOnboardingManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        // Should reject the link attempt
+        expect(success).toBe(false);
+        expect(mockSendTelegramMessage).toHaveBeenCalledWith(attackerChatId, '❌ Este agente já está vinculado a outro grupo.');
+
+        // Agent should still be linked to originalChatId (unchanged)
+        expect(agent.telegramChatId).toBe(originalChatId);
+      });
+
+      it('should allow re-linking agent to the same chat without reassigning', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 99999;
+
+        // Create agent and link it to chatId
+        const agent = agentManager.createAgent(userId, 'SameAgent', undefined, '✅');
+        agentManager.setTelegramChatId(agent.id, chatId);
+
+        // Start onboarding for the same chat
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        const success = await simulateLinkAgentCallback(
+          chatId, telegramUserId, userId, agent.id,
+          agentManager, groupOnboardingManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        // Should succeed without error
+        expect(success).toBe(true);
+
+        // Agent should still be linked to the same chatId
+        expect(agent.telegramChatId).toBe(chatId);
+
+        // Onboarding should be completed
+        expect(groupOnboardingManager.hasActiveOnboarding(chatId)).toBe(false);
+
+        // Pinned message should be edited with success
+        expect(mockEditTelegramMessage).toHaveBeenCalledTimes(1);
+        const editCall = mockEditTelegramMessage.mock.calls[0];
+        expect(editCall[2]).toContain('✅ SameAgent');
+        expect(editCall[2]).toContain('vinculado a este grupo');
+      });
+
+      it('should use default emoji in success message when agent has no emoji', async () => {
+        const userId = '+5581999999999';
+        const telegramUserId = 67890;
+        const chatId = 12345;
+        const pinnedMessageId = 99999;
+
+        // Create agent without emoji
+        const agent = agentManager.createAgent(userId, 'NoEmojiAgent');
+
+        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+        groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, pinnedMessageId);
+
+        await simulateLinkAgentCallback(
+          chatId, telegramUserId, userId, agent.id,
+          agentManager, groupOnboardingManager,
+          mockSendTelegramMessage, mockEditTelegramMessage
+        );
+
+        const editCall = mockEditTelegramMessage.mock.calls[0];
+        expect(editCall[2]).toContain('🤖 NoEmojiAgent');
+      });
+    });
+  });
 });
