@@ -37,6 +37,10 @@ import {
   sendLoopControls,
   sendRejectPrompt,
   sendUnlinkedGroupMessage,
+  createWhatsAppGroup,
+  deleteWhatsAppGroup,
+  sendAgentModeSelector,
+  sendModelModeSelector,
 } from './whatsapp';
 import { MessageRouter } from './message-router';
 import { transcribeAudio } from './transcription';
@@ -47,7 +51,7 @@ import { UserContextManager } from './user-context-manager';
 import { Semaphore } from './semaphore';
 import { RalphLoopManager } from './ralph-loop-manager';
 import { DEFAULTS } from './types';
-import type { Agent, AgentType } from './types';
+import type { Agent, AgentType, ModelMode } from './types';
 import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
 import { uploadToKapso, downloadFromKapso } from './storage';
 
@@ -926,24 +930,10 @@ async function handleFlowTextInput(
       const workspace = text.trim();
 
       try {
+        // Just store workspace and go to model mode selector
         userContextManager.setAgentWorkspace(userId, workspace);
-        const data = userContextManager.getCreateAgentData(userId);
-
-        // Create the agent with type
-        const agentType = data?.agentType || 'claude';
-        const agent = agentManager.createAgent(userId, data!.agentName!, data?.workspace, data?.emoji, agentType);
-        console.log(`Created ${agentType} agent '${agent.name}' for user ${userId}`);
-
-        userContextManager.completeFlow(userId);
-
-        const agentEmoji = agent.emoji || '🤖';
-        await sendWhatsApp(userId, `✅ Agente ${agentEmoji} *${agent.name}* criado!`);
-        await sendButtons(userId, 'Enviar prompt agora?', [
-          { id: `newagent_prompt_${agent.id}`, title: 'Enviar prompt' },
-          { id: 'newagent_later', title: 'Depois' },
-        ]);
-
-        return { status: 'agent_created' };
+        await sendModelModeSelector(userId);
+        return { status: 'awaiting_model_mode_choice' };
       } catch (error) {
         if (error instanceof AgentValidationError) {
           await sendWhatsApp(userId, `❌ ${error.message}. Tente novamente:`);
@@ -1068,7 +1058,20 @@ async function handleButtonReply(
     return handleTranscriptionManualFallback(userId);
   }
 
-  // Mode selection (Conversational vs Ralph)
+  // Agent mode selection during agent creation (Conversational vs Ralph)
+  if (buttonId === 'mode_conversational') {
+    userContextManager.setAgentMode(userId, 'conversational');
+    await sendWorkspaceSelector(userId);
+    return { status: 'workspace_selector_sent' };
+  }
+
+  if (buttonId === 'mode_ralph') {
+    userContextManager.setAgentMode(userId, 'ralph');
+    await sendWorkspaceSelector(userId);
+    return { status: 'workspace_selector_sent' };
+  }
+
+  // Mode selection (Conversational vs Ralph) - legacy with suffix
   if (buttonId.startsWith('mode_conversational_') || buttonId.startsWith('mode_ralph_')) {
     return handleModeSelection(userId, buttonId);
   }
@@ -1451,6 +1454,83 @@ async function handleConfirmation(
 
     await sendWhatsApp(userId, `✅ Agente *${agentName}* deletado.`);
     return { status: 'deleted' };
+  }
+
+  // Create agent confirmation
+  if (buttonId === 'confirm_create') {
+    const data = userContextManager.getCreateAgentData(userId);
+    if (!data?.agentName) {
+      userContextManager.clearContext(userId);
+      await sendWhatsApp(userId, '❌ Erro no fluxo. Tente novamente.');
+      return { status: 'error' };
+    }
+
+    try {
+      // Create the agent
+      const agent = agentManager.createAgent(
+        userId,
+        data.agentName,
+        data.workspace,
+        data.emoji,
+        data.agentType || 'claude',
+        data.modelMode || 'selection'
+      );
+
+      // Set the mode (conversational/ralph)
+      if (data.agentMode) {
+        agentManager.updateAgentMode(agent.id, data.agentMode);
+      }
+
+      // Create WhatsApp group
+      const dateStr = new Date().toLocaleDateString('pt-BR');
+      const modeText = data.agentMode === 'ralph'
+        ? '🔄 Ralph: trabalha sozinho até completar'
+        : '💬 Conversacional: responde a cada prompt';
+      const description = `📁 ${data.workspace || '~'}\n📅 ${dateStr}\n${modeText}`;
+      const groupName = `${data.emoji || '🤖'} ${data.agentName}`;
+
+      const groupId = await createWhatsAppGroup(groupName, description, userId);
+      agentManager.setGroupId(agent.id, groupId);
+
+      userContextManager.clearContext(userId);
+
+      // Send confirmation to main number
+      const modelModeText = data.modelMode === 'selection'
+        ? '🔄 Seleção (pergunta sempre)'
+        : `⚡ ${data.modelMode} fixo`;
+
+      await sendWhatsApp(userId, `✅ *Agente criado!*
+
+${data.emoji || '🤖'} *${data.agentName}*
+📁 ${data.workspace || 'Sem workspace'}
+${modeText}
+${modelModeText}
+
+💬 Um grupo foi criado para este agente.
+Envie mensagens no grupo para interagir.`);
+
+      // Send welcome message to group
+      await sendWhatsApp(groupId, `👋 *Olá! Sou ${data.agentName}.*
+
+${modeText}
+
+Envie uma mensagem para começar.`);
+
+      return { status: 'created' };
+    } catch (error) {
+      console.error('Error creating agent:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      await sendWhatsApp(userId, `❌ Erro ao criar agente: ${errorMsg}`);
+      userContextManager.clearContext(userId);
+      return { status: 'error' };
+    }
+  }
+
+  // Cancel create agent
+  if (buttonId === 'cancel_create') {
+    userContextManager.clearContext(userId);
+    await sendWhatsApp(userId, 'Criação de agente cancelada.');
+    return { status: 'cancelled' };
   }
 
   // Cancel confirmation
@@ -1854,6 +1934,11 @@ async function handleListReply(
     return handleWorkspaceSelection(userId, listId, messageId);
   }
 
+  // Model mode selection during agent creation
+  if (listId.startsWith('model_mode_')) {
+    return handleModelModeSelection(userId, listId, messageId);
+  }
+
   // Agent selection for prompt (step 1)
   if (listId.startsWith('selectagent_')) {
     const agentId = listId.replace('selectagent_', '');
@@ -2186,8 +2271,9 @@ async function handleEmojiSelection(
   const emoji = EMOJI_MAP[key] || '🤖';
 
   userContextManager.setAgentEmoji(userId, emoji);
-  await sendWorkspaceSelector(userId, messageId);
-  return { status: 'awaiting_workspace_choice' };
+  // Go to agent mode selector (conversational vs ralph)
+  await sendAgentModeSelector(userId);
+  return { status: 'awaiting_mode_choice' };
 }
 
 /**
@@ -2228,36 +2314,38 @@ async function handleWorkspaceSelection(
       return { status: 'invalid_workspace_option' };
   }
 
-  // Create the agent
-  try {
-    userContextManager.setAgentWorkspace(userId, workspace);
-    const data = userContextManager.getCreateAgentData(userId);
+  // Store workspace and go to model mode selector
+  userContextManager.setAgentWorkspace(userId, workspace);
+  await sendModelModeSelector(userId);
+  return { status: 'awaiting_model_mode_choice' };
+}
 
-    const agentType = data?.agentType || 'claude';
-    const agent = agentManager.createAgent(userId, data!.agentName!, data?.workspace, data?.emoji, agentType);
-    console.log(`Created ${agentType} agent '${agent.name}' for user ${userId}`);
-
-    userContextManager.completeFlow(userId);
-
-    const agentEmoji = agent.emoji || (agentType === 'bash' ? '🖥️' : '🤖');
-    const typeLabel = agentType === 'bash' ? '(Bash)' : '';
-    await sendWhatsApp(userId, `✅ Agente ${agentEmoji} *${agent.name}* ${typeLabel} criado!`);
-
-    const promptLabel = agentType === 'bash' ? 'Enviar comando' : 'Enviar prompt';
-    await sendButtons(userId, `${agentType === 'bash' ? 'Executar comando agora?' : 'Enviar prompt agora?'}`, [
-      { id: `newagent_prompt_${agent.id}`, title: promptLabel },
-      { id: 'newagent_later', title: 'Depois' },
-    ]);
-
-    return { status: 'agent_created' };
-  } catch (error) {
-    if (error instanceof AgentValidationError) {
-      await sendWhatsApp(userId, `❌ ${error.message}`);
-      userContextManager.completeFlow(userId);
-      return { status: 'error' };
-    }
-    throw error;
+/**
+ * Handle model mode selection during agent creation
+ */
+async function handleModelModeSelection(
+  userId: string,
+  listId: string,
+  messageId?: string
+): Promise<{ status: string }> {
+  if (!userContextManager.isAwaitingModelMode(userId)) {
+    await sendWhatsApp(userId, '❌ Seleção de modo de modelo inesperada.');
+    return { status: 'unexpected_model_mode_selection' };
   }
+
+  // Extract model mode from listId (format: model_mode_selection, model_mode_haiku, etc.)
+  const mode = listId.replace('model_mode_', '') as ModelMode;
+  userContextManager.setAgentModelMode(userId, mode);
+
+  // Send confirmation
+  const data = userContextManager.getCreateAgentData(userId);
+  await sendConfirmation(
+    userId,
+    `Criar agente "${data?.agentName}"?`,
+    'confirm_create',
+    'cancel_create'
+  );
+  return { status: 'confirmation_sent' };
 }
 
 /**
