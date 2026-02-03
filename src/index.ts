@@ -99,6 +99,14 @@ import {
   downloadTelegramFile,
   editTelegramMessage,
   pinTelegramMessage,
+  // Group onboarding UI
+  sendGroupAgentNamePrompt,
+  sendGroupEmojiSelector,
+  sendGroupWorkspaceSelector,
+  sendGroupModelModeSelector,
+  sendGroupCustomWorkspacePrompt,
+  validateGroupAgentName,
+  getAgentSandboxPath,
 } from './telegram';
 import { GroupOnboardingManager } from './group-onboarding-manager';
 import { MessageRouter } from './message-router';
@@ -630,6 +638,58 @@ async function handleTelegramMessage(message: any): Promise<void> {
   if (isGroup && message.document) {
     await handleTelegramDocumentMessage(chatId, userId, message.document, caption);
     return;
+  }
+
+  // Handle group onboarding text input (name or custom workspace)
+  if (isGroup && text && groupOnboardingManager.hasActiveOnboarding(chatId)) {
+    const state = groupOnboardingManager.getState(chatId);
+
+    // Only process if this user has the lock
+    if (state && groupOnboardingManager.isLockedByUser(chatId, from.id)) {
+      // Handle awaiting_name step
+      if (state.step === 'awaiting_name') {
+        // Validate name
+        const validationError = validateGroupAgentName(text);
+        if (validationError) {
+          await sendTelegramMessage(chatId, `⚠️ *Nome inválido*\n\n${validationError}`);
+          return;
+        }
+
+        // Store name and advance to emoji step
+        groupOnboardingManager.setAgentName(chatId, from.id, text.trim());
+        groupOnboardingManager.advanceStep(chatId, from.id, 'awaiting_emoji');
+        await sendGroupEmojiSelector(chatId);
+        return;
+      }
+
+      // Handle custom workspace input
+      if (state.step === 'awaiting_workspace' && state.data.workspace === '__awaiting_custom__') {
+        const { existsSync } = await import('fs');
+        const trimmedPath = text.trim();
+
+        // Validate path exists
+        if (!existsSync(trimmedPath)) {
+          await sendTelegramButtons(chatId,
+            `⚠️ *Caminho não encontrado*\n\n` +
+            `\`${trimmedPath}\` não existe.\n\n` +
+            `Escolha uma alternativa:`,
+            [
+              [
+                { text: '🧪 Sandbox', callback_data: 'grp_workspace_sandbox' },
+                { text: '✏️ Tentar outro', callback_data: 'grp_workspace_custom' },
+              ],
+            ]
+          );
+          return;
+        }
+
+        // Store workspace and advance to model mode step
+        groupOnboardingManager.setWorkspace(chatId, from.id, trimmedPath);
+        groupOnboardingManager.advanceStep(chatId, from.id, 'awaiting_model_mode');
+        await sendGroupModelModeSelector(chatId);
+        return;
+      }
+    }
   }
 
   // Route based on chat type using TelegramCommandHandler
@@ -1921,6 +1981,225 @@ async function handleTelegramCallback(query: any): Promise<void> {
 
     userContextManager.clearContext(userId);
     await processTelegramDocumentWithPrompt(chatId, userId, agentId, fileId, filename, prompt);
+  }
+  // =============================================================================
+  // Group Onboarding Callbacks
+  // =============================================================================
+  else if (data.startsWith('onboard_create_')) {
+    // User clicked "Criar agora" or "Criar um" button
+    const targetTelegramUserId = parseInt(data.replace('onboard_create_', ''), 10);
+
+    // Validate that the user clicking is the one the button was created for
+    if (from.id !== targetTelegramUserId) {
+      await sendTelegramMessage(chatId, '⚠️ Outro usuário está configurando este grupo.');
+      return;
+    }
+
+    // Start or continue onboarding
+    const result = groupOnboardingManager.startOnboarding(chatId, from.id, 'awaiting_name');
+    if (!result.success) {
+      await sendTelegramMessage(chatId, '⚠️ Outro usuário está configurando este grupo.');
+      return;
+    }
+
+    // Send name prompt
+    await sendGroupAgentNamePrompt(chatId);
+  }
+  else if (data.startsWith('onboard_link_')) {
+    // User clicked "Vincular existente" button - show list of unlinked agents
+    const targetTelegramUserId = parseInt(data.replace('onboard_link_', ''), 10);
+
+    // Validate lock
+    if (from.id !== targetTelegramUserId) {
+      const lockOwner = groupOnboardingManager.getLockedByUserId(chatId);
+      if (lockOwner && lockOwner !== from.id) {
+        await sendTelegramMessage(chatId, '⚠️ Outro usuário está configurando este grupo.');
+        return;
+      }
+    }
+
+    // Get user's unlinked agents
+    const agents = agentManager.listAgents(userId)
+      .filter(a => a.name !== 'Ronin' && !a.telegramChatId);
+
+    if (agents.length === 0) {
+      await sendTelegramMessage(chatId, '❌ Nenhum agente disponível para vincular.\n\nTodos os seus agentes já estão vinculados a grupos.');
+      return;
+    }
+
+    // Show agent selection buttons
+    const buttons = agents.slice(0, 8).map(a => ([{
+      text: `${a.emoji || '🤖'} ${a.name}`,
+      callback_data: `grp_link_agent_${a.id}`,
+    }]));
+
+    await sendTelegramButtons(chatId, '*Escolha um agente para vincular:*', buttons);
+
+    // Update state to linking_agent
+    groupOnboardingManager.updateState(chatId, from.id, { step: 'linking_agent' });
+  }
+  else if (data.startsWith('grp_link_agent_')) {
+    // User selected an existing agent to link
+    const agentId = data.replace('grp_link_agent_', '');
+    const agent = agentManager.getAgent(agentId);
+
+    if (!agent || agent.userId !== userId) {
+      await sendTelegramMessage(chatId, '❌ Agente não encontrado.');
+      return;
+    }
+
+    // Link agent to this group
+    agentManager.setTelegramChatId(agentId, chatId);
+
+    // Update group title
+    const newTitle = `${agent.emoji || '🤖'} ${agent.name}`;
+    await updateTelegramGroupTitle(chatId, newTitle);
+
+    // Edit pinned message to show success
+    const pinnedMessageId = groupOnboardingManager.getPinnedMessageId(chatId);
+    if (pinnedMessageId) {
+      await editTelegramMessage(chatId, pinnedMessageId,
+        `✅ *${agent.emoji || '🤖'} ${agent.name}* vinculado a este grupo!\n\n` +
+        `Envie mensagens para interagir com o agente.`
+      );
+    }
+
+    // Complete onboarding
+    groupOnboardingManager.completeOnboarding(chatId, from.id);
+  }
+  else if (data.startsWith('grp_emoji_')) {
+    // User selected emoji in group onboarding flow
+    const emoji = data.replace('grp_emoji_', '');
+
+    // Validate lock
+    if (!groupOnboardingManager.isLockedByUser(chatId, from.id)) {
+      await sendTelegramMessage(chatId, '⚠️ Você não está autorizado a configurar este grupo.');
+      return;
+    }
+
+    // Store emoji
+    groupOnboardingManager.setEmoji(chatId, from.id, emoji);
+
+    // Advance to workspace step
+    groupOnboardingManager.advanceStep(chatId, from.id, 'awaiting_workspace');
+
+    // Show workspace selector
+    await sendGroupWorkspaceSelector(chatId);
+  }
+  else if (data.startsWith('grp_workspace_')) {
+    // User selected workspace in group onboarding flow
+    const workspaceValue = data.replace('grp_workspace_', '');
+
+    // Validate lock
+    if (!groupOnboardingManager.isLockedByUser(chatId, from.id)) {
+      await sendTelegramMessage(chatId, '⚠️ Você não está autorizado a configurar este grupo.');
+      return;
+    }
+
+    if (workspaceValue === 'custom') {
+      // Ask for custom path - stay in awaiting_workspace step but mark as custom
+      groupOnboardingManager.setWorkspace(chatId, from.id, '__awaiting_custom__');
+      await sendGroupCustomWorkspacePrompt(chatId);
+    } else if (workspaceValue === 'sandbox') {
+      // Use sandbox directory - will be created when agent is created
+      groupOnboardingManager.setWorkspace(chatId, from.id, '__sandbox__');
+      groupOnboardingManager.advanceStep(chatId, from.id, 'awaiting_model_mode');
+      await sendGroupModelModeSelector(chatId);
+    } else {
+      // Validate that the path exists
+      const { existsSync } = await import('fs');
+      if (existsSync(workspaceValue)) {
+        groupOnboardingManager.setWorkspace(chatId, from.id, workspaceValue);
+        groupOnboardingManager.advanceStep(chatId, from.id, 'awaiting_model_mode');
+        await sendGroupModelModeSelector(chatId);
+      } else {
+        // Path doesn't exist - show error and offer alternatives
+        await sendTelegramButtons(chatId,
+          `⚠️ *Caminho não encontrado*\n\n` +
+          `\`${workspaceValue}\` não existe.\n\n` +
+          `Escolha uma alternativa:`,
+          [
+            [
+              { text: '🧪 Sandbox', callback_data: 'grp_workspace_sandbox' },
+              { text: '✏️ Outro caminho', callback_data: 'grp_workspace_custom' },
+            ],
+          ]
+        );
+      }
+    }
+  }
+  else if (data.startsWith('grp_modelmode_')) {
+    // User selected model mode in group onboarding flow - finalize creation
+    const modelMode = data.replace('grp_modelmode_', '') as ModelMode;
+
+    // Validate lock
+    if (!groupOnboardingManager.isLockedByUser(chatId, from.id)) {
+      await sendTelegramMessage(chatId, '⚠️ Você não está autorizado a configurar este grupo.');
+      return;
+    }
+
+    // Store model mode
+    groupOnboardingManager.setModelMode(chatId, from.id, modelMode);
+
+    // Get all collected data
+    const state = groupOnboardingManager.getState(chatId);
+    if (!state || !state.data.agentName || !state.data.emoji) {
+      await sendTelegramMessage(chatId, '❌ Dados incompletos. Por favor, inicie novamente.');
+      groupOnboardingManager.cancelOnboarding(chatId, from.id);
+      return;
+    }
+
+    // Determine initial workspace (sandbox is set after creation when we have the agent ID)
+    let finalWorkspace: string | undefined;
+    const isSandbox = state.data.workspace === '__sandbox__';
+    if (!isSandbox && state.data.workspace && state.data.workspace !== '__awaiting_custom__') {
+      finalWorkspace = state.data.workspace;
+    }
+
+    try {
+      // Create the agent (sandbox agents are created without workspace initially)
+      const agent = agentManager.createAgent(
+        userId,
+        state.data.agentName,
+        finalWorkspace,
+        state.data.emoji,
+        'claude', // Default to claude type
+        modelMode
+      );
+
+      // If sandbox was selected, compute the sandbox path and set the workspace
+      if (isSandbox) {
+        const sandboxPath = getAgentSandboxPath(agent.id);
+        agentManager.setWorkspace(agent.id, sandboxPath);
+        finalWorkspace = sandboxPath;
+      }
+
+      // Link agent to this group
+      agentManager.setTelegramChatId(agent.id, chatId);
+
+      // Update group title
+      const newTitle = `${state.data.emoji} ${agent.name}`;
+      await updateTelegramGroupTitle(chatId, newTitle);
+
+      // Edit pinned message to show success
+      const pinnedMessageId = groupOnboardingManager.getPinnedMessageId(chatId);
+      if (pinnedMessageId) {
+        await editTelegramMessage(chatId, pinnedMessageId,
+          `✅ *${state.data.emoji} ${agent.name}* criado e vinculado!\n\n` +
+          `Modelo: ${modelMode === 'selection' ? 'Seleção' : modelMode}\n` +
+          `${finalWorkspace ? `Workspace: \`${finalWorkspace}\`\n` : ''}` +
+          `\nEnvie mensagens para interagir com o agente.`
+        );
+      }
+
+      // Complete onboarding
+      groupOnboardingManager.completeOnboarding(chatId, from.id);
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
+      await sendTelegramMessage(chatId, `❌ Erro ao criar agente: ${errorMessage}`);
+      groupOnboardingManager.cancelOnboarding(chatId, from.id);
+    }
   }
 }
 
@@ -5107,6 +5386,9 @@ export {
   ralphLoopManager,
   pendingAgentSelection,
   messageRouter,
+  groupOnboardingManager,
+  handleTelegramCallback,
+  handleTelegramMessage,
 };
 
 // =============================================================================

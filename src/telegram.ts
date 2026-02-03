@@ -1473,3 +1473,131 @@ export async function unpinTelegramMessage(
     return false;
   }
 }
+
+// ============================================
+// Group Onboarding UI Components
+// ============================================
+
+/**
+ * Send agent name prompt for group onboarding flow
+ */
+export async function sendGroupAgentNamePrompt(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId,
+    '*Qual o nome do agente?*\n\n' +
+    'Envie o nome do agente (máximo 50 caracteres).\n' +
+    'Exemplo: Backend API, Data Analysis'
+  );
+}
+
+/**
+ * Send emoji selector for group onboarding flow
+ * Uses grp_emoji_ prefix to distinguish from personal flow
+ */
+export async function sendGroupEmojiSelector(chatId: number): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '*Escolha um emoji*',
+    [
+      [
+        { text: '🤖', callback_data: 'grp_emoji_🤖' },
+        { text: '⚡', callback_data: 'grp_emoji_⚡' },
+        { text: '🔧', callback_data: 'grp_emoji_🔧' },
+        { text: '🎯', callback_data: 'grp_emoji_🎯' },
+      ],
+      [
+        { text: '🧠', callback_data: 'grp_emoji_🧠' },
+        { text: '✨', callback_data: 'grp_emoji_✨' },
+        { text: '📊', callback_data: 'grp_emoji_📊' },
+        { text: '💡', callback_data: 'grp_emoji_💡' },
+      ],
+      [
+        { text: '🚀', callback_data: 'grp_emoji_🚀' },
+        { text: '🔍', callback_data: 'grp_emoji_🔍' },
+        { text: '💻', callback_data: 'grp_emoji_💻' },
+        { text: '📁', callback_data: 'grp_emoji_📁' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send workspace selector for group onboarding flow
+ * Uses grp_workspace_ prefix to distinguish from personal flow
+ */
+export async function sendGroupWorkspaceSelector(chatId: number): Promise<void> {
+  const home = process.env.HOME || '/home/user';
+  await sendTelegramButtons(chatId,
+    '*Workspace do agente*\n\n' +
+    'Onde o agente vai trabalhar?',
+    [
+      [
+        { text: '🧪 Sandbox', callback_data: 'grp_workspace_sandbox' },
+        { text: '🏠 Home', callback_data: `grp_workspace_${home}` },
+      ],
+      [
+        { text: '📂 Desktop', callback_data: `grp_workspace_${home}/Desktop` },
+        { text: '✏️ Caminho personalizado', callback_data: 'grp_workspace_custom' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send model mode selector for group onboarding flow
+ * Uses grp_modelmode_ prefix to distinguish from personal flow
+ * Layout: [Opus] on row 1, [Haiku][Sonnet][Selecao] on row 2
+ */
+export async function sendGroupModelModeSelector(chatId: number): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '*Modelo padrão*\n\n' +
+    '*Seleção*: Pergunta qual modelo usar\n' +
+    '*Fixo*: Sempre usa o mesmo modelo',
+    [
+      [
+        { text: 'Opus', callback_data: 'grp_modelmode_opus' },
+      ],
+      [
+        { text: 'Haiku', callback_data: 'grp_modelmode_haiku' },
+        { text: 'Sonnet', callback_data: 'grp_modelmode_sonnet' },
+        { text: 'Seleção', callback_data: 'grp_modelmode_selection' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send custom workspace prompt for group onboarding flow
+ */
+export async function sendGroupCustomWorkspacePrompt(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId,
+    '*Caminho personalizado*\n\n' +
+    'Envie o caminho completo do diretório:\n' +
+    'Exemplo: `/Users/lucas/projects/myapp`'
+  );
+}
+
+/**
+ * Validate agent name for group onboarding
+ * Returns error message if invalid, null if valid
+ */
+export function validateGroupAgentName(name: string): string | null {
+  if (!name || typeof name !== 'string') {
+    return 'Nome é obrigatório';
+  }
+
+  const trimmed = name.trim();
+  if (trimmed.length === 0) {
+    return 'Nome não pode ser vazio';
+  }
+
+  if (trimmed.length > 50) {
+    return 'Nome excede o limite de 50 caracteres';
+  }
+
+  // Check for dangerous characters
+  const dangerousPattern = /[<>{}|\\^`]/;
+  if (dangerousPattern.test(trimmed)) {
+    return 'Nome contém caracteres inválidos';
+  }
+
+  return null;
+}

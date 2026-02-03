@@ -503,6 +503,22 @@ export class AgentManager {
   }
 
   /**
+   * Set agent workspace
+   * @throws AgentValidationError if agent not found or workspace path doesn't exist
+   */
+  setWorkspace(agentId: string, workspace: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new AgentValidationError(`Agent not found: ${agentId}`);
+    }
+
+    this.validateWorkspace(workspace);
+    agent.workspace = workspace;
+    agent.lastActivity = new Date();
+    this.persist();
+  }
+
+  /**
    * Add an output to an agent (FIFO, max 10)
    * Supports standard outputs and Ralph loop summary outputs (type: 'ralph-loop')
    */
