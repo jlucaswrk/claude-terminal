@@ -48,6 +48,37 @@ export type SendWhatsAppMediaFn = (
 export type SendErrorWithActionsFn = (to: string, agentName: string, error: string) => Promise<void>;
 
 /**
+ * Type for Telegram send function
+ */
+export type SendTelegramFn = (chatId: number, text: string) => Promise<void>;
+
+/**
+ * Type for Telegram image send function
+ */
+export type SendTelegramImageFn = (chatId: number, imageUrl: string, caption?: string) => Promise<void>;
+
+/**
+ * Platform detection result
+ */
+export type Platform = 'telegram' | 'whatsapp_group' | 'whatsapp_user';
+
+/**
+ * Detect platform from replyTo value
+ * - typeof replyTo === 'number' → Telegram
+ * - typeof replyTo === 'string' && replyTo.includes('@g.us') → WhatsApp group
+ * - typeof replyTo === 'string' → WhatsApp user
+ */
+export function detectPlatform(replyTo: string | number | undefined, userId: string): Platform {
+  if (typeof replyTo === 'number') {
+    return 'telegram';
+  }
+  if (typeof replyTo === 'string' && replyTo.includes('@g.us')) {
+    return 'whatsapp_group';
+  }
+  return 'whatsapp_user';
+}
+
+/**
  * Result of task processing
  */
 export interface ProcessingResult {
@@ -157,6 +188,8 @@ export class QueueManager {
   private readonly sendWhatsAppImage?: SendWhatsAppImageFn;
   private readonly sendWhatsAppMedia?: SendWhatsAppMediaFn;
   private readonly sendErrorWithActions?: SendErrorWithActionsFn;
+  private readonly sendTelegram?: SendTelegramFn;
+  private readonly sendTelegramImage?: SendTelegramImageFn;
   private activeCount: number = 0;
 
   // Store last errors for retry functionality
@@ -169,7 +202,9 @@ export class QueueManager {
     sendWhatsApp: SendWhatsAppFn,
     sendWhatsAppImage?: SendWhatsAppImageFn,
     sendErrorWithActions?: SendErrorWithActionsFn,
-    sendWhatsAppMedia?: SendWhatsAppMediaFn
+    sendWhatsAppMedia?: SendWhatsAppMediaFn,
+    sendTelegram?: SendTelegramFn,
+    sendTelegramImage?: SendTelegramImageFn
   ) {
     this.queue = new PriorityQueue();
     this.semaphore = semaphore;
@@ -179,6 +214,8 @@ export class QueueManager {
     this.sendWhatsAppImage = sendWhatsAppImage;
     this.sendErrorWithActions = sendErrorWithActions;
     this.sendWhatsAppMedia = sendWhatsAppMedia;
+    this.sendTelegram = sendTelegram;
+    this.sendTelegramImage = sendTelegramImage;
   }
 
   /**
@@ -268,8 +305,8 @@ export class QueueManager {
    */
   private async processTask(task: QueueTask): Promise<ProcessingResult> {
     const { agentId, prompt, model, userId, images, replyTo } = task;
-    // Use replyTo if specified (for group messages), otherwise default to userId
-    const sendTo = replyTo || userId;
+    // Platform detection is handled by helper methods
+    const targetDesc = this.getTargetDescription(replyTo);
 
     // Progress tracking state
     let lastToolName = '';
@@ -298,7 +335,7 @@ export class QueueManager {
       );
 
       // Notify user that task is starting
-      await this.notifyTaskStart(sendTo, agent.name, model, prompt);
+      await this.notifyTaskStartPlatform(replyTo, userId, agent.name, model, prompt);
 
       // Start progress update interval (every 30 seconds)
       progressInterval = setInterval(async () => {
@@ -308,7 +345,7 @@ export class QueueManager {
           const emoji = TOOL_EMOJI[lastToolName] || '🌐';
           const message = `${emoji} *${agent.name}*: _${toolDesc}_ (${elapsed})`;
           try {
-            await this.sendWhatsApp(sendTo, message);
+            await this.sendResponse(replyTo, userId, message);
           } catch (err) {
             console.error('Failed to send progress update:', err);
           }
@@ -325,11 +362,11 @@ export class QueueManager {
       const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace, onProgress, images);
 
       // Send images first (if any) - these are screenshots captured from tool_result
-      if (response.images.length > 0 && this.sendWhatsAppImage) {
+      if (response.images.length > 0) {
         for (const imageUrl of response.images) {
           try {
-            await this.sendWhatsAppImage(sendTo, imageUrl);
-            console.log(`[image] Sent to ${replyTo ? 'group' : 'user'}`);
+            await this.sendImageResponse(replyTo, userId, imageUrl);
+            console.log(`[image] Sent to ${targetDesc}`);
           } catch (err) {
             console.error('Failed to send image:', err);
           }
@@ -341,21 +378,22 @@ export class QueueManager {
         const agentEmoji = agent.emoji || '🤖';
         const header = `${agentEmoji} *${agent.name}*\n───\n`;
         const formattedResponse = header + response.text;
-        await this.sendWhatsApp(sendTo, formattedResponse);
+        await this.sendResponse(replyTo, userId, formattedResponse);
       }
 
       // Send created files (documents, spreadsheets, etc.)
-      if (response.files && response.files.length > 0 && this.sendWhatsAppMedia) {
+      if (response.files && response.files.length > 0) {
         for (const file of response.files) {
           try {
-            await this.sendWhatsAppMedia(
-              sendTo,
+            await this.sendMediaResponse(
+              replyTo,
+              userId,
               file.mediaId,
               file.mediaType,
               file.filename,
               `📎 ${file.filename}`
             );
-            console.log(`[file] Sent ${file.filename} to ${replyTo ? 'group' : 'user'}`);
+            console.log(`[file] Sent ${file.filename} to ${targetDesc}`);
           } catch (err) {
             console.error(`Failed to send file ${file.filename}:`, err);
           }
@@ -412,7 +450,7 @@ export class QueueManager {
       );
 
       // Notify user of error (with recovery buttons)
-      await this.notifyTaskError(sendTo, userId, agentId, errorMessage, prompt, model);
+      await this.notifyTaskErrorPlatform(replyTo, userId, agentId, errorMessage, prompt, model);
 
       return {
         taskId: task.id,
@@ -436,8 +474,7 @@ export class QueueManager {
     agent: { id: string; name: string; emoji?: string; workspace?: string }
   ): Promise<ProcessingResult> {
     const { agentId, prompt, userId, replyTo } = task;
-    // Use replyTo if specified (for group messages), otherwise default to userId
-    const sendTo = replyTo || userId;
+    const targetDesc = this.getTargetDescription(replyTo);
 
     try {
       // Update agent status to processing (internal only, no WhatsApp message)
@@ -455,13 +492,13 @@ export class QueueManager {
         cwd: agent.workspace,
       });
 
-      // Format the result for WhatsApp
+      // Format the result
       const formattedResult = formatBashResult(result);
       const header = `${agentEmoji} *${agent.name}*\n`;
-      await this.sendWhatsApp(sendTo, header + formattedResult);
+      await this.sendResponse(replyTo, userId, header + formattedResult);
 
       // If output was truncated and we have media capabilities, send full output as file
-      if (result.truncated && result.output && this.sendWhatsAppMedia) {
+      if (result.truncated && result.output) {
         try {
           const filename = getFullOutputFilename(prompt);
           const fullOutput = `$ ${prompt}\n\n${result.output}\n\nExit code: ${result.exitCode}\nDuration: ${result.duration}ms`;
@@ -469,8 +506,9 @@ export class QueueManager {
 
           const mediaId = await uploadToKapso(buffer, filename, 'text/plain');
           if (mediaId) {
-            await this.sendWhatsAppMedia(
-              sendTo,
+            await this.sendMediaResponse(
+              replyTo,
+              userId,
               mediaId,
               'document',
               filename,
@@ -525,8 +563,9 @@ export class QueueManager {
       );
 
       // Notify user of error
-      await this.sendWhatsApp(
-        sendTo,
+      await this.sendResponse(
+        replyTo,
+        userId,
         `❌ *${agent.name}*: Erro ao executar comando\n${this.truncatePrompt(errorMessage, 100)}`
       );
 
@@ -540,7 +579,7 @@ export class QueueManager {
   }
 
   /**
-   * Notify user when a task starts processing
+   * Notify user when a task starts processing (legacy - string destination)
    */
   private async notifyTaskStart(
     userId: string,
@@ -559,7 +598,27 @@ export class QueueManager {
   }
 
   /**
-   * Notify user when a task fails (with recovery buttons)
+   * Notify user when a task starts processing (platform-aware)
+   */
+  private async notifyTaskStartPlatform(
+    replyTo: string | number | undefined,
+    userId: string,
+    agentName: string,
+    model: string,
+    prompt: string
+  ): Promise<void> {
+    const truncatedPrompt = this.truncatePrompt(prompt, 30);
+    const message = `🔔 Agente *${agentName}* iniciou seu prompt: '${truncatedPrompt}...' (${model})`;
+
+    try {
+      await this.sendResponse(replyTo, userId, message);
+    } catch (error) {
+      console.error('Failed to send start notification:', error);
+    }
+  }
+
+  /**
+   * Notify user when a task fails (with recovery buttons) - legacy string destination
    */
   private async notifyTaskError(
     sendTo: string,
@@ -595,6 +654,45 @@ export class QueueManager {
   }
 
   /**
+   * Notify user when a task fails (with recovery buttons) - platform-aware
+   */
+  private async notifyTaskErrorPlatform(
+    replyTo: string | number | undefined,
+    userId: string,
+    agentId: string,
+    errorMessage: string,
+    prompt: string,
+    model: 'haiku' | 'opus' | 'sonnet'
+  ): Promise<void> {
+    const agent = this.agentManager.getAgent(agentId);
+    const agentName = agent?.name || 'Unknown';
+
+    // Store error context for retry functionality (always use userId for error tracking)
+    this.lastErrors.set(userId, { agentId, prompt, model });
+
+    const platform = detectPlatform(replyTo, userId);
+
+    // For WhatsApp, try to send error with action buttons (Flow 11: Error Recovery)
+    if (platform !== 'telegram' && this.sendErrorWithActions) {
+      const sendTo = (typeof replyTo === 'string' ? replyTo : userId);
+      try {
+        await this.sendErrorWithActions(sendTo, agentName, errorMessage);
+        return;
+      } catch (error) {
+        console.error('Failed to send error with actions, falling back to plain text:', error);
+      }
+    }
+
+    // Fallback to plain text message (also used for Telegram)
+    const message = `❌ Erro no agente *${agentName}*: ${this.truncatePrompt(errorMessage, 100)}`;
+    try {
+      await this.sendResponse(replyTo, userId, message);
+    } catch (error) {
+      console.error('Failed to send error notification:', error);
+    }
+  }
+
+  /**
    * Get last error for a user (used for retry functionality)
    */
   getLastError(userId: string): { agentId: string; prompt: string; model: 'haiku' | 'sonnet' | 'opus' } | undefined {
@@ -606,6 +704,98 @@ export class QueueManager {
    */
   clearLastError(userId: string): void {
     this.lastErrors.delete(userId);
+  }
+
+  /**
+   * Send a message to the appropriate platform based on replyTo type
+   *
+   * Platform detection:
+   * - typeof replyTo === 'number' → Telegram
+   * - typeof replyTo === 'string' && replyTo.includes('@g.us') → WhatsApp group
+   * - typeof replyTo === 'string' → WhatsApp user
+   */
+  private async sendResponse(
+    replyTo: string | number | undefined,
+    userId: string,
+    text: string
+  ): Promise<void> {
+    const platform = detectPlatform(replyTo, userId);
+
+    if (platform === 'telegram' && typeof replyTo === 'number') {
+      if (this.sendTelegram) {
+        await this.sendTelegram(replyTo, text);
+      } else {
+        console.warn('Telegram send function not configured, falling back to WhatsApp');
+        await this.sendWhatsApp(userId, text);
+      }
+    } else {
+      // WhatsApp (user or group)
+      const sendTo = (typeof replyTo === 'string' ? replyTo : userId);
+      await this.sendWhatsApp(sendTo, text);
+    }
+  }
+
+  /**
+   * Send an image to the appropriate platform based on replyTo type
+   */
+  private async sendImageResponse(
+    replyTo: string | number | undefined,
+    userId: string,
+    imageUrl: string,
+    caption?: string
+  ): Promise<void> {
+    const platform = detectPlatform(replyTo, userId);
+
+    if (platform === 'telegram' && typeof replyTo === 'number') {
+      if (this.sendTelegramImage) {
+        await this.sendTelegramImage(replyTo, imageUrl, caption);
+      } else if (this.sendWhatsAppImage) {
+        console.warn('Telegram image function not configured, falling back to WhatsApp');
+        await this.sendWhatsAppImage(userId, imageUrl, caption);
+      }
+    } else if (this.sendWhatsAppImage) {
+      const sendTo = (typeof replyTo === 'string' ? replyTo : userId);
+      await this.sendWhatsAppImage(sendTo, imageUrl, caption);
+    }
+  }
+
+  /**
+   * Send media to the appropriate platform based on replyTo type
+   */
+  private async sendMediaResponse(
+    replyTo: string | number | undefined,
+    userId: string,
+    mediaId: string,
+    mediaType: 'image' | 'video' | 'audio' | 'document',
+    filename?: string,
+    caption?: string
+  ): Promise<void> {
+    const platform = detectPlatform(replyTo, userId);
+
+    if (platform === 'telegram' && typeof replyTo === 'number') {
+      // For Telegram, we currently only support text - media would need additional handling
+      if (this.sendTelegram) {
+        await this.sendTelegram(replyTo, `📎 *${filename || 'file'}*${caption ? `\n${caption}` : ''}`);
+      }
+    } else if (this.sendWhatsAppMedia) {
+      const sendTo = (typeof replyTo === 'string' ? replyTo : userId);
+      await this.sendWhatsAppMedia(sendTo, mediaId, mediaType, filename, caption);
+    }
+  }
+
+  /**
+   * Get the target for logging purposes
+   */
+  private getTargetDescription(replyTo: string | number | undefined): string {
+    const platform = detectPlatform(replyTo, '');
+    switch (platform) {
+      case 'telegram':
+        return 'telegram';
+      case 'whatsapp_group':
+        return 'group';
+      default:
+        return 'user';
+    }
   }
 
   /**

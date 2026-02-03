@@ -53,6 +53,7 @@ import {
 import { roninAgent, RONIN_SYSTEM_PROMPT } from './ronin-agent';
 import {
   isTelegramConfigured,
+  getTelegramBot,
   getBotInfo,
   sendTelegramMessage,
   sendTelegramPhoto,
@@ -69,8 +70,10 @@ import {
   sendTelegramDojoActivated,
   sendTelegramModelSelector,
   answerCallbackQuery,
+  leaveTelegramGroup,
 } from './telegram';
 import { MessageRouter } from './message-router';
+import { TelegramCommandHandler } from './telegram-command-handler';
 import { transcribeAudio } from './transcription';
 import { PersistenceService } from './persistence';
 import { AgentManager, AgentValidationError } from './agent-manager';
@@ -149,8 +152,30 @@ async function sendMedia(to: string, mediaId: string, mediaType: string, filenam
   }
 }
 
-// Queue manager (with image, file, and error recovery support)
-const queueManager = new QueueManager(semaphore, agentManager, terminal, sendMessage, sendImage, sendErrorWithActionsWrapper, sendMedia);
+// Direct Telegram send functions for QueueManager
+async function sendTelegramDirectMessage(chatId: number, text: string): Promise<void> {
+  await sendTelegramMessage(chatId, text);
+}
+
+async function sendTelegramDirectImage(chatId: number, imageUrl: string, caption?: string): Promise<void> {
+  await sendTelegramPhoto(chatId, imageUrl, caption);
+}
+
+// Queue manager (with image, file, error recovery, and Telegram support)
+const queueManager = new QueueManager(
+  semaphore,
+  agentManager,
+  terminal,
+  sendMessage,
+  sendImage,
+  sendErrorWithActionsWrapper,
+  sendMedia,
+  sendTelegramDirectMessage,
+  sendTelegramDirectImage
+);
+
+// Telegram command handler (stateless router)
+const telegramCommandHandler = new TelegramCommandHandler(agentManager);
 
 // Ralph loop manager (for autonomous Ralph mode execution)
 const ralphLoopManager = new RalphLoopManager(semaphore, agentManager, persistenceService, terminal);
@@ -313,6 +338,22 @@ app.post('/webhook', async (c) => {
 // Telegram Webhook
 // =============================================================================
 
+app.post('/webhook/telegram', async (c) => {
+  if (!isTelegramConfigured()) {
+    return c.json({ ok: false, error: 'Telegram not configured' }, 500);
+  }
+
+  try {
+    const update = await c.req.json();
+    await handleTelegramUpdate(update);
+    return c.json({ ok: true });
+  } catch (error) {
+    console.error('Telegram webhook error:', error);
+    return c.json({ ok: false }, 500);
+  }
+});
+
+// Legacy endpoint for backwards compatibility
 app.post('/telegram', async (c) => {
   if (!isTelegramConfigured()) {
     return c.json({ ok: false, error: 'Telegram not configured' }, 500);
@@ -378,8 +419,9 @@ async function handleTelegramMessage(message: any): Promise<void> {
   const chatId = message.chat.id;
   const text = message.text || '';
   const from = message.from;
+  const chatType = message.chat.type || 'private';
 
-  console.log(`[telegram] ${from.username || from.id}: ${text}`);
+  console.log(`[telegram] ${from.username || from.id} (${chatType}): ${text}`);
 
   // Find user by telegram username
   const allPrefs = persistenceService.getAllUserPreferences();
@@ -395,58 +437,134 @@ async function handleTelegramMessage(message: any): Promise<void> {
     return;
   }
 
-  // Update telegram chat ID if not set
-  if (!userPrefs.telegramChatId) {
+  // Update telegram chat ID for private chats
+  if (chatType === 'private' && !userPrefs.telegramChatId) {
     userPrefs.telegramChatId = chatId;
     persistenceService.saveUserPreferences(userPrefs);
   }
 
   const userId = userPrefs.userId;
+  const isGroup = telegramCommandHandler.isGroupChat(chatType);
 
-  // Handle commands
-  if (text.startsWith('/')) {
-    await handleTelegramCommand(chatId, userId, text);
-    return;
-  }
+  // Route based on chat type using TelegramCommandHandler
+  if (isGroup) {
+    // Group message routing
+    const route = telegramCommandHandler.routeGroupMessage(chatId, userId, text);
 
-  // Handle flow states (agent creation)
-  if (userContextManager.isInFlow(userId)) {
-    await handleTelegramFlowInput(chatId, userId, text);
-    return;
-  }
+    switch (route.action) {
+      case 'command':
+        await handleTelegramCommand(chatId, userId, `${route.command} ${route.args}`.trim());
+        return;
 
-  // Handle pending prompt flow (user selected agent, waiting for text)
-  console.log(`[telegram-debug] userId=${userId}, hasPendingPromptFlow=${userContextManager.hasPendingPromptFlow(userId)}`);
-  if (userContextManager.hasPendingPromptFlow(userId)) {
-    const agentId = userContextManager.getPendingAgentId(userId);
-    const agent = agentId ? agentManager.getAgent(agentId) : null;
-    console.log(`[telegram-debug] agentId=${agentId}, agent=${agent?.name || 'null'}, agent.userId=${agent?.userId}`);
-
-    if (agent) {
-      console.log(`[telegram-debug] agent.modelMode=${agent.modelMode}`);
-      // Store the prompt and ask for model if agent uses selection mode
-      if (agent.modelMode === 'selection') {
-        userContextManager.setPendingPrompt(userId, text, undefined);
-        await sendTelegramModelSelector(chatId, agent.name);
-      } else {
-        // Fixed model - queue immediately
-        userContextManager.clearContext(userId);
-        await sendTelegramMessage(chatId, `Processando com *${agent.modelMode}*...`);
-
-        const taskId = `tg-${Date.now()}`;
-        console.log(`[telegram-debug] Enqueueing task ${taskId} for agent ${agent.name}`);
+      case 'prompt':
+        // Queue the prompt directly with the specified model
+        await sendTelegramMessage(chatId, `Processando com *${route.model}*...`);
         queueManager.enqueue({
-          id: taskId,
-          agentId: agent.id,
-          prompt: text,
-          model: agent.modelMode as 'haiku' | 'sonnet' | 'opus',
-          priority: PRIORITY_VALUES[agent.priority],
-          timestamp: new Date(),
+          agentId: route.agentId,
+          prompt: route.text,
+          model: route.model!,
           userId,
-          replyTo: `telegram:${chatId}`,
+          replyTo: chatId, // Number type for Telegram
         });
-      }
-      return;
+        return;
+
+      case 'show_model_selector':
+        // Store prompt and show model selector
+        userContextManager.setPendingPrompt(userId, route.text, undefined);
+        userContextManager.startPromptFlow(userId, route.agentId);
+        await sendTelegramModelSelector(chatId, agentManager.getAgent(route.agentId)?.name || 'Agent');
+        return;
+
+      case 'orphaned_group':
+        await sendTelegramMessage(chatId,
+          '⚠️ *Grupo sem agente vinculado*\n\n' +
+          'Este grupo não está conectado a nenhum agente.\n' +
+          'Crie um novo agente e vincule a este grupo, ou remova o bot.'
+        );
+        await sendTelegramButtons(chatId,
+          'O que deseja fazer?',
+          [
+            [
+              { text: 'Criar agente', callback_data: 'orphan_create' },
+              { text: 'Remover bot', callback_data: `orphan_leave_${chatId}` },
+            ],
+          ]
+        );
+        return;
+
+      case 'ignore':
+        return;
+    }
+  } else {
+    // Private chat routing
+    const isInFlow = userContextManager.isInFlow(userId) || userContextManager.hasPendingPromptFlow(userId);
+    const route = telegramCommandHandler.routePrivateMessage(chatId, userId, text, isInFlow);
+
+    switch (route.action) {
+      case 'command':
+        await handleTelegramCommand(chatId, userId, `${route.command} ${route.args}`.trim());
+        return;
+
+      case 'flow_input':
+        // Handle flow states (agent creation)
+        if (userContextManager.isInFlow(userId)) {
+          await handleTelegramFlowInput(chatId, userId, text);
+          return;
+        }
+        // Handle pending prompt flow (user selected agent, waiting for text)
+        if (userContextManager.hasPendingPromptFlow(userId)) {
+          const agentId = userContextManager.getPendingAgentId(userId);
+          const agent = agentId ? agentManager.getAgent(agentId) : null;
+
+          if (agent) {
+            // Store the prompt and ask for model if agent uses selection mode
+            if (agent.modelMode === 'selection') {
+              userContextManager.setPendingPrompt(userId, text, undefined);
+              await sendTelegramModelSelector(chatId, agent.name);
+            } else {
+              // Fixed model - queue immediately
+              userContextManager.clearContext(userId);
+              await sendTelegramMessage(chatId, `Processando com *${agent.modelMode}*...`);
+              queueManager.enqueue({
+                agentId: agent.id,
+                prompt: text,
+                model: agent.modelMode as 'haiku' | 'sonnet' | 'opus',
+                userId,
+                replyTo: chatId, // Number type for Telegram
+              });
+            }
+            return;
+          }
+        }
+        return;
+
+      case 'reject_private_prompt':
+        // Send educational message and show agents list
+        await sendTelegramMessage(chatId,
+          '⚠️ *Prompts não são aceitos aqui*\n\n' +
+          'No chat privado, use apenas comandos.\n' +
+          'Para enviar prompts, use o grupo do agente.\n\n' +
+          'Seus agentes:'
+        );
+        // Show agents list
+        const agents = agentManager.listAgents(userId)
+          .filter(a => a.name !== 'Ronin')
+          .map(a => ({
+            id: a.id,
+            name: a.name,
+            emoji: a.emoji || '🤖',
+            status: a.status,
+            workspace: a.workspace,
+          }));
+        await sendTelegramAgentsList(chatId, agents);
+        return;
+
+      case 'unknown_user':
+        await sendTelegramMessage(chatId,
+          'Usuario nao encontrado.\n\n' +
+          'Configure o Dojo primeiro pelo WhatsApp.'
+        );
+        return;
     }
   }
 
@@ -683,18 +801,31 @@ async function handleTelegramCallback(query: any): Promise<void> {
         userContextManager.clearContext(userId);
         await sendTelegramMessage(chatId, `Processando com *${model}*...`);
 
-        // Queue the prompt
+        // Queue the prompt with number type replyTo for Telegram
         queueManager.enqueue({
-          id: `tg-${Date.now()}`,
           agentId,
           prompt: pendingPrompt.text,
           model,
-          priority: PRIORITY_VALUES[agent.priority],
-          timestamp: new Date(),
           userId,
-          replyTo: `telegram:${chatId}`,
+          replyTo: chatId, // Number type for Telegram platform detection
         });
       }
+    }
+  }
+  // Handle orphaned group callbacks
+  else if (data === 'orphan_create') {
+    // Start agent creation flow
+    userContextManager.startCreateAgentFlow(userId);
+    await sendTelegramAgentNamePrompt(chatId);
+  }
+  else if (data.startsWith('orphan_leave_')) {
+    const targetChatId = parseInt(data.replace('orphan_leave_', ''), 10);
+    // Leave the group using the exported function
+    const success = await leaveTelegramGroup(targetChatId);
+    if (success) {
+      await sendTelegramMessage(chatId, 'Bot removido do grupo.');
+    } else {
+      await sendTelegramMessage(chatId, 'Erro ao sair do grupo.');
     }
   }
 }
