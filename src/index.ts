@@ -439,10 +439,142 @@ async function handleTelegramUpdate(update: any): Promise<void> {
     return;
   }
 
+  // Handle my_chat_member updates (bot added/removed from groups)
+  if (update.my_chat_member) {
+    await handleTelegramMyChatMember(update.my_chat_member);
+    return;
+  }
+
   // Handle messages
   if (update.message) {
     await handleTelegramMessage(update.message);
     return;
+  }
+}
+
+/**
+ * Handle Telegram my_chat_member update (bot added/removed from groups)
+ * This is triggered when the bot's status changes in a chat (added, removed, promoted, etc.)
+ */
+async function handleTelegramMyChatMember(update: any): Promise<void> {
+  const chat = update.chat;
+  const from = update.from; // User who made the change
+  const newStatus = update.new_chat_member?.status;
+  const oldStatus = update.old_chat_member?.status;
+
+  console.log(`[telegram] my_chat_member: chat=${chat.id} (${chat.type}), from=${from.username || from.id}, status: ${oldStatus} -> ${newStatus}`);
+
+  // Only handle when bot is added to a group (becomes member or administrator)
+  const wasAdded = (newStatus === 'member' || newStatus === 'administrator') &&
+                   oldStatus !== 'member' && oldStatus !== 'administrator';
+
+  if (!wasAdded) {
+    // Bot was removed or status changed for another reason
+    return;
+  }
+
+  // Only process for group chats
+  const isGroup = chat.type === 'group' || chat.type === 'supergroup';
+  if (!isGroup) {
+    return;
+  }
+
+  const chatId = chat.id;
+
+  // Find user by telegram username (the one who added the bot)
+  const allPrefs = persistenceService.getAllUserPreferences();
+  const userPrefs = allPrefs.find(p =>
+    p.telegramUsername?.toLowerCase() === from.username?.toLowerCase()
+  );
+
+  if (!userPrefs) {
+    // Unknown user added the bot - send info message
+    await sendTelegramMessage(chatId,
+      '👋 *Bot adicionado ao grupo*\n\n' +
+      'Para vincular este grupo a um agente, use o comando /link.'
+    );
+    return;
+  }
+
+  const userId = userPrefs.userId;
+
+  // Check if there's a pending agent link for this user
+  const pendingAgentId = pendingAgentLink.get(userId);
+  if (!pendingAgentId) {
+    // No pending link - check for most recent unlinked agent
+    const agents = agentManager.listAgents(userId)
+      .filter(a => a.name !== 'Ronin' && !a.telegramChatId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    if (agents.length === 0) {
+      await sendTelegramMessage(chatId,
+        '👋 *Bot adicionado ao grupo*\n\n' +
+        'Nenhum agente disponível para vincular.\n' +
+        'Crie um agente primeiro com /criar no chat privado.'
+      );
+      return;
+    }
+
+    // Auto-link to the most recent unlinked agent
+    const targetAgent = agents[0];
+    const success = agentManager.setTelegramChatId(targetAgent.id, chatId);
+
+    if (success) {
+      await sendGroupLinkedConfirmation(chatId, targetAgent.name, targetAgent.emoji || '🤖');
+      console.log(`Auto-linked Telegram group ${chatId} to agent ${targetAgent.name} (${targetAgent.id})`);
+
+      // Notify user's private chat
+      if (userPrefs.telegramChatId && userPrefs.telegramChatId !== chatId) {
+        await sendTelegramMessage(userPrefs.telegramChatId,
+          `✅ *Grupo vinculado automaticamente!*\n\n` +
+          `Agente *${targetAgent.emoji || '🤖'} ${targetAgent.name}* foi conectado ao grupo.`
+        );
+      }
+    }
+    return;
+  }
+
+  // Check if this group is already linked to an agent
+  const existingAgent = agentManager.getAgentByTelegramChatId(chatId);
+  if (existingAgent) {
+    await sendTelegramMessage(chatId,
+      `⚠️ *Grupo já vinculado*\n\n` +
+      `Este grupo está conectado ao agente *${existingAgent.name}*.\n` +
+      `Cada grupo só pode ter um agente.`
+    );
+    return;
+  }
+
+  // Link the pending agent to this group
+  const targetAgent = agentManager.getAgent(pendingAgentId);
+  if (!targetAgent) {
+    pendingAgentLink.delete(userId);
+    return;
+  }
+
+  const success = agentManager.setTelegramChatId(targetAgent.id, chatId);
+
+  if (success) {
+    // Clear pending link
+    pendingAgentLink.delete(userId);
+
+    // Send confirmation in the group
+    await sendGroupLinkedConfirmation(chatId, targetAgent.name, targetAgent.emoji || '🤖');
+
+    // Notify user's private chat
+    if (userPrefs.telegramChatId && userPrefs.telegramChatId !== chatId) {
+      await sendTelegramMessage(userPrefs.telegramChatId,
+        `✅ *Grupo vinculado!*\n\n` +
+        `Agente *${targetAgent.emoji || '🤖'} ${targetAgent.name}* agora está conectado ao grupo.`
+      );
+    }
+
+    console.log(`Linked Telegram group ${chatId} to agent ${targetAgent.name} (${targetAgent.id}) via my_chat_member`);
+  } else {
+    await sendTelegramMessage(chatId,
+      '❌ *Erro ao vincular grupo*\n\n' +
+      'Tente usar o comando /link ou crie um novo agente.'
+    );
   }
 }
 

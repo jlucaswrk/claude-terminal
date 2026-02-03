@@ -192,6 +192,11 @@ export class PersistenceService {
       return false;
     }
 
+    // Optional telegramChatId must be number if present
+    if (a.telegramChatId !== undefined && typeof a.telegramChatId !== 'number') {
+      return false;
+    }
+
     // Required number fields
     if (typeof a.messageCount !== 'number') {
       return false;
@@ -232,6 +237,7 @@ export class PersistenceService {
         workspace: agent.workspace,
         groupId: agent.groupId,
         modelMode: agent.modelMode,
+        telegramChatId: agent.telegramChatId,
         sessionId: agent.sessionId,
         currentLoopId: agent.currentLoopId,
         title: agent.title,
@@ -277,6 +283,7 @@ export class PersistenceService {
         groupId: agent.groupId,
         // Backward compatibility: default to 'selection' for old agents without modelMode
         modelMode: agent.modelMode || 'selection',
+        telegramChatId: agent.telegramChatId,
         sessionId: agent.sessionId,
         currentLoopId: agent.currentLoopId,
         title: agent.title,

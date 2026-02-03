@@ -670,33 +670,6 @@ export async function sendTelegramEditNamePrompt(
 // ============================================
 
 /**
- * Link result for group-agent association
- */
-export interface GroupLinkResult {
-  success: boolean;
-  error?: string;
-}
-
-/**
- * Link a Telegram group to an agent
- * Called when bot detects it was added to a group via my_chat_member update
- *
- * Note: This function is for tracking/association only.
- * The actual linking is done through AgentManager.setTelegramChatId()
- */
-export function linkTelegramGroupToAgent(chatId: number, agentId: string): GroupLinkResult {
-  // This is a tracking function - actual linking is done through AgentManager
-  // We just validate the inputs here
-  if (!chatId || chatId === 0) {
-    return { success: false, error: 'Invalid chat ID' };
-  }
-  if (!agentId || agentId.trim() === '') {
-    return { success: false, error: 'Invalid agent ID' };
-  }
-  return { success: true };
-}
-
-/**
  * Bot leaves a Telegram group
  */
 export async function leaveTelegramGroup(chatId: number): Promise<boolean> {

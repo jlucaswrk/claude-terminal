@@ -1,5 +1,6 @@
 import { existsSync } from 'fs';
 import { PersistenceService } from './persistence';
+import { cleanupAgentSandbox, cleanupOrphanedSandboxes } from './telegram';
 import type { Agent, AgentType, ModelMode, Output, OutputType, SystemConfig } from './types';
 import { DEFAULTS, PRIORITY_VALUES } from './types';
 
@@ -56,6 +57,12 @@ export class AgentManager {
       const deletedCount = persistenceService.cleanupOrphanedLoops(agentIds);
       if (deletedCount > 0) {
         console.log(`Cleaned up ${deletedCount} orphaned loop file(s) on startup`);
+      }
+
+      // Clean up orphaned sandboxes on startup
+      const orphanedSandboxCount = cleanupOrphanedSandboxes(agentIds);
+      if (orphanedSandboxCount > 0) {
+        console.log(`Cleaned up ${orphanedSandboxCount} orphaned sandbox(es) on startup`);
       }
     }
   }
@@ -139,6 +146,15 @@ export class AgentManager {
       }
     }
 
+    // Check owner's sandboxAutoCleanup preference and clean up sandbox if enabled
+    const userPrefs = this.persistenceService.loadUserPreferences(agent.userId);
+    if (userPrefs?.sandboxAutoCleanup) {
+      const cleaned = cleanupAgentSandbox(agentId);
+      if (cleaned) {
+        console.log(`Cleaned up sandbox for agent ${agentId}`);
+      }
+    }
+
     // Remove from user tracking
     for (const [userId, agentIds] of this.agentsByUser) {
       if (agentIds.has(agentId)) {
@@ -158,6 +174,12 @@ export class AgentManager {
     const deletedCount = this.persistenceService.cleanupOrphanedLoops(remainingAgentIds);
     if (deletedCount > 0) {
       console.log(`Cleaned up ${deletedCount} orphaned loop file(s) after agent deletion`);
+    }
+
+    // Clean up orphaned sandboxes (for safety - catches any missed cleanups)
+    const orphanedCount = cleanupOrphanedSandboxes(remainingAgentIds);
+    if (orphanedCount > 0) {
+      console.log(`Cleaned up ${orphanedCount} orphaned sandbox(es) after agent deletion`);
     }
 
     return true;
