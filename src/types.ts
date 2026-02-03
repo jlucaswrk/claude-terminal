@@ -181,6 +181,36 @@ export interface SerializedOutput {
 }
 
 /**
+ * Serialized version of RalphIteration for JSON storage
+ */
+export interface SerializedRalphIteration {
+  number: number;
+  model: 'haiku' | 'sonnet' | 'opus';
+  action: string;
+  prompt: string;
+  response: string;
+  completionPromiseFound: boolean;
+  timestamp: string;            // ISO date string
+  duration: number;
+}
+
+/**
+ * Serialized version of RalphLoopState for JSON storage
+ */
+export interface SerializedRalphLoopState {
+  id: string;
+  agentId: string;
+  userId: string;
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  task: string;
+  currentIteration: number;
+  maxIterations: number;
+  iterations: SerializedRalphIteration[];
+  currentModel: 'haiku' | 'sonnet' | 'opus';
+  startTime: string;            // ISO date string
+}
+
+/**
  * Result from bash command execution
  */
 export interface BashResult {
