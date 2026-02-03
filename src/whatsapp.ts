@@ -1885,6 +1885,74 @@ export async function sendRalphIterationsSelector(
 }
 
 /**
+ * Sends the complete Ralph configuration flow:
+ * Shows the task being configured plus the 20/50/100 iteration buttons
+ */
+export async function sendRalphConfigFlow(
+  to: string,
+  task: string,
+  messageId?: string
+): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: `🔄 *Configurar Ralph Loop*\n\n📝 *Tarefa:*\n${truncate(task, 300)}\n\nQuantas iterações no máximo?\n\n_O agente pode terminar antes se completar a tarefa._`,
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: 'ralph_iterations_20',
+              title: '20',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'ralph_iterations_50',
+              title: '50',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'ralph_iterations_100',
+              title: '100',
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
  * Sends Ralph loop progress notification
  */
 export async function sendLoopProgress(
@@ -1973,6 +2041,7 @@ export async function sendLoopComplete(
 
 /**
  * Sends Ralph loop blocked/needs input notification
+ * Note: Blocked loops cannot be resumed - they must be restarted or cancelled
  */
 export async function sendLoopBlocked(
   to: string,
@@ -1990,25 +2059,25 @@ export async function sendLoopBlocked(
     interactive: {
       type: 'button',
       body: {
-        text: `⚠️ *${agentName}* - Loop Pausado\n\n` +
+        text: `⚠️ *${agentName}* - Loop Bloqueado\n\n` +
           `Iteração: ${iteration}/${maxIterations}\n\n` +
           `*Motivo:*\n${truncate(reason, 300)}\n\n` +
-          `O agente precisa de uma decisão para continuar.`,
+          `O loop atingiu o limite sem completar a tarefa.`,
       },
       action: {
         buttons: [
           {
             type: 'reply',
             reply: {
-              id: `ralph_resume_${Date.now()}`,
-              title: 'Continuar',
+              id: `ralph_restart_${Date.now()}`,
+              title: 'Reconfigurar',
             },
           },
           {
             type: 'reply',
             reply: {
-              id: `ralph_cancel_${Date.now()}`,
-              title: 'Cancelar',
+              id: `ralph_dismiss_${Date.now()}`,
+              title: 'OK',
             },
           },
         ],

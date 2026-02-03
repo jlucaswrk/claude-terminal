@@ -29,6 +29,7 @@ import {
   sendTranscriptionError,
   sendModeSelector,
   sendRalphIterationsSelector,
+  sendRalphConfigFlow,
   sendLoopProgress,
   sendLoopComplete,
   sendLoopBlocked,
@@ -847,7 +848,7 @@ async function handleFlowTextInput(
 
       try {
         userContextManager.setRalphTask(userId, task);
-        await sendRalphIterationsSelector(userId, messageId);
+        await sendRalphConfigFlow(userId, task, messageId);
         return { status: 'awaiting_ralph_iterations' };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -943,6 +944,10 @@ async function handleButtonReply(
   }
   if (buttonId.startsWith('ralph_restart_')) {
     return handleRalphRestart(userId);
+  }
+  if (buttonId.startsWith('ralph_dismiss_')) {
+    // Just acknowledge - no action needed
+    return { status: 'dismissed' };
   }
 
   // Generic buttons (Yes/No)
@@ -1638,21 +1643,28 @@ async function handleRalphDetails(userId: string): Promise<{ status: string }> {
 
 /**
  * Handle Ralph restart
+ * Handles both completed loops (idle status) and blocked loops (error status)
  */
 async function handleRalphRestart(userId: string): Promise<{ status: string }> {
-  // Find the agent that completed a loop
+  // Find the agent that completed or blocked a loop
   const agents = agentManager.listAgents(userId);
-  const completedAgent = agents.find((a) => a.mode === 'ralph' && a.status === 'idle');
+  // Check for both idle (completed) and error (blocked) status
+  const targetAgent = agents.find((a) => a.mode === 'ralph' && (a.status === 'idle' || a.status === 'error'));
 
-  if (!completedAgent) {
+  if (!targetAgent) {
     await sendWhatsApp(userId, '❌ Nenhum agente encontrado para reiniciar.');
     return { status: 'no_agent_to_restart' };
   }
 
+  // Reset agent status if it was in error state (from blocked loop)
+  if (targetAgent.status === 'error') {
+    agentManager.updateAgentStatus(targetAgent.id, 'idle', 'Aguardando nova configuração');
+  }
+
   // Start Ralph configuration again
-  pendingAgentSelection.set(userId, completedAgent.id);
-  userContextManager.startConfigureRalphFlow(userId, completedAgent.id);
-  await sendWhatsApp(userId, `🔄 *Reiniciando Ralph Loop para ${completedAgent.name}*\n\nQual tarefa o agente deve executar?`);
+  pendingAgentSelection.set(userId, targetAgent.id);
+  userContextManager.startConfigureRalphFlow(userId, targetAgent.id);
+  await sendWhatsApp(userId, `🔄 *Reiniciando Ralph Loop para ${targetAgent.name}*\n\nQual tarefa o agente deve executar?`);
   return { status: 'awaiting_ralph_task' };
 }
 
