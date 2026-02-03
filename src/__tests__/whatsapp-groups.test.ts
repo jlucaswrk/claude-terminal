@@ -119,4 +119,15 @@ describe('WhatsApp Groups API', () => {
     // Should still return the group ID even if participant addition fails
     expect(groupId).toBe('120363999888777666@g.us');
   });
+
+  it('should delete a group', async () => {
+    const { deleteWhatsAppGroup } = await import('../whatsapp');
+
+    await deleteWhatsAppGroup('120363123456789012@g.us');
+
+    expect(mockFetch).toHaveBeenCalled();
+    const [url, options] = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+    expect(url).toContain('/groups/120363123456789012@g.us');
+    expect(options.method).toBe('DELETE');
+  });
 });

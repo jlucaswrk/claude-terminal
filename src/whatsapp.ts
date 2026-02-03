@@ -2312,3 +2312,26 @@ export async function createWhatsAppGroup(
 
   return groupId;
 }
+
+/**
+ * Delete a WhatsApp group
+ *
+ * @param groupId - Group ID to delete
+ */
+export async function deleteWhatsAppGroup(groupId: string): Promise<void> {
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/groups/${groupId}`,
+    {
+      method: 'DELETE',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+      },
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    console.error('WhatsApp group deletion error:', error);
+    throw new Error(`Failed to delete WhatsApp group: ${error}`);
+  }
+}
