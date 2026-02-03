@@ -598,7 +598,7 @@ async function handleTelegramMessage(message: any): Promise<void> {
             'O que deseja fazer?',
             [
               [
-                { text: 'Criar agente', callback_data: 'orphan_create' },
+                { text: 'Criar agente', callback_data: `orphan_recreate_${chatId}` },
                 { text: 'Remover bot', callback_data: `orphan_leave_${chatId}` },
               ],
             ]
@@ -1697,11 +1697,6 @@ async function handleTelegramCallback(query: any): Promise<void> {
     }
   }
   // Handle orphaned group callbacks
-  else if (data === 'orphan_create') {
-    // Start agent creation flow
-    userContextManager.startCreateAgentFlow(userId);
-    await sendTelegramAgentNamePrompt(chatId);
-  }
   else if (data.startsWith('orphan_leave_')) {
     const targetChatId = parseInt(data.replace('orphan_leave_', ''), 10);
     // Remove from orphaned list before leaving
