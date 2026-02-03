@@ -29,6 +29,21 @@ const PRIORITY_LABEL: Record<Agent['priority'], string> = {
 };
 
 /**
+ * Determine if a recipient is a group or individual
+ * Group IDs end with @g.us (e.g., 120363123456789012@g.us)
+ */
+function isGroupId(recipient: string): boolean {
+  return recipient.endsWith('@g.us');
+}
+
+/**
+ * Get recipient type for WhatsApp API
+ */
+function getRecipientType(recipient: string): 'group' | 'individual' {
+  return isGroupId(recipient) ? 'group' : 'individual';
+}
+
+/**
  * Formats a timestamp as relative time (e.g., "agora", "2min", "1h", "3d")
  */
 export function formatTimestamp(date: Date): string {
@@ -70,7 +85,7 @@ export async function sendWhatsAppImage(to: string, mediaId: string, caption?: s
       },
       body: JSON.stringify({
         messaging_product: 'whatsapp',
-        recipient_type: 'individual',
+        recipient_type: getRecipientType(to),
         to,
         type: 'image',
         image: {
@@ -97,7 +112,7 @@ export async function sendWhatsAppDocument(to: string, mediaId: string, filename
       },
       body: JSON.stringify({
         messaging_product: 'whatsapp',
-        recipient_type: 'individual',
+        recipient_type: getRecipientType(to),
         to,
         type: 'document',
         document: {
@@ -123,7 +138,7 @@ export async function sendWhatsAppMedia(
 ): Promise<void> {
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: mediaType,
   };
@@ -187,7 +202,7 @@ export async function sendCommandsList(to: string): Promise<void> {
       },
       body: JSON.stringify({
         messaging_product: 'whatsapp',
-        recipient_type: 'individual',
+        recipient_type: getRecipientType(to),
         to,
         type: 'interactive',
         interactive: {
@@ -238,7 +253,7 @@ export async function sendCommandsList(to: string): Promise<void> {
 export async function sendModelSelector(to: string, messageId?: string): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -312,7 +327,7 @@ export async function sendContinueWithLastChoice(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -375,7 +390,7 @@ export async function sendAgentSelector(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -441,7 +456,7 @@ export async function sendModelSelectorList(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -493,7 +508,7 @@ async function sendChunk(to: string, text: string): Promise<void> {
       },
       body: JSON.stringify({
         messaging_product: 'whatsapp',
-        recipient_type: 'individual',
+        recipient_type: getRecipientType(to),
         to,
         type: 'text',
         text: { body: text },
@@ -626,7 +641,7 @@ export async function sendAgentsList(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -754,7 +769,7 @@ export async function sendAgentMenu(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -821,7 +836,7 @@ export async function sendHistoryList(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -883,7 +898,7 @@ export async function sendErrorWithActions(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -969,7 +984,7 @@ export async function sendConfigureLimitMenu(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1033,7 +1048,7 @@ export async function sendConfigurePriorityMenu(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1085,7 +1100,7 @@ export async function sendConfirmation(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1132,7 +1147,7 @@ export async function sendConfirmation(
 export async function sendMigrationOptions(to: string): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1196,7 +1211,7 @@ export async function sendButtons(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1268,7 +1283,7 @@ export async function sendAgentSelectionForReset(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1340,7 +1355,7 @@ export async function sendAgentSelectionForDelete(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1409,7 +1424,7 @@ export async function sendEmojiSelector(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1469,7 +1484,7 @@ export async function sendWorkspaceSelector(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1525,7 +1540,7 @@ export async function sendOutputActions(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1604,7 +1619,7 @@ export async function sendAgentTypeSelector(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1657,7 +1672,7 @@ export async function sendTranscriptionError(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1711,7 +1726,7 @@ export async function sendBashModeStatus(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1768,7 +1783,7 @@ export async function sendModeSelector(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1827,7 +1842,7 @@ export async function sendRalphIterationsSelector(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1895,7 +1910,7 @@ export async function sendRalphConfigFlow(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1986,7 +2001,7 @@ export async function sendLoopComplete(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -2052,7 +2067,7 @@ export async function sendLoopBlocked(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -2118,7 +2133,7 @@ export async function sendLoopError(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -2187,7 +2202,7 @@ export async function sendLoopControls(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
