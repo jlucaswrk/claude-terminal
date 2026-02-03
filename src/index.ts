@@ -42,7 +42,16 @@ import {
   sendDeleteGroupChoice,
   sendAgentModeSelector,
   sendModelModeSelector,
+  // Onboarding UI
+  sendUserModeSelector,
+  sendTelegramUsernamePrompt,
+  sendDojoActivated,
+  sendRoninActivated,
+  sendRoninResponse,
+  sendRoninRejection,
 } from './whatsapp';
+import { roninAgent, RONIN_SYSTEM_PROMPT } from './ronin-agent';
+import { isTelegramConfigured, getBotInfo } from './telegram';
 import { MessageRouter } from './message-router';
 import { transcribeAudio } from './transcription';
 import { PersistenceService } from './persistence';
@@ -52,7 +61,7 @@ import { UserContextManager } from './user-context-manager';
 import { Semaphore } from './semaphore';
 import { RalphLoopManager } from './ralph-loop-manager';
 import { DEFAULTS } from './types';
-import type { Agent, AgentType, ModelMode } from './types';
+import type { Agent, AgentType, ModelMode, UserMode, UserPreferences } from './types';
 import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
 import { uploadToKapso, downloadFromKapso } from './storage';
 
@@ -119,6 +128,33 @@ const STATUS_EMOJI: Record<string, string> = {
 const pendingAgentSelection = new Map<string, string>();
 
 // Note: lastErrors is now managed by QueueManager for proper error recovery (Flow 11)
+
+// =============================================================================
+// User Mode Helpers (Ronin/Dojo)
+// =============================================================================
+
+/**
+ * Get user mode (ronin or dojo)
+ */
+function getUserMode(userId: string): UserMode {
+  const prefs = persistenceService.loadUserPreferences(userId);
+  return prefs?.mode || 'ronin'; // Default to ronin
+}
+
+/**
+ * Check if user needs onboarding
+ */
+function needsOnboarding(userId: string): boolean {
+  const prefs = persistenceService.loadUserPreferences(userId);
+  return !prefs?.onboardingComplete;
+}
+
+/**
+ * Check if user is in Dojo mode
+ */
+function isDojoMode(userId: string): boolean {
+  return getUserMode(userId) === 'dojo';
+}
 
 // =============================================================================
 // Startup
@@ -234,6 +270,27 @@ async function handleTextMessage(
     }
     // For groups, we don't handle other actions - they must go through the main number
     return { status: 'group_action_not_supported' };
+  }
+
+  // Check if user needs onboarding (first time creating agent)
+  if (needsOnboarding(userId) && !userContextManager.isInFlow(userId)) {
+    const trimmed = text.trim().toLowerCase();
+    // If it's a command that would start agent creation, trigger onboarding
+    if (trimmed === '/' || trimmed === '/criar' || trimmed === '/new') {
+      userContextManager.startOnboardingFlow(userId);
+      await sendUserModeSelector(userId);
+      return { status: 'onboarding_started' };
+    }
+  }
+
+  // Handle onboarding flow
+  if (userContextManager.getCurrentFlow(userId) === 'onboarding') {
+    return handleOnboardingFlow(userId, text, messageId);
+  }
+
+  // If in Dojo mode, WhatsApp only accepts Ronin queries (except groups)
+  if (isDojoMode(userId) && !groupId) {
+    return handleRoninQuery(userId, text, messageId);
   }
 
   // Handle main number text that isn't a command
@@ -1104,6 +1161,39 @@ async function handleButtonReply(
   if (buttonId.startsWith('ralph_dismiss_')) {
     // Just acknowledge - no action needed
     return { status: 'dismissed' };
+  }
+
+  // User mode selection (Ronin/Dojo onboarding)
+  if (buttonId === 'usermode_dojo') {
+    if (userContextManager.isAwaitingModeSelection(userId)) {
+      if (!isTelegramConfigured()) {
+        await sendWhatsApp(userId, 'Telegram nao configurado no servidor. Use modo Ronin.');
+        userContextManager.clearContext(userId);
+        return { status: 'telegram_not_configured' };
+      }
+      userContextManager.setUserMode(userId, 'dojo');
+      await sendTelegramUsernamePrompt(userId);
+      return { status: 'awaiting_telegram_username' };
+    }
+    return { status: 'not_in_onboarding' };
+  }
+
+  if (buttonId === 'usermode_ronin') {
+    if (userContextManager.isAwaitingModeSelection(userId)) {
+      userContextManager.setUserMode(userId, 'ronin');
+
+      // Save preferences
+      const prefs: UserPreferences = {
+        userId,
+        mode: 'ronin',
+        onboardingComplete: true,
+      };
+      persistenceService.saveUserPreferences(prefs);
+
+      await sendRoninActivated(userId);
+      return { status: 'ronin_activated' };
+    }
+    return { status: 'not_in_onboarding' };
   }
 
   // Generic buttons (Yes/No)
@@ -3027,6 +3117,134 @@ export function extractMessage(payload: unknown): ExtractedMessage | null {
     return null;
   } catch {
     return null;
+  }
+}
+
+// =============================================================================
+// Onboarding Flow Handlers (Ronin/Dojo Mode)
+// =============================================================================
+
+/**
+ * Handle onboarding flow messages (telegram username input)
+ */
+async function handleOnboardingFlow(
+  userId: string,
+  text: string,
+  messageId?: string
+): Promise<{ status: string }> {
+  const flowState = userContextManager.getCurrentFlowState(userId);
+
+  if (flowState === 'awaiting_telegram_username') {
+    // User sent their Telegram username
+    const username = text.trim().replace('@', '');
+    userContextManager.setTelegramUsername(userId, username);
+
+    // Save preferences
+    const prefs: UserPreferences = {
+      userId,
+      mode: 'dojo',
+      telegramUsername: username,
+      onboardingComplete: true,
+    };
+    persistenceService.saveUserPreferences(prefs);
+
+    // Clear flow
+    userContextManager.clearContext(userId);
+
+    // Get bot username for message
+    const botInfo = await getBotInfo();
+    const botUsername = botInfo?.username || 'ClaudeTerminalBot';
+
+    // Send confirmation
+    await sendDojoActivated(userId, botUsername);
+    return { status: 'dojo_activated' };
+  }
+
+  // Unexpected state - clear and restart
+  userContextManager.clearContext(userId);
+  return { status: 'onboarding_error' };
+}
+
+/**
+ * Handle Ronin (read-only) query in Dojo mode
+ */
+async function handleRoninQuery(
+  userId: string,
+  text: string,
+  messageId?: string
+): Promise<{ status: string }> {
+  const trimmed = text.trim().toLowerCase();
+
+  // Commands that should redirect to Telegram
+  if (trimmed === '/' || trimmed.startsWith('/criar') || trimmed.startsWith('/new')) {
+    await sendRoninRejection(userId, 'criar agentes');
+    return { status: 'ronin_rejected_create' };
+  }
+
+  if (trimmed === '/status') {
+    await sendRoninRejection(userId, 'ver status dos agentes');
+    return { status: 'ronin_rejected_status' };
+  }
+
+  if (trimmed === '/modo') {
+    // Allow changing mode
+    await sendUserModeSelector(userId);
+    userContextManager.startOnboardingFlow(userId);
+    return { status: 'mode_change_started' };
+  }
+
+  if (trimmed === '/help') {
+    await sendWhatsApp(userId,
+      '*Ronin - Consultas Rapidas*\n\n' +
+      'Pergunte qualquer coisa sobre codigo.\n' +
+      'Sou read-only: so leio, nao modifico.\n\n' +
+      '/modo - Trocar para Ronin completo\n\n' +
+      '_Para criar agentes, use o Dojo no Telegram._'
+    );
+    return { status: 'ronin_help' };
+  }
+
+  // Process as Ronin query
+  // Create or get Ronin agent
+  let roninAgentData = agentManager.getAgentsByUserId(userId).find(a => a.name === 'Ronin');
+
+  if (!roninAgentData) {
+    roninAgentData = agentManager.createAgent(userId, 'Ronin', 'claude', '🥷');
+    agentManager.setModelMode(roninAgentData.id, 'haiku'); // Fixed Haiku
+  }
+
+  // Send to Claude (Ronin uses Haiku for fast, concise responses)
+  try {
+    agentManager.updateAgentStatus(roninAgentData.id, 'processing', 'Consultando...');
+
+    // Prepend system instruction to make responses concise
+    const roninPrompt = `[Responda em no maximo 3 linhas, seja direto ao ponto]\n\n${text}`;
+
+    const result = await terminal.send(
+      roninPrompt,
+      'haiku',
+      userId,
+      roninAgentData.id,
+      undefined // no workspace
+    );
+
+    // Truncate response for conciseness
+    const response = roninAgent.truncateResponse(result.response, 500);
+
+    await sendRoninResponse(userId, response);
+
+    agentManager.updateAgentStatus(roninAgentData.id, 'idle', 'Pronto');
+
+    if (result.sessionId) {
+      agentManager.setSessionId(roninAgentData.id, result.sessionId);
+    }
+
+    return { status: 'ronin_query_success' };
+  } catch (error) {
+    console.error('Ronin query error:', error);
+    agentManager.updateAgentStatus(roninAgentData.id, 'error', 'Erro na consulta');
+    await sendWhatsApp(userId, 'Erro ao consultar. Tente novamente.');
+    return { status: 'ronin_query_error' };
   }
 }
 
