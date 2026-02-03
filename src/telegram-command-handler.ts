@@ -167,9 +167,25 @@ export class TelegramCommandHandler {
     // Check if this is a command (starts with /)
     if (text.startsWith('/')) {
       const [command, ...argParts] = text.split(' ');
+      const commandLower = command.toLowerCase();
+
+      // Known commands that should always be processed as commands
+      const knownCommands = ['/criar', '/cancelar', '/status', '/help', '/link', '/start', '/agentes', '/listar'];
+
+      // If user is in a flow and this is NOT a known command, treat as flow input
+      // This allows paths like /Users/lucas/... to be treated as input
+      if (isInFlow && !knownCommands.includes(commandLower)) {
+        return {
+          action: 'flow_input',
+          text,
+          chatId,
+          userId,
+        };
+      }
+
       return {
         action: 'command',
-        command: command.toLowerCase(),
+        command: commandLower,
         args: argParts.join(' '),
         chatId,
         userId,
