@@ -44,6 +44,8 @@ export interface Agent {
   mode: 'conversational' | 'ralph';  // Agent operation mode
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;           // Absolute path (optional, immutable)
+  groupId?: string;             // WhatsApp group ID (format: 120363...@g.us, immutable)
+  modelMode: ModelMode;         // 'selection' (asks each time) or fixed model
   sessionId?: string;           // Claude session ID (managed by SDK)
   currentLoopId?: string;       // Active Ralph loop ID (if in ralph mode)
   title: string;                // Auto-generated title (3-5 words)
@@ -171,6 +173,8 @@ export interface SerializedAgent {
   mode?: 'conversational' | 'ralph';  // Agent operation mode - optional for backwards compat
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;
+  groupId?: string;             // WhatsApp group ID (format: 120363...@g.us)
+  modelMode?: ModelMode;        // Model mode - optional for backwards compat
   sessionId?: string;
   currentLoopId?: string;       // Active Ralph loop ID (if in ralph mode)
   title: string;
