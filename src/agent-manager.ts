@@ -278,6 +278,39 @@ export class AgentManager {
   }
 
   /**
+   * Update agent mode directly
+   * Use this for simple mode changes; for full Ralph loop setup, use promoteToRalph
+   * @throws AgentValidationError if agent not found or has active loop
+   */
+  updateAgentMode(agentId: string, mode: 'conversational' | 'ralph'): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new AgentValidationError(`Agent not found: ${agentId}`);
+    }
+
+    // Prevent mode change if loop is actively running
+    if (agent.status === 'ralph-loop') {
+      throw new AgentValidationError(
+        `Cannot change mode while Ralph loop is running. Pause or cancel the loop first.`
+      );
+    }
+
+    agent.mode = mode;
+
+    // Clear loop reference if switching away from ralph
+    if (mode === 'conversational') {
+      agent.currentLoopId = undefined;
+      if (agent.status === 'ralph-paused') {
+        agent.status = 'idle';
+        agent.statusDetails = 'Aguardando prompt';
+      }
+    }
+
+    agent.lastActivity = new Date();
+    this.persist();
+  }
+
+  /**
    * Update agent title
    */
   updateAgentTitle(agentId: string, title: string): void {

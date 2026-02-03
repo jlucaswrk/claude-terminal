@@ -27,6 +27,13 @@ import {
   sendAgentTypeSelector,
   sendBashModeStatus,
   sendTranscriptionError,
+  sendModeSelector,
+  sendRalphIterationsSelector,
+  sendLoopProgress,
+  sendLoopComplete,
+  sendLoopBlocked,
+  sendLoopError,
+  sendLoopControls,
 } from './whatsapp';
 import { transcribeAudio } from './transcription';
 import { PersistenceService } from './persistence';
@@ -813,6 +820,28 @@ async function handleFlowTextInput(
     }
   }
 
+  // Configure Ralph Flow
+  if (flow === 'configure_ralph') {
+    if (userContextManager.isAwaitingRalphTask(userId)) {
+      const task = text.trim();
+
+      if (!task || task.length < 10) {
+        await sendWhatsApp(userId, '❌ Descreva a tarefa de forma mais detalhada (mínimo 10 caracteres):');
+        return { status: 'awaiting_ralph_task' };
+      }
+
+      try {
+        userContextManager.setRalphTask(userId, task);
+        await sendRalphIterationsSelector(userId, messageId);
+        return { status: 'awaiting_ralph_iterations' };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        await sendWhatsApp(userId, `❌ ${msg}`);
+        return { status: 'error' };
+      }
+    }
+  }
+
   // Not in a recognized flow state
   userContextManager.clearContext(userId);
   return handleTextMessage(userId, text, messageId);
@@ -869,6 +898,36 @@ async function handleButtonReply(
   // Transcription manual fallback
   if (buttonId.startsWith('transcription_manual_')) {
     return handleTranscriptionManualFallback(userId);
+  }
+
+  // Mode selection (Conversational vs Ralph)
+  if (buttonId.startsWith('mode_conversational_') || buttonId.startsWith('mode_ralph_')) {
+    return handleModeSelection(userId, buttonId);
+  }
+
+  // Ralph iterations selection
+  if (buttonId.startsWith('ralph_iterations_')) {
+    return handleRalphIterationsSelection(userId, buttonId);
+  }
+
+  // Ralph loop controls
+  if (buttonId.startsWith('ralph_pause_')) {
+    return handleRalphPause(userId);
+  }
+  if (buttonId.startsWith('ralph_resume_')) {
+    return handleRalphResume(userId);
+  }
+  if (buttonId.startsWith('ralph_cancel_')) {
+    return handleRalphCancel(userId);
+  }
+  if (buttonId.startsWith('ralph_retry_')) {
+    return handleRalphRetry(userId);
+  }
+  if (buttonId.startsWith('ralph_details_')) {
+    return handleRalphDetails(userId);
+  }
+  if (buttonId.startsWith('ralph_restart_')) {
+    return handleRalphRestart(userId);
   }
 
   // Generic buttons (Yes/No)
@@ -1228,6 +1287,42 @@ async function handleConfirmation(
     return { status: 'cancelled' };
   }
 
+  // Start Ralph loop confirmation
+  if (buttonId.startsWith('confirm_start_ralph_')) {
+    const agentId = buttonId.replace('confirm_start_ralph_', '');
+    const agent = agentManager.getAgent(agentId);
+
+    if (!agent) {
+      await sendWhatsApp(userId, '❌ Agente não encontrado.');
+      return { status: 'agent_not_found' };
+    }
+
+    // Start the loop
+    agentManager.updateAgentStatus(agentId, 'ralph-loop', 'Iniciando loop...');
+    await sendWhatsApp(userId, `🔄 Loop do agente *${agent.name}* iniciado!`);
+
+    // Note: The actual loop execution would be handled by ralph-loop-manager.ts
+    // For now, we just update the status to indicate the loop is ready
+    return { status: 'ralph_started' };
+  }
+
+  // Cancel Ralph loop confirmation
+  if (buttonId.startsWith('confirm_cancel_loop_')) {
+    const agentId = buttonId.replace('confirm_cancel_loop_', '');
+    const agent = agentManager.getAgent(agentId);
+
+    if (!agent) {
+      await sendWhatsApp(userId, '❌ Agente não encontrado.');
+      return { status: 'agent_not_found' };
+    }
+
+    // Cancel the loop
+    agentManager.updateAgentStatus(agentId, 'idle', 'Loop cancelado');
+    agentManager.updateAgentMode(agentId, 'conversational');
+    await sendWhatsApp(userId, `⏹️ Loop do agente *${agent.name}* cancelado.`);
+    return { status: 'loop_cancelled' };
+  }
+
   return { status: 'unknown_confirmation' };
 }
 
@@ -1267,6 +1362,190 @@ async function handleGenericConfirmation(
   }
 
   return { status: 'confirmation_pending' };
+}
+
+// =============================================================================
+// Ralph Mode Handlers
+// =============================================================================
+
+/**
+ * Handle mode selection (Conversational vs Ralph)
+ */
+async function handleModeSelection(
+  userId: string,
+  buttonId: string
+): Promise<{ status: string }> {
+  const isRalph = buttonId.startsWith('mode_ralph_');
+  const agentId = pendingAgentSelection.get(userId);
+
+  if (!agentId) {
+    await sendWhatsApp(userId, '❌ Nenhum agente selecionado.');
+    return { status: 'no_agent_selected' };
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    await sendWhatsApp(userId, '❌ Agente não encontrado.');
+    pendingAgentSelection.delete(userId);
+    return { status: 'agent_not_found' };
+  }
+
+  if (isRalph) {
+    // Start Ralph configuration flow
+    userContextManager.startConfigureRalphFlow(userId, agentId);
+    await sendWhatsApp(userId, `🔄 *Configurando Ralph Loop para ${agent.name}*\n\nQual tarefa o agente deve executar?\n\n_Descreva a tarefa de forma clara e completa._`);
+    return { status: 'awaiting_ralph_task' };
+  } else {
+    // Set to conversational mode
+    agentManager.updateAgentMode(agentId, 'conversational');
+    pendingAgentSelection.delete(userId);
+    await sendWhatsApp(userId, `💬 Agente *${agent.name}* configurado para modo Conversacional.`);
+    return { status: 'mode_set_conversational' };
+  }
+}
+
+/**
+ * Handle Ralph iterations selection
+ */
+async function handleRalphIterationsSelection(
+  userId: string,
+  buttonId: string
+): Promise<{ status: string }> {
+  const iterations = parseInt(buttonId.replace('ralph_iterations_', ''), 10);
+
+  if (!userContextManager.isInConfigureRalphFlow(userId)) {
+    await sendWhatsApp(userId, '❌ Seleção de iterações inesperada.');
+    return { status: 'unexpected_iterations_selection' };
+  }
+
+  try {
+    userContextManager.setRalphMaxIterations(userId, iterations);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    await sendWhatsApp(userId, `❌ ${msg}`);
+    return { status: 'error' };
+  }
+
+  // Now ask for model selection
+  const data = userContextManager.getRalphConfigData(userId);
+  const agent = data?.agentId ? agentManager.getAgent(data.agentId) : null;
+  const agentName = agent?.name || 'Agente';
+
+  await sendModelSelectorList(userId, agentName);
+  return { status: 'awaiting_ralph_model' };
+}
+
+/**
+ * Handle Ralph pause
+ */
+async function handleRalphPause(userId: string): Promise<{ status: string }> {
+  // Find the agent that's currently in ralph-loop for this user
+  const agents = agentManager.listAgents(userId);
+  const loopingAgent = agents.find((a) => a.status === 'ralph-loop');
+
+  if (!loopingAgent) {
+    await sendWhatsApp(userId, '❌ Nenhum loop ativo encontrado.');
+    return { status: 'no_active_loop' };
+  }
+
+  agentManager.updateAgentStatus(loopingAgent.id, 'ralph-paused', 'Loop pausado pelo usuário');
+  await sendLoopControls(userId, loopingAgent.name, 0, 0, true);
+  return { status: 'loop_paused' };
+}
+
+/**
+ * Handle Ralph resume
+ */
+async function handleRalphResume(userId: string): Promise<{ status: string }> {
+  // Find the agent that's currently paused for this user
+  const agents = agentManager.listAgents(userId);
+  const pausedAgent = agents.find((a) => a.status === 'ralph-paused');
+
+  if (!pausedAgent) {
+    await sendWhatsApp(userId, '❌ Nenhum loop pausado encontrado.');
+    return { status: 'no_paused_loop' };
+  }
+
+  agentManager.updateAgentStatus(pausedAgent.id, 'ralph-loop', 'Loop retomado');
+  await sendWhatsApp(userId, `▶️ Loop do agente *${pausedAgent.name}* retomado.`);
+  return { status: 'loop_resumed' };
+}
+
+/**
+ * Handle Ralph cancel
+ */
+async function handleRalphCancel(userId: string): Promise<{ status: string }> {
+  // Find the agent that's in ralph mode for this user
+  const agents = agentManager.listAgents(userId);
+  const ralphAgent = agents.find((a) => a.status === 'ralph-loop' || a.status === 'ralph-paused');
+
+  if (!ralphAgent) {
+    await sendWhatsApp(userId, '❌ Nenhum loop encontrado.');
+    return { status: 'no_loop' };
+  }
+
+  // Cancel the loop
+  agentManager.updateAgentStatus(ralphAgent.id, 'idle', 'Loop cancelado');
+  agentManager.updateAgentMode(ralphAgent.id, 'conversational');
+  await sendWhatsApp(userId, `⏹️ Loop do agente *${ralphAgent.name}* cancelado.`);
+  return { status: 'loop_cancelled' };
+}
+
+/**
+ * Handle Ralph retry after error
+ */
+async function handleRalphRetry(userId: string): Promise<{ status: string }> {
+  // Find the agent that had an error
+  const agents = agentManager.listAgents(userId);
+  const errorAgent = agents.find((a) => a.status === 'error' && a.mode === 'ralph');
+
+  if (!errorAgent) {
+    await sendWhatsApp(userId, '❌ Nenhum agente com erro encontrado.');
+    return { status: 'no_error_agent' };
+  }
+
+  // Resume the loop
+  agentManager.updateAgentStatus(errorAgent.id, 'ralph-loop', 'Retentando...');
+  await sendWhatsApp(userId, `🔄 Retentando loop do agente *${errorAgent.name}*...`);
+  return { status: 'loop_retrying' };
+}
+
+/**
+ * Handle Ralph details request
+ */
+async function handleRalphDetails(userId: string): Promise<{ status: string }> {
+  // Find the agent that completed a loop
+  const agents = agentManager.listAgents(userId);
+  const completedAgent = agents.find((a) => a.mode === 'ralph' && a.outputs.length > 0);
+
+  if (!completedAgent) {
+    await sendWhatsApp(userId, '❌ Nenhum histórico de loop encontrado.');
+    return { status: 'no_loop_history' };
+  }
+
+  // Show the history
+  await sendHistoryList(userId, completedAgent.name, completedAgent.outputs);
+  return { status: 'details_shown' };
+}
+
+/**
+ * Handle Ralph restart
+ */
+async function handleRalphRestart(userId: string): Promise<{ status: string }> {
+  // Find the agent that completed a loop
+  const agents = agentManager.listAgents(userId);
+  const completedAgent = agents.find((a) => a.mode === 'ralph' && a.status === 'idle');
+
+  if (!completedAgent) {
+    await sendWhatsApp(userId, '❌ Nenhum agente encontrado para reiniciar.');
+    return { status: 'no_agent_to_restart' };
+  }
+
+  // Start Ralph configuration again
+  pendingAgentSelection.set(userId, completedAgent.id);
+  userContextManager.startConfigureRalphFlow(userId, completedAgent.id);
+  await sendWhatsApp(userId, `🔄 *Reiniciando Ralph Loop para ${completedAgent.name}*\n\nQual tarefa o agente deve executar?`);
+  return { status: 'awaiting_ralph_task' };
 }
 
 // =============================================================================
@@ -1463,6 +1742,11 @@ async function handleModelSelectionForPrompt(
   model: Model,
   messageId?: string
 ): Promise<{ status: string }> {
+  // Check if this is for Ralph configuration
+  if (userContextManager.isInConfigureRalphFlow(userId)) {
+    return handleRalphModelSelection(userId, model, messageId);
+  }
+
   const pending = userContextManager.getPendingPrompt(userId);
   const agentId = pendingAgentSelection.get(userId);
 
@@ -1508,6 +1792,65 @@ async function handleModelSelectionForPrompt(
   console.log(`Task ${task.id} enqueued for agent ${agent.name}`);
 
   return { status: 'task_enqueued' };
+}
+
+/**
+ * Handle model selection for Ralph loop configuration
+ */
+async function handleRalphModelSelection(
+  userId: string,
+  model: Model,
+  messageId?: string
+): Promise<{ status: string }> {
+  const data = userContextManager.getRalphConfigData(userId);
+
+  if (!data?.agentId || !data?.ralphTask || !data?.ralphMaxIterations) {
+    await sendWhatsApp(userId, '❌ Configuração Ralph incompleta.');
+    userContextManager.completeFlow(userId);
+    return { status: 'incomplete_ralph_config' };
+  }
+
+  const agent = agentManager.getAgent(data.agentId);
+  if (!agent) {
+    await sendWhatsApp(userId, '❌ Agente não encontrado.');
+    userContextManager.completeFlow(userId);
+    pendingAgentSelection.delete(userId);
+    return { status: 'agent_not_found' };
+  }
+
+  // Store the model selection
+  userContextManager.setRalphModel(userId, model);
+
+  // Complete the configuration
+  userContextManager.completeFlow(userId);
+  pendingAgentSelection.delete(userId);
+
+  // Update agent to Ralph mode
+  try {
+    agentManager.updateAgentMode(data.agentId, 'ralph');
+    agentManager.updateAgentStatus(data.agentId, 'ralph-paused', 'Loop configurado, pronto para iniciar');
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    await sendWhatsApp(userId, `❌ ${msg}`);
+    return { status: 'error' };
+  }
+
+  // Show confirmation with start button
+  await sendConfirmation(
+    userId,
+    `✅ *Ralph Loop configurado para ${agent.name}*\n\n` +
+    `📝 *Tarefa:* ${data.ralphTask.length > 100 ? data.ralphTask.slice(0, 100) + '...' : data.ralphTask}\n\n` +
+    `🔄 *Máx. iterações:* ${data.ralphMaxIterations}\n` +
+    `🧠 *Modelo:* ${model.toUpperCase()}\n\n` +
+    `Iniciar execução do loop?`,
+    [
+      { id: `confirm_start_ralph_${data.agentId}`, title: 'Iniciar Loop' },
+      { id: 'confirm_cancel', title: 'Cancelar' },
+    ],
+    messageId
+  );
+
+  return { status: 'ralph_configured' };
 }
 
 /**
@@ -1728,6 +2071,80 @@ async function handleAgentMenuAction(
     case 'back': {
       // Back to main menu
       return handleMenuCommand(userId);
+    }
+
+    case 'mode': {
+      // Change agent mode (Conversational vs Ralph)
+      const agent = agentManager.getAgent(agentId);
+      if (!agent) {
+        await sendWhatsApp(userId, '❌ Agente não encontrado.');
+        return { status: 'agent_not_found' };
+      }
+
+      // Store agent ID for mode selection
+      pendingAgentSelection.set(userId, agentId);
+      await sendModeSelector(userId, agent.name, messageId);
+      return { status: 'awaiting_mode_selection' };
+    }
+
+    case 'pause_loop': {
+      // Pause Ralph loop
+      const agent = agentManager.getAgent(agentId);
+      if (!agent) {
+        await sendWhatsApp(userId, '❌ Agente não encontrado.');
+        return { status: 'agent_not_found' };
+      }
+
+      if (agent.status !== 'ralph-loop') {
+        await sendWhatsApp(userId, '❌ Agente não está em execução de loop.');
+        return { status: 'not_in_loop' };
+      }
+
+      agentManager.updateAgentStatus(agentId, 'ralph-paused', 'Loop pausado pelo usuário');
+      await sendWhatsApp(userId, `⏸️ Loop do agente *${agent.name}* pausado.`);
+      return { status: 'loop_paused' };
+    }
+
+    case 'resume_loop': {
+      // Resume Ralph loop
+      const agent = agentManager.getAgent(agentId);
+      if (!agent) {
+        await sendWhatsApp(userId, '❌ Agente não encontrado.');
+        return { status: 'agent_not_found' };
+      }
+
+      if (agent.status !== 'ralph-paused') {
+        await sendWhatsApp(userId, '❌ Loop do agente não está pausado.');
+        return { status: 'not_paused' };
+      }
+
+      agentManager.updateAgentStatus(agentId, 'ralph-loop', 'Loop retomado');
+      await sendWhatsApp(userId, `▶️ Loop do agente *${agent.name}* retomado.`);
+      return { status: 'loop_resumed' };
+    }
+
+    case 'cancel_loop': {
+      // Cancel Ralph loop
+      const agent = agentManager.getAgent(agentId);
+      if (!agent) {
+        await sendWhatsApp(userId, '❌ Agente não encontrado.');
+        return { status: 'agent_not_found' };
+      }
+
+      if (agent.status !== 'ralph-loop' && agent.status !== 'ralph-paused') {
+        await sendWhatsApp(userId, '❌ Agente não está em modo loop.');
+        return { status: 'not_in_loop' };
+      }
+
+      await sendConfirmation(
+        userId,
+        `⚠️ Cancelar loop do agente *${agent.name}*?\n\nO progresso atual será mantido no histórico.`,
+        [
+          { id: `confirm_cancel_loop_${agentId}`, title: 'Confirmar' },
+          { id: 'confirm_cancel', title: 'Voltar' },
+        ]
+      );
+      return { status: 'awaiting_cancel_loop_confirmation' };
     }
 
     default:
