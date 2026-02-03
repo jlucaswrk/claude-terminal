@@ -43,9 +43,64 @@ export class UserContextManager {
 
   /**
    * Clear the context for a user (after flow completion)
+   * Preserves activeAgentId and pendingPrompt for continuous conversations
    */
   clearContext(userId: string): void {
-    this.contexts.delete(userId);
+    const context = this.contexts.get(userId);
+    if (context) {
+      const { activeAgentId, pendingPrompt } = context;
+      // Only preserve if there's something to preserve
+      if (activeAgentId || pendingPrompt) {
+        this.contexts.set(userId, { userId, activeAgentId, pendingPrompt });
+      } else {
+        this.contexts.delete(userId);
+      }
+    }
+  }
+
+  // ============================================
+  // Active Agent Management (for continuous conversations)
+  // ============================================
+
+  /**
+   * Set the active agent for a user
+   * Used to route subsequent messages without re-prompting for agent selection
+   */
+  setActiveAgent(userId: string, agentId: string): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.activeAgentId = agentId;
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the active agent for a user
+   */
+  getActiveAgent(userId: string): string | undefined {
+    return this.contexts.get(userId)?.activeAgentId;
+  }
+
+  /**
+   * Clear the active agent for a user
+   * Called on explicit user action (switching agents, logout, etc.)
+   */
+  clearActiveAgent(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context) {
+      delete context.activeAgentId;
+      // Clean up if nothing left
+      if (!context.currentFlow && !context.pendingPrompt && !context.lastChoice && !context.bashMode) {
+        this.contexts.delete(userId);
+      } else {
+        this.contexts.set(userId, context);
+      }
+    }
+  }
+
+  /**
+   * Check if user has an active agent
+   */
+  hasActiveAgent(userId: string): boolean {
+    return this.contexts.get(userId)?.activeAgentId !== undefined;
   }
 
   // ============================================
@@ -88,10 +143,14 @@ export class UserContextManager {
 
   /**
    * Start the create agent flow
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startCreateAgentFlow(userId: string): void {
+    const existingContext = this.contexts.get(userId);
     this.contexts.set(userId, {
       userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
       currentFlow: 'create_agent',
       flowState: 'awaiting_name',
       flowData: {},
@@ -289,10 +348,14 @@ export class UserContextManager {
 
   /**
    * Start the edit emoji flow
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startEditEmojiFlow(userId: string, agentId: string): void {
+    const existingContext = this.contexts.get(userId);
     this.contexts.set(userId, {
       userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
       currentFlow: 'edit_emoji',
       flowState: 'awaiting_emoji_text',
       flowData: { agentId },
@@ -328,12 +391,16 @@ export class UserContextManager {
   /**
    * Start the configure priority flow
    * If agentId is provided, skips agent selection step
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startConfigurePriorityFlow(userId: string, agentId?: string): void {
+    const existingContext = this.contexts.get(userId);
     if (agentId) {
       // Pre-selected agent - go directly to priority selection
       this.contexts.set(userId, {
         userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
         currentFlow: 'configure_priority',
         flowState: 'awaiting_selection', // We'll use this state for priority selection too
         flowData: { agentId },
@@ -342,6 +409,8 @@ export class UserContextManager {
       // Need to select agent first
       this.contexts.set(userId, {
         userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
         currentFlow: 'configure_priority',
         flowState: 'awaiting_selection',
         flowData: {},
@@ -404,10 +473,14 @@ export class UserContextManager {
 
   /**
    * Start the configure limit flow
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startConfigureLimitFlow(userId: string): void {
+    const existingContext = this.contexts.get(userId);
     this.contexts.set(userId, {
       userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
       currentFlow: 'configure_limit',
       flowState: 'awaiting_selection',
       flowData: {},
@@ -428,10 +501,14 @@ export class UserContextManager {
 
   /**
    * Start the delete agent flow
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startDeleteAgentFlow(userId: string, agentId: string): void {
+    const existingContext = this.contexts.get(userId);
     this.contexts.set(userId, {
       userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
       currentFlow: 'delete_agent',
       flowState: 'awaiting_confirmation',
       flowData: { agentId },
@@ -562,14 +639,15 @@ export class UserContextManager {
   /**
    * Complete a flow and clear the context
    * Use after successful flow completion
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   completeFlow(userId: string): void {
     const context = this.contexts.get(userId);
     if (context) {
-      // Keep pending prompt if it exists
-      const pendingPrompt = context.pendingPrompt;
-      if (pendingPrompt) {
-        this.contexts.set(userId, { userId, pendingPrompt });
+      const { activeAgentId, pendingPrompt } = context;
+      // Preserve activeAgentId and pendingPrompt if they exist
+      if (activeAgentId || pendingPrompt) {
+        this.contexts.set(userId, { userId, activeAgentId, pendingPrompt });
       } else {
         this.contexts.delete(userId);
       }
@@ -714,10 +792,14 @@ export class UserContextManager {
   /**
    * Start the configure Ralph flow
    * Begins collecting Ralph loop configuration (task, max iterations)
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startConfigureRalphFlow(userId: string, agentId: string): void {
+    const existingContext = this.contexts.get(userId);
     this.contexts.set(userId, {
       userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
       currentFlow: 'configure_ralph',
       flowState: 'awaiting_ralph_task',
       flowData: { agentId },
@@ -839,10 +921,14 @@ export class UserContextManager {
 
   /**
    * Start the onboarding flow for mode selection
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startOnboardingFlow(userId: string): void {
+    const existingContext = this.contexts.get(userId);
     this.contexts.set(userId, {
       userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
       currentFlow: 'onboarding',
       flowState: 'awaiting_mode_selection',
       flowData: {},
@@ -851,10 +937,14 @@ export class UserContextManager {
 
   /**
    * Start prompt flow for Telegram - stores agentId and waits for text
+   * Also sets activeAgentId for continuous conversation support
    */
   startPromptFlow(userId: string, agentId: string): void {
+    const existingContext = this.contexts.get(userId) ?? { userId };
     this.contexts.set(userId, {
+      ...existingContext,
       userId,
+      activeAgentId: agentId,
       flowData: { agentId },
     });
   }

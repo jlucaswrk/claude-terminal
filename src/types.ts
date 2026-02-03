@@ -101,6 +101,7 @@ export interface RalphLoopState {
  */
 export interface UserContext {
   userId: string;
+  activeAgentId?: string;         // Persists across clearContext() for continuous conversations
   currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'configure_ralph' | 'onboarding';
   flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_mode_selection' | 'awaiting_telegram_username';
   flowData?: {

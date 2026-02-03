@@ -457,6 +457,8 @@ async function handleTelegramMessage(message: any): Promise<void> {
         return;
 
       case 'prompt':
+        // Set active agent for continuous conversation support
+        userContextManager.setActiveAgent(userId, route.agentId);
         // Queue the prompt directly with the specified model
         await sendTelegramMessage(chatId, `Processando com *${route.model}*...`);
         queueManager.enqueue({
@@ -469,6 +471,8 @@ async function handleTelegramMessage(message: any): Promise<void> {
         return;
 
       case 'show_model_selector':
+        // Set active agent for continuous conversation support
+        userContextManager.setActiveAgent(userId, route.agentId);
         // Store prompt and show model selector
         userContextManager.setPendingPrompt(userId, route.text, undefined);
         userContextManager.startPromptFlow(userId, route.agentId);
@@ -513,7 +517,7 @@ async function handleTelegramMessage(message: any): Promise<void> {
         }
         // Handle pending prompt flow (user selected agent, waiting for text)
         if (userContextManager.hasPendingPromptFlow(userId)) {
-          const agentId = userContextManager.getPendingAgentId(userId);
+          const agentId = userContextManager.getPendingAgentId(userId) || userContextManager.getActiveAgent(userId);
           const agent = agentId ? agentManager.getAgent(agentId) : null;
 
           if (agent) {
@@ -522,6 +526,8 @@ async function handleTelegramMessage(message: any): Promise<void> {
               userContextManager.setPendingPrompt(userId, text, undefined);
               await sendTelegramModelSelector(chatId, agent.name);
             } else {
+              // Set active agent for continuous conversation support before clearing context
+              userContextManager.setActiveAgent(userId, agent.id);
               // Fixed model - queue immediately
               userContextManager.clearContext(userId);
               await sendTelegramMessage(chatId, `Processando com *${agent.modelMode}*...`);
@@ -793,11 +799,13 @@ async function handleTelegramCallback(query: any): Promise<void> {
     const model = data.replace('model_', '') as 'haiku' | 'sonnet' | 'opus';
     const context = userContextManager.getContext(userId);
     const pendingPrompt = context?.pendingPrompt;
-    const agentId = context?.flowData?.agentId;
+    const agentId = context?.flowData?.agentId || context?.activeAgentId;
 
     if (pendingPrompt && agentId) {
       const agent = agentManager.getAgent(agentId);
       if (agent) {
+        // Set active agent for continuous conversation support before clearing context
+        userContextManager.setActiveAgent(userId, agentId);
         userContextManager.clearContext(userId);
         await sendTelegramMessage(chatId, `Processando com *${model}*...`);
 
