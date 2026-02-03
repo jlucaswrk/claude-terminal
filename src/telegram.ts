@@ -291,15 +291,16 @@ export async function sendTelegramWorkspaceSelector(chatId: number): Promise<voi
     'Onde o agente vai trabalhar?',
     [
       [
-        { text: 'Home', callback_data: `workspace_${home}` },
-        { text: 'Desktop', callback_data: `workspace_${home}/Desktop` },
+        { text: '🏠 Home', callback_data: `workspace_${home}` },
+        { text: '📂 Desktop', callback_data: `workspace_${home}/Desktop` },
       ],
       [
-        { text: 'Documents', callback_data: `workspace_${home}/Documents` },
-        { text: 'Pular', callback_data: 'workspace_skip' },
+        { text: '📄 Documents', callback_data: `workspace_${home}/Documents` },
+        { text: '🧪 Sandbox', callback_data: 'workspace_sandbox' },
       ],
       [
-        { text: 'Customizado', callback_data: 'workspace_custom' },
+        { text: '✏️ Customizado', callback_data: 'workspace_custom' },
+        { text: '⏭️ Pular', callback_data: 'workspace_skip' },
       ],
     ]
   );

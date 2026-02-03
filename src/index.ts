@@ -71,6 +71,10 @@ import {
   sendTelegramModelSelector,
   answerCallbackQuery,
   leaveTelegramGroup,
+  sendGroupCreationInstructions,
+  sendGroupLinkedConfirmation,
+  SANDBOX_DIR,
+  ensureSandboxDirectory,
 } from './telegram';
 import { MessageRouter } from './message-router';
 import { TelegramCommandHandler } from './telegram-command-handler';
@@ -85,6 +89,7 @@ import { DEFAULTS, PRIORITY_VALUES } from './types';
 import type { Agent, AgentType, ModelMode, UserMode, UserPreferences } from './types';
 import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
 import { uploadToKapso, downloadFromKapso } from './storage';
+import { TelegramTokenManager } from './telegram-tokens';
 
 // =============================================================================
 // Configuration
@@ -196,6 +201,12 @@ const userContextManager = new UserContextManager();
 
 // Message router for groups/main number routing
 const messageRouter = new MessageRouter(agentManager, config.userPhone);
+
+// Telegram token manager for Dojo onboarding
+const telegramTokenManager = new TelegramTokenManager();
+
+// Track pending agent creation for /link command (userId -> agentId)
+const pendingAgentLink = new Map<string, string>();
 
 // Status emojis for agent display
 const STATUS_EMOJI: Record<string, string> = {
@@ -582,10 +593,59 @@ async function handleTelegramMessage(message: any): Promise<void> {
  * Handle Telegram commands
  */
 async function handleTelegramCommand(chatId: number, userId: string, text: string): Promise<void> {
-  const command = text.split(' ')[0].toLowerCase();
+  const parts = text.split(' ');
+  const command = parts[0].toLowerCase();
+  const args = parts.slice(1).join(' ').trim();
 
   switch (command) {
     case '/start':
+      // Check if there's a token for account linking
+      if (args) {
+        const tokenResult = telegramTokenManager.validateToken(args);
+        if (tokenResult) {
+          // Valid token - link accounts
+          const linkedUserId = tokenResult.userId;
+          const linkedUsername = tokenResult.username;
+
+          // Delete the used token
+          telegramTokenManager.deleteToken(args);
+
+          // Update user preferences with telegram chat ID and mark onboarding complete
+          const existingPrefs = persistenceService.loadUserPreferences(linkedUserId);
+          const prefs: UserPreferences = {
+            userId: linkedUserId,
+            mode: 'dojo',
+            telegramUsername: linkedUsername,
+            telegramChatId: chatId,
+            onboardingComplete: true,
+          };
+          persistenceService.saveUserPreferences(prefs);
+
+          console.log(`Linked Telegram account: ${linkedUsername} (chat ${chatId}) to user ${linkedUserId}`);
+
+          // Send welcome message
+          await sendTelegramMessage(chatId,
+            `*Conta vinculada com sucesso!* 🎉\n\n` +
+            `Bem-vindo ao Dojo, @${linkedUsername}!\n\n` +
+            `*Comandos:*\n` +
+            `/criar - Criar novo agente\n` +
+            `/agentes - Listar agentes\n` +
+            `/status - Status de todos\n` +
+            `/link - Vincular grupo a agente\n` +
+            `/help - Ajuda\n\n` +
+            `Use /criar para criar seu primeiro agente.`
+          );
+          return;
+        } else {
+          // Invalid or expired token
+          await sendTelegramMessage(chatId,
+            '❌ *Token inválido ou expirado*\n\n' +
+            'Solicite um novo link no WhatsApp.'
+          );
+          return;
+        }
+      }
+      // No token - show command list for existing users
       await sendTelegramCommandList(chatId);
       break;
 
@@ -617,6 +677,10 @@ async function handleTelegramCommand(chatId: number, userId: string, text: strin
       await sendTelegramCommandList(chatId);
       break;
 
+    case '/link':
+      await handleTelegramLinkCommand(chatId, userId);
+      break;
+
     default:
       await sendTelegramMessage(chatId, 'Comando nao reconhecido. Use /help.');
   }
@@ -632,6 +696,35 @@ async function handleTelegramFlowInput(chatId: number, userId: string, text: str
   if (flow === 'create_agent' && state === 'awaiting_name') {
     userContextManager.setAgentName(userId, text.trim());
     await sendTelegramAgentTypeSelector(chatId);
+  } else if (flow === 'create_agent' && state === 'awaiting_workspace') {
+    // Custom workspace path input
+    const { existsSync } = await import('fs');
+    const workspacePath = text.trim();
+
+    if (existsSync(workspacePath)) {
+      userContextManager.setAgentWorkspace(userId, workspacePath);
+      await sendTelegramModelModeSelector(chatId);
+    } else {
+      // Path doesn't exist - suggest alternatives
+      await sendTelegramButtons(chatId,
+        `⚠️ *Caminho não encontrado*\n\n` +
+        `\`${workspacePath}\` não existe.\n\n` +
+        `Escolha uma alternativa:`,
+        [
+          [
+            { text: '🏠 Home', callback_data: `workspace_${process.env.HOME || '/home'}` },
+            { text: '📂 Desktop', callback_data: `workspace_${process.env.HOME || '/home'}/Desktop` },
+          ],
+          [
+            { text: '🧪 Sandbox', callback_data: 'workspace_sandbox' },
+            { text: '⏭️ Pular', callback_data: 'workspace_skip' },
+          ],
+          [
+            { text: '✏️ Tentar novamente', callback_data: 'workspace_custom' },
+          ],
+        ]
+      );
+    }
   }
   // Other states are handled by callback queries (button presses)
 }
@@ -672,13 +765,49 @@ async function handleTelegramCallback(query: any): Promise<void> {
     await sendTelegramWorkspaceSelector(chatId);
   }
   else if (data.startsWith('workspace_')) {
-    const workspace = data.replace('workspace_', '');
-    if (workspace !== 'skip' && workspace !== 'custom') {
-      userContextManager.setAgentWorkspace(userId, workspace);
-    } else {
+    const workspaceValue = data.replace('workspace_', '');
+
+    if (workspaceValue === 'skip') {
       userContextManager.setAgentWorkspace(userId, null);
+      await sendTelegramModelModeSelector(chatId);
+    } else if (workspaceValue === 'custom') {
+      // Ask for custom path
+      userContextManager.setAwaitingCustomWorkspace(userId);
+      await sendTelegramMessage(chatId,
+        '*Workspace personalizado*\n\n' +
+        'Envie o caminho completo do diretório:\n' +
+        'Exemplo: `/Users/lucas/projects/myapp`'
+      );
+    } else if (workspaceValue === 'sandbox') {
+      // Use sandbox directory
+      const sandboxPath = ensureSandboxDirectory();
+      userContextManager.setAgentWorkspace(userId, sandboxPath);
+      await sendTelegramModelModeSelector(chatId);
+    } else {
+      // Validate that the path exists
+      const { existsSync } = await import('fs');
+      if (existsSync(workspaceValue)) {
+        userContextManager.setAgentWorkspace(userId, workspaceValue);
+        await sendTelegramModelModeSelector(chatId);
+      } else {
+        // Path doesn't exist - suggest alternatives
+        await sendTelegramButtons(chatId,
+          `⚠️ *Caminho não encontrado*\n\n` +
+          `\`${workspaceValue}\` não existe.\n\n` +
+          `Escolha uma alternativa:`,
+          [
+            [
+              { text: '🏠 Home', callback_data: `workspace_${process.env.HOME || '/home'}` },
+              { text: '📂 Desktop', callback_data: `workspace_${process.env.HOME || '/home'}/Desktop` },
+            ],
+            [
+              { text: '🧪 Sandbox', callback_data: 'workspace_sandbox' },
+              { text: '⏭️ Pular', callback_data: 'workspace_skip' },
+            ],
+          ]
+        );
+      }
     }
-    await sendTelegramModelModeSelector(chatId);
   }
   else if (data.startsWith('modelmode_')) {
     const modelMode = data.replace('modelmode_', '') as ModelMode;
@@ -713,11 +842,20 @@ async function handleTelegramCallback(query: any): Promise<void> {
         agentManager.updateAgentMode(agent.id, flowData.agentMode as 'conversational' | 'ralph');
       }
 
+      // Track this agent for /link command
+      pendingAgentLink.set(userId, agent.id);
+
       userContextManager.clearContext(userId);
 
+      // Send success message with group creation instructions
       await sendTelegramMessage(chatId,
-        `Agente *${agent.name}* criado!\n\n` +
-        `Envie mensagens aqui para conversar com ele.`
+        `✅ *Agente criado!*\n\n` +
+        `${flowData.emoji || '🤖'} *${agent.name}*\n\n` +
+        `📱 *Próximo passo: Criar grupo*\n\n` +
+        `1️⃣ Crie um novo grupo no Telegram\n` +
+        `2️⃣ Adicione @ClaudeTerminalBot ao grupo\n` +
+        `3️⃣ Envie /link no grupo\n\n` +
+        `_O grupo será vinculado ao agente ${agent.name}._`
       );
     }
   }
@@ -893,6 +1031,79 @@ async function handleTelegramAgentMenu(chatId: number, userId: string, agentId: 
       ],
     ]
   );
+}
+
+/**
+ * Handle /link command for linking a Telegram group to an agent
+ * Must be called from within a group chat
+ */
+async function handleTelegramLinkCommand(chatId: number, userId: string): Promise<void> {
+  // Find user's most recently created agent without a telegram chat ID
+  const agents = agentManager.listAgents(userId)
+    .filter(a => a.name !== 'Ronin' && !a.telegramChatId)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+  // Also check if there's a pending agent link for this user
+  const pendingAgentId = pendingAgentLink.get(userId);
+  let targetAgent = pendingAgentId ? agentManager.getAgent(pendingAgentId) : null;
+
+  // If no pending agent, use most recent unlinked agent
+  if (!targetAgent || targetAgent.telegramChatId) {
+    if (agents.length === 0) {
+      await sendTelegramMessage(chatId,
+        '❌ *Nenhum agente disponível para vincular*\n\n' +
+        'Crie um agente primeiro com /criar no chat privado.'
+      );
+      return;
+    }
+    targetAgent = agents[0];
+  }
+
+  // Check if this group is already linked to an agent
+  const existingAgent = agentManager.getAgentByTelegramChatId(chatId);
+  if (existingAgent) {
+    await sendTelegramMessage(chatId,
+      `⚠️ *Grupo já vinculado*\n\n` +
+      `Este grupo está conectado ao agente *${existingAgent.name}*.\n` +
+      `Cada grupo só pode ter um agente.`
+    );
+    return;
+  }
+
+  // Link the group to the agent
+  const success = agentManager.setTelegramChatId(targetAgent.id, chatId);
+
+  if (success) {
+    // Clear pending link if any
+    pendingAgentLink.delete(userId);
+
+    // Send confirmation in the group
+    await sendGroupLinkedConfirmation(chatId, targetAgent.name, targetAgent.emoji || '🤖');
+
+    // Also notify user's private chat if available
+    const prefs = persistenceService.loadUserPreferences(userId);
+    if (prefs?.telegramChatId && prefs.telegramChatId !== chatId) {
+      await sendTelegramMessage(prefs.telegramChatId,
+        `✅ *Grupo vinculado!*\n\n` +
+        `Agente *${targetAgent.emoji || '🤖'} ${targetAgent.name}* agora está conectado ao grupo.`
+      );
+    }
+
+    console.log(`Linked Telegram group ${chatId} to agent ${targetAgent.name} (${targetAgent.id})`);
+  } else {
+    // Rollback: delete the agent if linking failed and it was just created
+    const wasJustCreated = pendingAgentLink.get(userId) === targetAgent.id;
+    if (wasJustCreated) {
+      agentManager.deleteAgent(targetAgent.id);
+      pendingAgentLink.delete(userId);
+      console.log(`Rolled back agent ${targetAgent.id} creation due to linking failure`);
+    }
+
+    await sendTelegramMessage(chatId,
+      '❌ *Erro ao vincular grupo*\n\n' +
+      'Tente novamente ou crie um novo agente.'
+    );
+  }
 }
 
 // =============================================================================
@@ -3789,12 +4000,30 @@ async function handleOnboardingFlow(
     const username = text.trim().replace('@', '');
     userContextManager.setTelegramUsername(userId, username);
 
-    // Save preferences
+    // Generate unique token for Telegram linking (7-day expiration)
+    const token = telegramTokenManager.generateToken(userId, username);
+
+    // Create Ronin agent automatically (read-only, Haiku-only, sandbox workspace)
+    const sandboxPath = ensureSandboxDirectory();
+    let roninAgent = agentManager.listAgents(userId).find(a => a.name === 'Ronin');
+    if (!roninAgent) {
+      roninAgent = agentManager.createAgent(
+        userId,
+        'Ronin',
+        sandboxPath,
+        '🥷',
+        'claude',
+        'haiku' // Fixed Haiku model
+      );
+      console.log(`Created Ronin agent for user ${userId} with sandbox workspace`);
+    }
+
+    // Save preferences (onboarding NOT complete until Telegram linked)
     const prefs: UserPreferences = {
       userId,
       mode: 'dojo',
       telegramUsername: username,
-      onboardingComplete: true,
+      onboardingComplete: false, // Will be completed when user links via Telegram
     };
     persistenceService.saveUserPreferences(prefs);
 
@@ -3805,9 +4034,18 @@ async function handleOnboardingFlow(
     const botInfo = await getBotInfo();
     const botUsername = botInfo?.username || 'ClaudeTerminalBot';
 
-    // Send confirmation
-    await sendDojoActivated(userId, botUsername);
-    return { status: 'dojo_activated' };
+    // Send Telegram deep link with token
+    const deepLink = `https://t.me/${botUsername}?start=${token}`;
+    await sendWhatsApp(userId,
+      `*Dojo configurado!* 🥋\n\n` +
+      `*Passo final:* Conecte seu Telegram\n\n` +
+      `1️⃣ Clique no link abaixo:\n${deepLink}\n\n` +
+      `2️⃣ Aperte "Start" no Telegram\n\n` +
+      `_Link válido por 7 dias._\n\n` +
+      `Enquanto isso, o *Ronin 🥷* está disponível aqui para consultas rápidas (somente leitura).`
+    );
+
+    return { status: 'dojo_token_sent' };
   }
 
   // Unexpected state - clear and restart
