@@ -160,7 +160,7 @@ export class QueueManager {
   private activeCount: number = 0;
 
   // Store last errors for retry functionality
-  private lastErrors = new Map<string, { agentId: string; prompt: string; model: 'haiku' | 'opus' }>();
+  private lastErrors = new Map<string, { agentId: string; prompt: string; model: 'haiku' | 'sonnet' | 'opus' }>();
 
   constructor(
     semaphore: Semaphore,
@@ -267,7 +267,9 @@ export class QueueManager {
    * Process a single task
    */
   private async processTask(task: QueueTask): Promise<ProcessingResult> {
-    const { agentId, prompt, model, userId, images } = task;
+    const { agentId, prompt, model, userId, images, replyTo } = task;
+    // Use replyTo if specified (for group messages), otherwise default to userId
+    const sendTo = replyTo || userId;
 
     // Progress tracking state
     let lastToolName = '';
@@ -296,7 +298,7 @@ export class QueueManager {
       );
 
       // Notify user that task is starting
-      await this.notifyTaskStart(userId, agent.name, model, prompt);
+      await this.notifyTaskStart(sendTo, agent.name, model, prompt);
 
       // Start progress update interval (every 30 seconds)
       progressInterval = setInterval(async () => {
@@ -306,7 +308,7 @@ export class QueueManager {
           const emoji = TOOL_EMOJI[lastToolName] || '🌐';
           const message = `${emoji} *${agent.name}*: _${toolDesc}_ (${elapsed})`;
           try {
-            await this.sendWhatsApp(userId, message);
+            await this.sendWhatsApp(sendTo, message);
           } catch (err) {
             console.error('Failed to send progress update:', err);
           }
@@ -326,8 +328,8 @@ export class QueueManager {
       if (response.images.length > 0 && this.sendWhatsAppImage) {
         for (const imageUrl of response.images) {
           try {
-            await this.sendWhatsAppImage(userId, imageUrl);
-            console.log(`[image] Sent to user`);
+            await this.sendWhatsAppImage(sendTo, imageUrl);
+            console.log(`[image] Sent to ${replyTo ? 'group' : 'user'}`);
           } catch (err) {
             console.error('Failed to send image:', err);
           }
@@ -339,7 +341,7 @@ export class QueueManager {
         const agentEmoji = agent.emoji || '🤖';
         const header = `${agentEmoji} *${agent.name}*\n───\n`;
         const formattedResponse = header + response.text;
-        await this.sendWhatsApp(userId, formattedResponse);
+        await this.sendWhatsApp(sendTo, formattedResponse);
       }
 
       // Send created files (documents, spreadsheets, etc.)
@@ -347,13 +349,13 @@ export class QueueManager {
         for (const file of response.files) {
           try {
             await this.sendWhatsAppMedia(
-              userId,
+              sendTo,
               file.mediaId,
               file.mediaType,
               file.filename,
               `📎 ${file.filename}`
             );
-            console.log(`[file] Sent ${file.filename} to user`);
+            console.log(`[file] Sent ${file.filename} to ${replyTo ? 'group' : 'user'}`);
           } catch (err) {
             console.error(`Failed to send file ${file.filename}:`, err);
           }
@@ -410,7 +412,7 @@ export class QueueManager {
       );
 
       // Notify user of error (with recovery buttons)
-      await this.notifyTaskError(userId, agentId, errorMessage, prompt, model);
+      await this.notifyTaskError(sendTo, userId, agentId, errorMessage, prompt, model);
 
       return {
         taskId: task.id,
@@ -433,7 +435,9 @@ export class QueueManager {
     task: QueueTask,
     agent: { id: string; name: string; emoji?: string; workspace?: string }
   ): Promise<ProcessingResult> {
-    const { agentId, prompt, userId } = task;
+    const { agentId, prompt, userId, replyTo } = task;
+    // Use replyTo if specified (for group messages), otherwise default to userId
+    const sendTo = replyTo || userId;
 
     try {
       // Update agent status to processing (internal only, no WhatsApp message)
@@ -454,7 +458,7 @@ export class QueueManager {
       // Format the result for WhatsApp
       const formattedResult = formatBashResult(result);
       const header = `${agentEmoji} *${agent.name}*\n`;
-      await this.sendWhatsApp(userId, header + formattedResult);
+      await this.sendWhatsApp(sendTo, header + formattedResult);
 
       // If output was truncated and we have media capabilities, send full output as file
       if (result.truncated && result.output && this.sendWhatsAppMedia) {
@@ -466,7 +470,7 @@ export class QueueManager {
           const mediaId = await uploadToKapso(buffer, filename, 'text/plain');
           if (mediaId) {
             await this.sendWhatsAppMedia(
-              userId,
+              sendTo,
               mediaId,
               'document',
               filename,
@@ -521,9 +525,8 @@ export class QueueManager {
       );
 
       // Notify user of error
-      const agentEmoji = agent.emoji || '⚡';
       await this.sendWhatsApp(
-        userId,
+        sendTo,
         `❌ *${agent.name}*: Erro ao executar comando\n${this.truncatePrompt(errorMessage, 100)}`
       );
 
@@ -559,22 +562,23 @@ export class QueueManager {
    * Notify user when a task fails (with recovery buttons)
    */
   private async notifyTaskError(
+    sendTo: string,
     userId: string,
     agentId: string,
     errorMessage: string,
     prompt: string,
-    model: 'haiku' | 'opus'
+    model: 'haiku' | 'opus' | 'sonnet'
   ): Promise<void> {
     const agent = this.agentManager.getAgent(agentId);
     const agentName = agent?.name || 'Unknown';
 
-    // Store error context for retry functionality
+    // Store error context for retry functionality (always use userId for error tracking)
     this.lastErrors.set(userId, { agentId, prompt, model });
 
     // Try to send error with action buttons (Flow 11: Error Recovery)
     if (this.sendErrorWithActions) {
       try {
-        await this.sendErrorWithActions(userId, agentName, errorMessage);
+        await this.sendErrorWithActions(sendTo, agentName, errorMessage);
         return;
       } catch (error) {
         console.error('Failed to send error with actions, falling back to plain text:', error);
@@ -584,7 +588,7 @@ export class QueueManager {
     // Fallback to plain text message
     const message = `❌ Erro no agente *${agentName}*: ${this.truncatePrompt(errorMessage, 100)}`;
     try {
-      await this.sendWhatsApp(userId, message);
+      await this.sendWhatsApp(sendTo, message);
     } catch (error) {
       console.error('Failed to send error notification:', error);
     }
@@ -593,7 +597,7 @@ export class QueueManager {
   /**
    * Get last error for a user (used for retry functionality)
    */
-  getLastError(userId: string): { agentId: string; prompt: string; model: 'haiku' | 'opus' } | undefined {
+  getLastError(userId: string): { agentId: string; prompt: string; model: 'haiku' | 'sonnet' | 'opus' } | undefined {
     return this.lastErrors.get(userId);
   }
 

@@ -35,7 +35,10 @@ import {
   sendLoopBlocked,
   sendLoopError,
   sendLoopControls,
+  sendRejectPrompt,
+  sendUnlinkedGroupMessage,
 } from './whatsapp';
+import { MessageRouter } from './message-router';
 import { transcribeAudio } from './transcription';
 import { PersistenceService } from './persistence';
 import { AgentManager, AgentValidationError } from './agent-manager';
@@ -94,6 +97,18 @@ ralphLoopManager.setProgressCallback(async (loopId, iteration, maxIterations, ac
 
 // User context manager (in-memory, not persisted)
 const userContextManager = new UserContextManager();
+
+// Message router for groups/main number routing
+const messageRouter = new MessageRouter(agentManager, config.userPhone);
+
+// Status emojis for agent display
+const STATUS_EMOJI: Record<string, string> = {
+  idle: '⚪',
+  processing: '🔵',
+  error: '🔴',
+  'ralph-loop': '🔄',
+  'ralph-paused': '⏸️',
+};
 
 // Map to store selected agents for prompt sending (agentId awaiting model selection)
 const pendingAgentSelection = new Map<string, string>();
@@ -162,7 +177,7 @@ app.post('/webhook', async (c) => {
     // Route by message type
     switch (message.type) {
       case 'text':
-        return c.json(await handleTextMessage(userId, message.text!, message.messageId));
+        return c.json(await handleTextMessage(userId, message.text!, message.messageId, message.groupId));
 
       case 'button':
         return c.json(await handleButtonReply(userId, message.buttonId!));
@@ -196,9 +211,50 @@ app.post('/webhook', async (c) => {
 async function handleTextMessage(
   userId: string,
   text: string,
-  messageId?: string
+  messageId?: string,
+  groupId?: string
 ): Promise<{ status: string }> {
-  console.log(`> ${text}`);
+  console.log(`> ${text}${groupId ? ` [group: ${groupId}]` : ''}`);
+
+  // Handle group messages via router
+  if (groupId) {
+    const route = messageRouter.route(userId, groupId, text);
+
+    if (route.action === 'prompt') {
+      return handleGroupPrompt(userId, groupId, route.agentId!, route.text!, route.model, messageId);
+    }
+    if (route.action === 'reject_unlinked_group') {
+      await sendUnlinkedGroupMessage(groupId);
+      return { status: 'rejected_unlinked_group' };
+    }
+    // For groups, we don't handle other actions - they must go through the main number
+    return { status: 'group_action_not_supported' };
+  }
+
+  // Handle main number text that isn't a command
+  // Check if router wants to reject it (when not in a flow)
+  // Only check router when NOT in a flow and NOT pending agent selection
+  if (!userContextManager.isInFlow(userId) && !pendingAgentSelection.has(userId)) {
+    const route = messageRouter.route(userId, undefined, text);
+
+    if (route.action === 'status') {
+      return handleStatusCommand(userId);
+    }
+    if (route.action === 'reset_all') {
+      return handleResetAllCommand(userId);
+    }
+    // Only reject prompts that are plain text (not commands or bash mode)
+    // Commands starting with / or $ or > should fall through to existing handling
+    if (route.action === 'reject_prompt') {
+      const trimmed = text.trim();
+      const isCommand = trimmed.startsWith('/') || trimmed.startsWith('$') || trimmed.startsWith('>');
+      if (!isCommand && !userContextManager.isInBashMode(userId)) {
+        await sendRejectPrompt(userId);
+        return { status: 'rejected_prompt' };
+      }
+    }
+    // menu and bash fall through to existing handling
+  }
 
   // Check for session migration on first interaction
   if (detectOldSessions(userId)) {
@@ -462,6 +518,102 @@ async function handleAudioMessage(
 
   // Now treat the transcribed text as a regular text message
   return handleTextMessage(userId, transcribedText, messageId);
+}
+
+// =============================================================================
+// Group and Status Handlers
+// =============================================================================
+
+/**
+ * Handle prompt from a group (linked to an agent)
+ */
+async function handleGroupPrompt(
+  userId: string,
+  groupId: string,
+  agentId: string,
+  text: string,
+  model: 'haiku' | 'sonnet' | 'opus' | undefined,
+  messageId?: string
+): Promise<{ status: string }> {
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    await sendWhatsApp(groupId, '❌ Agente não encontrado.');
+    return { status: 'agent_not_found' };
+  }
+
+  // If model not specified and agent uses selection mode, ask
+  if (!model && agent.modelMode === 'selection') {
+    userContextManager.setPendingPrompt(userId, text, messageId);
+    pendingAgentSelection.set(userId, agentId);
+    await sendModelSelector(groupId, messageId);
+    return { status: 'awaiting_model' };
+  }
+
+  // Use specified model or agent's fixed model
+  const finalModel = model || (agent.modelMode as 'haiku' | 'sonnet' | 'opus');
+
+  // Check if agent is busy
+  if (agent.status === 'processing') {
+    await sendWhatsApp(
+      groupId,
+      `⏳ Agente *${agent.name}* ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
+    );
+  } else {
+    await sendWhatsApp(groupId, `Processando com ${finalModel}...`);
+  }
+
+  // Enqueue task - respond to the group
+  const task = queueManager.enqueue({
+    agentId: agent.id,
+    prompt: text,
+    model: finalModel,
+    userId,
+    replyTo: groupId, // Send response to group
+  });
+
+  console.log(`Task ${task.id} enqueued for agent ${agent.name} (group: ${groupId})`);
+  return { status: 'queued' };
+}
+
+/**
+ * Handle /status command
+ */
+async function handleStatusCommand(userId: string): Promise<{ status: string }> {
+  const agents = agentManager.listAgents(userId);
+
+  if (agents.length === 0) {
+    await sendWhatsApp(userId, '📭 Nenhum agente criado.\n\nDigite / para criar um agente.');
+    return { status: 'no_agents' };
+  }
+
+  const lines = agents.map((a) => {
+    const emoji = a.emoji || '🤖';
+    const status = STATUS_EMOJI[a.status] || '❓';
+    const mode = a.modelMode === 'selection' ? '🔄' : `⚡${a.modelMode}`;
+    return `${emoji} *${a.name}* ${status}\n   ${mode} | ${a.statusDetails}`;
+  });
+
+  await sendWhatsApp(userId, `📊 *Status dos agentes*\n\n${lines.join('\n\n')}`);
+  return { status: 'status_sent' };
+}
+
+/**
+ * Handle /reset all command
+ */
+async function handleResetAllCommand(userId: string): Promise<{ status: string }> {
+  const agents = agentManager.listAgents(userId);
+  let count = 0;
+
+  for (const agent of agents) {
+    if (agent.sessionId) {
+      terminal.clearSession(userId, agent.id);
+      agentManager.clearSessionId(agent.id);
+      count++;
+    }
+  }
+
+  await sendWhatsApp(userId, `✅ ${count} sessão(ões) resetada(s).`);
+  return { status: 'reset_all' };
 }
 
 // =============================================================================
@@ -2728,6 +2880,7 @@ export {
   terminal,
   ralphLoopManager,
   pendingAgentSelection,
+  messageRouter,
 };
 
 // =============================================================================
