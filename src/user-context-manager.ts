@@ -5,7 +5,7 @@
  * configuring priorities, etc. All state is in-memory (not persisted).
  */
 
-import type { UserContext } from './types';
+import type { UserContext, ModelMode } from './types';
 
 /**
  * Flow types supported by the context manager
@@ -83,7 +83,7 @@ export class UserContextManager {
 
   // ============================================
   // Create Agent Flow
-  // States: awaiting_name → awaiting_emoji → awaiting_workspace_choice → (awaiting_workspace) → awaiting_confirmation
+  // States: awaiting_name → awaiting_type → awaiting_emoji → awaiting_mode → awaiting_workspace_choice → (awaiting_workspace) → awaiting_model_mode → awaiting_confirmation
   // ============================================
 
   /**
@@ -118,7 +118,7 @@ export class UserContextManager {
 
   /**
    * Set the agent emoji in the create flow
-   * Advances state to awaiting_workspace_choice
+   * Advances state to awaiting_mode
    */
   setAgentEmoji(userId: string, emoji: string): void {
     const context = this.contexts.get(userId);
@@ -130,7 +130,7 @@ export class UserContextManager {
       ...context.flowData,
       emoji,
     };
-    context.flowState = 'awaiting_workspace_choice';
+    context.flowState = 'awaiting_mode';
     this.contexts.set(userId, context);
   }
 
@@ -149,7 +149,7 @@ export class UserContextManager {
 
   /**
    * Set the workspace in the create flow
-   * Advances state to awaiting_confirmation
+   * Advances state to awaiting_model_mode
    */
   setAgentWorkspace(userId: string, workspace: string | null): void {
     const context = this.contexts.get(userId);
@@ -161,14 +161,21 @@ export class UserContextManager {
       ...context.flowData,
       workspace: workspace ?? undefined,
     };
-    context.flowState = 'awaiting_confirmation';
+    context.flowState = 'awaiting_model_mode';
     this.contexts.set(userId, context);
   }
 
   /**
    * Get the data collected during create agent flow
    */
-  getCreateAgentData(userId: string): { agentName?: string; agentType?: 'claude' | 'bash'; emoji?: string; workspace?: string } | undefined {
+  getCreateAgentData(userId: string): {
+    agentName?: string;
+    agentType?: 'claude' | 'bash';
+    emoji?: string;
+    agentMode?: 'conversational' | 'ralph';
+    workspace?: string;
+    modelMode?: ModelMode;
+  } | undefined {
     const context = this.contexts.get(userId);
     if (!context || context.currentFlow !== 'create_agent') {
       return undefined;
@@ -177,7 +184,9 @@ export class UserContextManager {
       agentName: context.flowData?.agentName as string | undefined,
       agentType: context.flowData?.agentType as 'claude' | 'bash' | undefined,
       emoji: context.flowData?.emoji as string | undefined,
+      agentMode: context.flowData?.agentMode as 'conversational' | 'ralph' | undefined,
       workspace: context.flowData?.workspace as string | undefined,
+      modelMode: context.flowData?.modelMode as ModelMode | undefined,
     };
   }
 
@@ -211,6 +220,58 @@ export class UserContextManager {
   isAwaitingWorkspace(userId: string): boolean {
     const context = this.contexts.get(userId);
     return context?.currentFlow === 'create_agent' && context?.flowState === 'awaiting_workspace';
+  }
+
+  /**
+   * Set agent mode (conversational/ralph) in create flow
+   * Advances state to awaiting_workspace_choice
+   */
+  setAgentMode(userId: string, mode: 'conversational' | 'ralph'): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'create_agent') {
+      throw new Error('Not in create agent flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      agentMode: mode,
+    };
+    context.flowState = 'awaiting_workspace_choice';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if awaiting agent mode selection
+   */
+  isAwaitingAgentMode(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'create_agent' && context?.flowState === 'awaiting_mode';
+  }
+
+  /**
+   * Set model mode in create flow
+   * Advances state to awaiting_confirmation
+   */
+  setAgentModelMode(userId: string, modelMode: ModelMode): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'create_agent') {
+      throw new Error('Not in create agent flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      modelMode,
+    };
+    context.flowState = 'awaiting_confirmation';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if awaiting model mode selection
+   */
+  isAwaitingModelMode(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'create_agent' && context?.flowState === 'awaiting_model_mode';
   }
 
   /**

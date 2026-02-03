@@ -94,13 +94,15 @@ export interface RalphLoopState {
 export interface UserContext {
   userId: string;
   currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'configure_ralph';
-  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations';
+  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations';
   flowData?: {
     agentName?: string;
     agentId?: string;
     agentType?: AgentType;
     emoji?: string;
+    agentMode?: 'conversational' | 'ralph';
     workspace?: string;
+    modelMode?: ModelMode;
     priority?: string;
     [key: string]: unknown;
   };
