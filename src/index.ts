@@ -106,10 +106,15 @@ import {
   sendGroupCustomWorkspacePrompt,
   validateGroupAgentName,
   getAgentSandboxPath,
+  // Topic routing
+  isChatForum,
+  TELEGRAM_ERRORS,
+  startTypingIndicator,
 } from './telegram';
 import { GroupOnboardingManager } from './group-onboarding-manager';
 import { MessageRouter } from './message-router';
 import { TelegramCommandHandler } from './telegram-command-handler';
+import { topicManager } from './topic-manager';
 import { transcribeAudio } from './transcription';
 import { PersistenceService } from './persistence';
 import { AgentManager, AgentValidationError } from './agent-manager';
@@ -215,7 +220,7 @@ const queueManager = new QueueManager(
 );
 
 // Telegram command handler (stateless router)
-const telegramCommandHandler = new TelegramCommandHandler(agentManager, groupOnboardingManager);
+const telegramCommandHandler = new TelegramCommandHandler(agentManager, groupOnboardingManager, topicManager);
 
 // Ralph loop manager (for autonomous Ralph mode execution)
 const ralphLoopManager = new RalphLoopManager(semaphore, agentManager, persistenceService, terminal);
@@ -602,13 +607,15 @@ async function handleTelegramMessage(message: any): Promise<void> {
   const caption = message.caption || '';
   const from = message.from;
   const chatType = message.chat.type || 'private';
+  const threadId = message.message_thread_id as number | undefined;
 
   // Log message type
   const hasPhoto = !!message.photo;
   const hasDocument = !!message.document;
   const msgType = hasPhoto ? '[photo]' : hasDocument ? '[document]' : text.slice(0, 50);
-  console.log(`[telegram] ${from.username || from.id} (${chatType}): ${msgType}`);
-  console.log(`[telegram] DEBUG: chatId=${chatId}, chatType=${chatType}, from.username=${from.username}, from.id=${from.id}`);
+  const threadInfo = threadId ? ` [thread:${threadId}]` : '';
+  console.log(`[telegram] ${from.username || from.id} (${chatType}${threadInfo}): ${msgType}`);
+  console.log(`[telegram] DEBUG: chatId=${chatId}, chatType=${chatType}, threadId=${threadId}, from.username=${from.username}, from.id=${from.id}`);
 
   // Find user by telegram username
   const allPrefs = persistenceService.getAllUserPreferences();
@@ -699,8 +706,12 @@ async function handleTelegramMessage(message: any): Promise<void> {
 
   // Route based on chat type using TelegramCommandHandler
   if (isGroup) {
-    // Group message routing
-    const route = telegramCommandHandler.routeGroupMessage(chatId, userId, text, from.id);
+    // Check if chat is a forum (has topics enabled)
+    // Note: is_forum is available in the chat object for supergroups
+    const isForum = message.chat.is_forum === true;
+
+    // Group message routing with topic support
+    const route = telegramCommandHandler.routeGroupMessage(chatId, userId, text, from.id, threadId, isForum);
 
     switch (route.action) {
       case 'command':
@@ -715,15 +726,22 @@ async function handleTelegramMessage(message: any): Promise<void> {
       case 'prompt':
         // Set active agent for continuous conversation support
         userContextManager.setActiveAgent(userId, route.agentId);
-        // Queue the prompt directly with the specified model
-        await sendTelegramMessage(chatId, `Processando com *${route.model}*...`);
-        queueManager.enqueue({
-          agentId: route.agentId,
-          prompt: route.text,
-          model: route.model!,
-          userId,
-          replyTo: chatId, // Number type for Telegram
-        });
+        // Start typing indicator in the correct topic
+        const stopTyping = startTypingIndicator(chatId, route.threadId);
+        try {
+          // Queue the prompt directly with the specified model
+          await sendTelegramMessage(chatId, `Processando com *${route.model}*...`, undefined, route.threadId);
+          queueManager.enqueue({
+            agentId: route.agentId,
+            prompt: route.text,
+            model: route.model!,
+            userId,
+            replyTo: chatId, // Number type for Telegram
+            // Store threadId for response routing (handled in queue-manager)
+          });
+        } finally {
+          stopTyping();
+        }
         return;
 
       case 'show_model_selector':
@@ -732,7 +750,13 @@ async function handleTelegramMessage(message: any): Promise<void> {
         // Store prompt and show model selector
         userContextManager.setPendingPrompt(userId, route.text, undefined);
         userContextManager.startPromptFlow(userId, route.agentId);
-        await sendTelegramModelSelector(chatId, agentManager.getAgent(route.agentId)?.name || 'Agent');
+        await sendTelegramButtons(chatId, `*Modelo para ${agentManager.getAgent(route.agentId)?.name || 'Agent'}*`, [
+          [
+            { text: 'Haiku', callback_data: 'model_haiku' },
+            { text: 'Sonnet', callback_data: 'model_sonnet' },
+            { text: 'Opus', callback_data: 'model_opus' },
+          ],
+        ], route.threadId);
         return;
 
       case 'ralph_loop':
@@ -761,7 +785,9 @@ async function handleTelegramMessage(message: any): Promise<void> {
         await sendTelegramMessage(chatId,
           '⚠️ *Grupo sem agente vinculado*\n\n' +
           'Este grupo não está conectado a nenhum agente.\n' +
-          'Crie um novo agente e vincule a este grupo, ou remova o bot.'
+          'Crie um novo agente e vincule a este grupo, ou remova o bot.',
+          undefined,
+          threadId
         );
         await sendTelegramButtons(chatId,
           'O que deseja fazer?',
@@ -770,8 +796,25 @@ async function handleTelegramMessage(message: any): Promise<void> {
               { text: 'Criar agente', callback_data: `orphan_recreate_${chatId}` },
               { text: 'Remover bot', callback_data: `orphan_leave_${chatId}` },
             ],
-          ]
+          ],
+          threadId
         );
+        return;
+
+      case 'topic_not_found':
+        // Topic doesn't exist - send educational error
+        await sendTelegramMessage(chatId, TELEGRAM_ERRORS.TOPIC_NOT_FOUND(route.threadId), undefined, route.threadId);
+        return;
+
+      case 'topic_closed':
+        // Topic is closed - send educational error
+        await sendTelegramMessage(chatId, TELEGRAM_ERRORS.TOPIC_CLOSED(route.topicName), undefined, route.threadId);
+        return;
+
+      case 'topic_ralph_active':
+        // Topic has active Ralph loop - queue message for later
+        await sendTelegramMessage(chatId, TELEGRAM_ERRORS.TOPIC_RALPH_ACTIVE(route.topicName), undefined, route.threadId);
+        // TODO: Actually queue the message for processing after Ralph completes
         return;
 
       case 'ignore':

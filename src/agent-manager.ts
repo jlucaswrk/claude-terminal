@@ -105,6 +105,7 @@ export class AgentManager {
       emoji,
       workspace,
       modelMode,
+      topics: [], // Initialize empty topics array
       title: '',
       status: 'idle',
       statusDetails: type === 'bash' ? 'Terminal pronto' : 'Aguardando prompt',
@@ -516,6 +517,22 @@ export class AgentManager {
     agent.workspace = workspace;
     agent.lastActivity = new Date();
     this.persist();
+  }
+
+  /**
+   * Set agent main session ID
+   * Used for topic routing - the mainSessionId is shared by the General topic
+   */
+  setMainSessionId(agentId: string, mainSessionId: string | undefined): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      return false;
+    }
+
+    agent.mainSessionId = mainSessionId;
+    agent.lastActivity = new Date();
+    this.persist();
+    return true;
   }
 
   /**

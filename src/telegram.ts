@@ -48,20 +48,32 @@ export function isTelegramConfigured(): boolean {
 
 /**
  * Send a text message to a Telegram chat
+ * @param chatId - The chat ID to send to
+ * @param text - Message text
+ * @param options - Additional SendMessageOptions
+ * @param threadId - Optional message_thread_id for forum topics (threadId > 1 routes to specific topic)
  */
 export async function sendTelegramMessage(
   chatId: number | string,
   text: string,
-  options?: TelegramBot.SendMessageOptions
+  options?: TelegramBot.SendMessageOptions,
+  threadId?: number
 ): Promise<TelegramBot.Message | null> {
   const telegramBot = getTelegramBot();
   if (!telegramBot) return null;
 
   try {
-    return await telegramBot.sendMessage(chatId, text, {
+    const sendOptions: TelegramBot.SendMessageOptions = {
       parse_mode: 'Markdown',
       ...options,
-    });
+    };
+
+    // Add thread ID for forum topics (threadId > 1 means specific topic)
+    if (threadId !== undefined && threadId > 1) {
+      sendOptions.message_thread_id = threadId;
+    }
+
+    return await telegramBot.sendMessage(chatId, text, sendOptions);
   } catch (error) {
     console.error('Failed to send Telegram message:', error);
     return null;
@@ -70,20 +82,28 @@ export async function sendTelegramMessage(
 
 /**
  * Send a document to a Telegram chat
+ * @param chatId - The chat ID to send to
+ * @param document - Document buffer or URL
+ * @param filename - File name
+ * @param caption - Optional caption
+ * @param threadId - Optional message_thread_id for forum topics (threadId > 1 routes to specific topic)
  */
 export async function sendTelegramDocument(
   chatId: number | string,
   document: Buffer | string,
   filename: string,
-  caption?: string
+  caption?: string,
+  threadId?: number
 ): Promise<TelegramBot.Message | null> {
   const telegramBot = getTelegramBot();
   if (!telegramBot) return null;
 
   try {
-    return await telegramBot.sendDocument(chatId, document, {
-      caption,
-    }, {
+    const options: TelegramBot.SendDocumentOptions = { caption };
+    if (threadId !== undefined && threadId > 1) {
+      options.message_thread_id = threadId;
+    }
+    return await telegramBot.sendDocument(chatId, document, options, {
       filename,
     });
   } catch (error) {
@@ -94,17 +114,26 @@ export async function sendTelegramDocument(
 
 /**
  * Send a photo to a Telegram chat
+ * @param chatId - The chat ID to send to
+ * @param photo - Photo buffer or URL
+ * @param caption - Optional caption
+ * @param threadId - Optional message_thread_id for forum topics (threadId > 1 routes to specific topic)
  */
 export async function sendTelegramPhoto(
   chatId: number | string,
   photo: Buffer | string,
-  caption?: string
+  caption?: string,
+  threadId?: number
 ): Promise<TelegramBot.Message | null> {
   const telegramBot = getTelegramBot();
   if (!telegramBot) return null;
 
   try {
-    return await telegramBot.sendPhoto(chatId, photo, { caption });
+    const options: TelegramBot.SendPhotoOptions = { caption };
+    if (threadId !== undefined && threadId > 1) {
+      options.message_thread_id = threadId;
+    }
+    return await telegramBot.sendPhoto(chatId, photo, options);
   } catch (error) {
     console.error('Failed to send Telegram photo:', error);
     return null;
@@ -113,22 +142,34 @@ export async function sendTelegramPhoto(
 
 /**
  * Send an inline keyboard with buttons
+ * @param chatId - The chat ID to send to
+ * @param text - Message text
+ * @param buttons - Array of button rows
+ * @param threadId - Optional message_thread_id for forum topics (threadId > 1 routes to specific topic)
  */
 export async function sendTelegramButtons(
   chatId: number | string,
   text: string,
-  buttons: Array<{ text: string; callback_data: string }[]>
+  buttons: Array<{ text: string; callback_data: string }[]>,
+  threadId?: number
 ): Promise<TelegramBot.Message | null> {
   const telegramBot = getTelegramBot();
   if (!telegramBot) return null;
 
   try {
-    return await telegramBot.sendMessage(chatId, text, {
+    const options: TelegramBot.SendMessageOptions = {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: buttons,
       },
-    });
+    };
+
+    // Add thread ID for forum topics (threadId > 1 means specific topic)
+    if (threadId !== undefined && threadId > 1) {
+      options.message_thread_id = threadId;
+    }
+
+    return await telegramBot.sendMessage(chatId, text, options);
   } catch (error) {
     console.error('Failed to send Telegram buttons:', error);
     return null;
@@ -1240,13 +1281,19 @@ export async function editTelegramMessage(
 /**
  * Send a chat action (typing indicator) to a Telegram chat
  * The typing indicator lasts approximately 5 seconds
+ * @param chatId - The chat ID
+ * @param threadId - Optional message_thread_id for forum topics (threadId > 1 routes to specific topic)
  */
-export async function sendTypingAction(chatId: number): Promise<boolean> {
+export async function sendTypingAction(chatId: number, threadId?: number): Promise<boolean> {
   const telegramBot = getTelegramBot();
   if (!telegramBot) return false;
 
   try {
-    await telegramBot.sendChatAction(chatId, 'typing');
+    const options: { message_thread_id?: number } = {};
+    if (threadId !== undefined && threadId > 1) {
+      options.message_thread_id = threadId;
+    }
+    await telegramBot.sendChatAction(chatId, 'typing', options);
     return true;
   } catch (error) {
     console.error('Failed to send typing action:', error);
@@ -1267,14 +1314,16 @@ export async function sendTypingAction(chatId: number): Promise<boolean> {
  *   stopTyping();
  * }
  * ```
+ * @param chatId - The chat ID
+ * @param threadId - Optional message_thread_id for forum topics (threadId > 1 routes to specific topic)
  */
-export function startTypingIndicator(chatId: number): () => void {
+export function startTypingIndicator(chatId: number, threadId?: number): () => void {
   // Send initial typing action
-  sendTypingAction(chatId);
+  sendTypingAction(chatId, threadId);
 
   // Auto-renew every 4 seconds (indicator lasts ~5 seconds)
   const intervalId = setInterval(() => {
-    sendTypingAction(chatId);
+    sendTypingAction(chatId, threadId);
   }, 4000);
 
   // Return stop function
@@ -1644,6 +1693,10 @@ export const TELEGRAM_ERRORS = {
   GROUP_LINKING_FAILED: '⚠️ Falha ao vincular grupo.\nTente adicionar o bot ao grupo novamente.',
   API_TIMEOUT: '⚠️ Tempo limite excedido.\nTente novamente em alguns segundos.',
   PROCESSING_ERROR: (agentName: string, error: string) => `❌ Erro no agente *${agentName}*:\n${error}`,
+  // Topic routing errors
+  TOPIC_NOT_FOUND: (topicId: number) => `⚠️ *Tópico não encontrado*\n\nO tópico #${topicId} não existe ou foi deletado.\n\nUse o tópico General ou crie um novo tópico com /topic.`,
+  TOPIC_CLOSED: (topicName: string) => `⚠️ *Tópico fechado*\n\nO tópico "${topicName}" está fechado.\n\nReabra com /reopen ou use outro tópico.`,
+  TOPIC_RALPH_ACTIVE: (topicName: string) => `⏳ *Ralph em execução*\n\nO tópico "${topicName}" está executando um loop Ralph.\n\nSua mensagem foi adicionada à fila e será processada após a conclusão.`,
 } as const;
 
 /**

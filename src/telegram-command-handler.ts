@@ -3,26 +3,35 @@
  *
  * Implements a stateless router pattern that returns TelegramRouteResult actions
  * for different message types and contexts (group vs private chat).
+ *
+ * Topic Routing:
+ * - threadId=undefined or threadId=1 → routes to General topic (mainSessionId)
+ * - threadId>1 → routes to specific topic.sessionId
+ * - Groups without topics enabled → hybrid mode, all messages to mainSessionId
  */
 
-import type { Agent, ModelMode } from './types';
+import type { Agent, AgentTopic, ModelMode } from './types';
 import { AgentManager } from './agent-manager';
 import type { GroupOnboardingManager } from './group-onboarding-manager';
+import type { TopicManager } from './topic-manager';
 
 /**
  * Result of routing a Telegram message
  */
 export type TelegramRouteResult =
-  | { action: 'prompt'; agentId: string; text: string; model?: 'haiku' | 'sonnet' | 'opus'; chatId: number }
-  | { action: 'show_model_selector'; agentId: string; text: string; chatId: number }
+  | { action: 'prompt'; agentId: string; text: string; model?: 'haiku' | 'sonnet' | 'opus'; chatId: number; threadId?: number; sessionId?: string }
+  | { action: 'show_model_selector'; agentId: string; text: string; chatId: number; threadId?: number; sessionId?: string }
   | { action: 'reject_private_prompt'; chatId: number; userId: string }
   | { action: 'orphaned_group'; chatId: number; userId: string }
-  | { action: 'command'; command: string; args: string; chatId: number; userId: string }
+  | { action: 'command'; command: string; args: string; chatId: number; userId: string; threadId?: number }
   | { action: 'flow_input'; text: string; chatId: number; userId: string }
   | { action: 'unknown_user'; chatId: number }
-  | { action: 'ralph_loop'; agentId: string; task: string; chatId: number; userId: string }
-  | { action: 'bash_command'; agentId: string; command: string; chatId: number; userId: string }
+  | { action: 'ralph_loop'; agentId: string; task: string; chatId: number; userId: string; threadId?: number }
+  | { action: 'bash_command'; agentId: string; command: string; chatId: number; userId: string; threadId?: number }
   | { action: 'group_onboarding_locked'; chatId: number; userId: string; lockedByUserId: number }
+  | { action: 'topic_not_found'; chatId: number; userId: string; threadId: number }
+  | { action: 'topic_closed'; chatId: number; userId: string; threadId: number; topicName: string }
+  | { action: 'topic_ralph_active'; chatId: number; userId: string; threadId: number; topicName: string; agentId: string; text: string }
   | { action: 'ignore' };
 
 /**
@@ -48,7 +57,8 @@ export type ChatType = 'private' | 'group' | 'supergroup' | 'channel';
 export class TelegramCommandHandler {
   constructor(
     private readonly agentManager: AgentManager,
-    private readonly groupOnboardingManager?: GroupOnboardingManager
+    private readonly groupOnboardingManager?: GroupOnboardingManager,
+    private readonly topicManager?: TopicManager
   ) {}
 
   /**
@@ -57,13 +67,27 @@ export class TelegramCommandHandler {
    * Groups are linked to agents via telegramChatId. Messages in groups
    * are routed to the linked agent for processing.
    *
+   * Topic Routing:
+   * - threadId=undefined or threadId=1 → routes to General topic (mainSessionId)
+   * - threadId>1 → routes to specific topic.sessionId
+   * - Groups without topics enabled → hybrid mode, all messages to mainSessionId
+   *
    * @param chatId - Telegram chat ID
    * @param userId - Internal user ID (phone number)
    * @param text - Message text
    * @param telegramUserId - Telegram user ID (for onboarding lock checks)
+   * @param threadId - Optional message_thread_id from Telegram (for forum topics)
+   * @param isForum - Whether the group has topics enabled (is_forum flag)
    * @returns TelegramRouteResult indicating what action to take
    */
-  routeGroupMessage(chatId: number, userId: string, text: string, telegramUserId?: number): TelegramRouteResult {
+  routeGroupMessage(
+    chatId: number,
+    userId: string,
+    text: string,
+    telegramUserId?: number,
+    threadId?: number,
+    isForum: boolean = false
+  ): TelegramRouteResult {
     // Check if this is a command (starts with /)
     if (text.startsWith('/')) {
       const [command, ...argParts] = text.split(' ');
@@ -115,6 +139,7 @@ export class TelegramCommandHandler {
             task: args.trim(),
             chatId,
             userId,
+            threadId,
           };
         }
       }
@@ -125,6 +150,7 @@ export class TelegramCommandHandler {
         args,
         chatId,
         userId,
+        threadId,
       };
     }
 
@@ -178,6 +204,7 @@ export class TelegramCommandHandler {
         command: text.slice(2).trim(),
         chatId,
         userId,
+        threadId,
       };
     }
 
@@ -189,7 +216,16 @@ export class TelegramCommandHandler {
         command: text.trim(),
         chatId,
         userId,
+        threadId,
       };
+    }
+
+    // Determine session ID based on topic routing
+    const { sessionId, routingError } = this.resolveSessionForTopic(agent, threadId, isForum, text);
+
+    // Handle topic routing errors
+    if (routingError) {
+      return routingError;
     }
 
     // Parse model prefix from text
@@ -202,6 +238,8 @@ export class TelegramCommandHandler {
         agentId: agent.id,
         text: cleanText,
         chatId,
+        threadId,
+        sessionId,
       };
     }
 
@@ -214,7 +252,94 @@ export class TelegramCommandHandler {
       text: cleanText,
       model: finalModel as 'haiku' | 'sonnet' | 'opus',
       chatId,
+      threadId,
+      sessionId,
     };
+  }
+
+  /**
+   * Resolve session ID for topic-based routing
+   *
+   * @param agent - The agent to route to
+   * @param threadId - The Telegram thread ID (undefined or 1 = General, >1 = specific topic)
+   * @param isForum - Whether the group has topics enabled
+   * @param text - Original message text (for error messages)
+   * @returns Session ID and optional routing error
+   */
+  private resolveSessionForTopic(
+    agent: Agent,
+    threadId: number | undefined,
+    isForum: boolean,
+    text: string
+  ): { sessionId?: string; routingError?: TelegramRouteResult } {
+    // Hybrid mode: group without topics enabled → use mainSessionId
+    if (!isForum) {
+      return { sessionId: agent.mainSessionId };
+    }
+
+    // General topic: threadId is undefined or 1 → use mainSessionId
+    if (threadId === undefined || threadId === 1) {
+      return { sessionId: agent.mainSessionId };
+    }
+
+    // Specific topic: threadId > 1 → find matching topic
+    if (!this.topicManager) {
+      // TopicManager not available, fall back to mainSessionId
+      return { sessionId: agent.mainSessionId };
+    }
+
+    const topic = this.topicManager.getTopicByThreadId(agent.id, threadId);
+
+    // Topic not found
+    if (!topic) {
+      return {
+        routingError: {
+          action: 'topic_not_found',
+          chatId: agent.telegramChatId!,
+          userId: agent.userId,
+          threadId,
+        },
+      };
+    }
+
+    // Topic is closed
+    if (topic.status === 'closed') {
+      return {
+        routingError: {
+          action: 'topic_closed',
+          chatId: agent.telegramChatId!,
+          userId: agent.userId,
+          threadId,
+          topicName: topic.name,
+        },
+      };
+    }
+
+    // Topic has active Ralph loop - queue message
+    if (topic.type === 'ralph' && topic.loopId) {
+      return {
+        routingError: {
+          action: 'topic_ralph_active',
+          chatId: agent.telegramChatId!,
+          userId: agent.userId,
+          threadId,
+          topicName: topic.name,
+          agentId: agent.id,
+          text,
+        },
+      };
+    }
+
+    // Return topic's session ID (or mainSessionId for general topic)
+    return { sessionId: topic.sessionId || agent.mainSessionId };
+  }
+
+  /**
+   * Get topic by thread ID for an agent
+   */
+  getTopicByThreadId(agentId: string, threadId: number): AgentTopic | undefined {
+    if (!this.topicManager) return undefined;
+    return this.topicManager.getTopicByThreadId(agentId, threadId);
   }
 
   /**
