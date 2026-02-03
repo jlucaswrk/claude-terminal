@@ -13,12 +13,15 @@ import type {
   RalphIteration,
   SerializedRalphLoopState,
   SerializedRalphIteration,
+  UserPreferences,
+  SerializedUserPreferences,
 } from './types';
 import { DEFAULTS } from './types';
 
 const STATE_FILE = './agents-state.json';
 const BACKUP_FILE = './agents-state.json.bak';
 const LOOPS_DIR = join(homedir(), '.claude-terminal', 'loops');
+const USER_PREFS_FILE = './user-preferences.json';
 
 /**
  * PersistenceService handles saving and loading the agents state to/from JSON
@@ -33,12 +36,16 @@ export class PersistenceService {
   private readonly stateFile: string;
   private readonly backupFile: string;
   private readonly loopsDir: string;
+  private readonly preferencesFile: string;
+  private preferences: Map<string, UserPreferences> = new Map();
 
-  constructor(stateFile: string = STATE_FILE, loopsDir: string = LOOPS_DIR) {
+  constructor(stateFile: string = STATE_FILE, loopsDir: string = LOOPS_DIR, preferencesFile: string = USER_PREFS_FILE) {
     this.stateFile = stateFile;
     this.backupFile = stateFile + '.bak';
     this.loopsDir = loopsDir;
+    this.preferencesFile = preferencesFile;
     this.ensureLoopsDir();
+    this.loadPreferencesFromFile();
   }
 
   /**
@@ -662,5 +669,62 @@ export class PersistenceService {
         duration: iter.duration,
       })),
     };
+  }
+
+  // ============================================
+  // User Preferences
+  // ============================================
+
+  /**
+   * Load user preferences from file into memory
+   */
+  private loadPreferencesFromFile(): void {
+    try {
+      if (!existsSync(this.preferencesFile)) return;
+      const content = readFileSync(this.preferencesFile, 'utf-8');
+      const data = JSON.parse(content) as SerializedUserPreferences[];
+      for (const prefs of data) {
+        this.preferences.set(prefs.userId, prefs);
+      }
+    } catch (error) {
+      console.error('Failed to load user preferences:', error);
+    }
+  }
+
+  /**
+   * Save all user preferences to file
+   */
+  private savePreferencesToFile(): void {
+    const data = Array.from(this.preferences.values());
+    Bun.write(this.preferencesFile, JSON.stringify(data, null, 2));
+  }
+
+  /**
+   * Save user preferences
+   */
+  saveUserPreferences(prefs: UserPreferences): void {
+    this.preferences.set(prefs.userId, prefs);
+    this.savePreferencesToFile();
+  }
+
+  /**
+   * Load user preferences for a specific user
+   */
+  loadUserPreferences(userId: string): UserPreferences | undefined {
+    return this.preferences.get(userId);
+  }
+
+  /**
+   * Get all user preferences
+   */
+  getAllUserPreferences(): UserPreferences[] {
+    return Array.from(this.preferences.values());
+  }
+
+  /**
+   * Get the path to the preferences file
+   */
+  getPreferencesFilePath(): string {
+    return this.preferencesFile;
   }
 }
