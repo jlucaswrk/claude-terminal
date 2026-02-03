@@ -2350,3 +2350,171 @@ export async function deleteWhatsAppGroup(groupId: string): Promise<void> {
     throw new Error(`Failed to delete WhatsApp group: ${error}`);
   }
 }
+
+// =============================================================================
+// Groups Flow UI Functions
+// =============================================================================
+
+/**
+ * Send agent mode selector (Conversational vs Ralph)
+ */
+export async function sendAgentModeSelector(to: string): Promise<void> {
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: getRecipientType(to),
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: {
+            text: `*Tipo do agente (imutável)*
+
+💬 *Conversacional*
+Responde a cada mensagem individualmente.
+Você envia prompt → agente responde → aguarda.
+
+🔄 *Ralph Loop*
+Executa tarefas autonomamente em loop.
+Você define a tarefa → agente trabalha sozinho
+até completar ou atingir limite de iterações.`,
+          },
+          action: {
+            buttons: [
+              { type: 'reply', reply: { id: 'mode_conversational', title: '💬 Conversacional' } },
+              { type: 'reply', reply: { id: 'mode_ralph', title: '🔄 Ralph Loop' } },
+            ],
+          },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Send model mode selector
+ */
+export async function sendModelModeSelector(to: string): Promise<void> {
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: getRecipientType(to),
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'list',
+          body: {
+            text: `*Modo de modelo*
+
+Como o agente deve escolher o modelo Claude?
+
+🔄 *Seleção* (padrão)
+Pergunta qual modelo usar a cada prompt.
+
+⚡ *Modelo fixo*
+Executa direto com o modelo escolhido.
+
+💡 Use !haiku, !sonnet ou !opus no início
+da mensagem para usar outro modelo pontualmente.`,
+          },
+          action: {
+            button: 'Escolher modo',
+            sections: [
+              {
+                title: 'Modo de modelo',
+                rows: [
+                  { id: 'model_mode_selection', title: '🔄 Seleção', description: 'Pergunta sempre' },
+                  { id: 'model_mode_haiku', title: '⚡ Haiku fixo', description: 'Rápido e barato' },
+                  { id: 'model_mode_sonnet', title: '🎭 Sonnet fixo', description: 'Equilibrado' },
+                  { id: 'model_mode_opus', title: '🎼 Opus fixo', description: 'Mais capaz' },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Send delete group choice
+ */
+export async function sendDeleteGroupChoice(to: string, agentName: string): Promise<void> {
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: getRecipientType(to),
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: {
+            text: `⚠️ *Deletar agente "${agentName}"?*
+
+O que fazer com o grupo?`,
+          },
+          action: {
+            buttons: [
+              { type: 'reply', reply: { id: 'delete_with_group', title: '🗑️ Deletar grupo' } },
+              { type: 'reply', reply: { id: 'delete_keep_group', title: '📁 Manter grupo' } },
+              { type: 'reply', reply: { id: 'delete_cancel', title: '❌ Cancelar' } },
+            ],
+          },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Send message rejecting prompt on main number
+ */
+export async function sendRejectPrompt(to: string): Promise<void> {
+  await sendWhatsApp(to, `⚠️ *Prompts não são aceitos aqui.*
+
+Use o grupo do agente para conversar.
+Digite / para ver seus agentes.`);
+}
+
+/**
+ * Send message for unlinked group
+ */
+export async function sendUnlinkedGroupMessage(to: string): Promise<void> {
+  await sendWhatsApp(to, `⚠️ *Grupo não vinculado a nenhum agente.*
+
+Este grupo não está associado a nenhum agente Claude.`);
+}
