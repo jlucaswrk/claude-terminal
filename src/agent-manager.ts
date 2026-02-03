@@ -392,8 +392,9 @@ export class AgentManager {
 
   /**
    * Set the Telegram chat ID for an agent
+   * Pass undefined to unlink the agent from a Telegram group
    */
-  setTelegramChatId(agentId: string, chatId: number): boolean {
+  setTelegramChatId(agentId: string, chatId: number | undefined): boolean {
     const agent = this.agents.get(agentId);
     if (!agent) return false;
 

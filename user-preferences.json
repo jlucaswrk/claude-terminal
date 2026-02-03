@@ -9,5 +9,11 @@
       6187428254,
       -1001234567890
     ]
+  },
+  {
+    "userId": "+5581999999999",
+    "mode": "dojo",
+    "telegramUsername": "lucas",
+    "onboardingComplete": true
   }
 ]

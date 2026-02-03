@@ -98,7 +98,9 @@ import {
   // File download
   downloadTelegramFile,
   editTelegramMessage,
+  pinTelegramMessage,
 } from './telegram';
+import { GroupOnboardingManager } from './group-onboarding-manager';
 import { MessageRouter } from './message-router';
 import { TelegramCommandHandler } from './telegram-command-handler';
 import { transcribeAudio } from './transcription';
@@ -137,6 +139,9 @@ const agentManager = new AgentManager(persistenceService);
 // Semaphore for concurrency control (use config from loaded state)
 // Use ?? instead of || to preserve 0 (unbounded mode)
 const semaphore = new Semaphore(agentManager.getConfig().maxConcurrent ?? DEFAULTS.MAX_CONCURRENT);
+
+// Group onboarding manager (manages Telegram group onboarding state)
+const groupOnboardingManager = new GroupOnboardingManager();
 
 // Claude terminal
 const terminal = new ClaudeTerminal();
@@ -461,17 +466,10 @@ async function handleTelegramMyChatMember(update: any): Promise<void> {
   const from = update.from; // User who made the change
   const newStatus = update.new_chat_member?.status;
   const oldStatus = update.old_chat_member?.status;
+  const telegramUserId = from.id;
+  const telegramUsername = from.username;
 
-  console.log(`[telegram] my_chat_member: chat=${chat.id} (${chat.type}), from=${from.username || from.id}, status: ${oldStatus} -> ${newStatus}`);
-
-  // Only handle when bot is added to a group (becomes member or administrator)
-  const wasAdded = (newStatus === 'member' || newStatus === 'administrator') &&
-                   oldStatus !== 'member' && oldStatus !== 'administrator';
-
-  if (!wasAdded) {
-    // Bot was removed or status changed for another reason
-    return;
-  }
+  console.log(`[telegram] my_chat_member: chat=${chat.id} (${chat.type}), from=${telegramUsername || telegramUserId}, status: ${oldStatus} -> ${newStatus}`);
 
   // Only process for group chats
   const isGroup = chat.type === 'group' || chat.type === 'supergroup';
@@ -481,11 +479,105 @@ async function handleTelegramMyChatMember(update: any): Promise<void> {
 
   const chatId = chat.id;
 
-  // Send instructional message - linking only happens via explicit /link command
-  await sendTelegramMessage(chatId,
-    '👋 *Bot adicionado ao grupo*\n\n' +
-    'Para vincular este grupo a um agente, use o comando /link.'
+  // Check if bot was added (became member or administrator from a non-member state)
+  const wasAdded = (newStatus === 'member' || newStatus === 'administrator') &&
+                   oldStatus !== 'member' && oldStatus !== 'administrator';
+
+  // Check if bot was removed (left or kicked)
+  const wasRemoved = (newStatus === 'left' || newStatus === 'kicked') &&
+                     (oldStatus === 'member' || oldStatus === 'administrator');
+
+  if (wasAdded) {
+    await handleBotAddedToGroup(chatId, telegramUserId, telegramUsername);
+  } else if (wasRemoved) {
+    await handleBotRemovedFromGroup(chatId);
+  }
+}
+
+/**
+ * Handle bot being added to a Telegram group
+ * Identifies user, checks for existing agents, sends onboarding message and pins it
+ */
+async function handleBotAddedToGroup(chatId: number, telegramUserId: number, telegramUsername?: string): Promise<void> {
+  // Try to identify user by Telegram username
+  const allPrefs = persistenceService.getAllUserPreferences();
+  const userPrefs = allPrefs.find(p =>
+    p.telegramUsername?.toLowerCase() === telegramUsername?.toLowerCase()
   );
+
+  if (!userPrefs || !telegramUsername) {
+    // Unknown user - send generic message
+    await sendTelegramMessage(chatId,
+      '👋 *Bot adicionado ao grupo*\n\n' +
+      'Não encontrei seu cadastro.\n' +
+      'Configure o Dojo primeiro pelo WhatsApp.'
+    );
+    return;
+  }
+
+  const userId = userPrefs.userId;
+
+  // Check if user has existing agents
+  const existingAgents = agentManager.listAgents(userId);
+  const hasExistingAgents = existingAgents.length > 0;
+
+  let message;
+
+  if (!hasExistingAgents) {
+    // First-time user: "seu primeiro agente 🎉" + [criar agora]
+    message = await sendTelegramButtons(chatId,
+      '🎉 *Seu primeiro agente!*\n\n' +
+      'Vamos criar um agente para este grupo.',
+      [
+        [{ text: '✨ Criar agora', callback_data: `onboard_create_${telegramUserId}` }],
+      ]
+    );
+  } else {
+    // Existing user: "esse grupo não tem agente ainda" + [criar um] [vincular existente]
+    message = await sendTelegramButtons(chatId,
+      '👋 *Esse grupo não tem agente ainda*\n\n' +
+      'Você pode criar um novo ou vincular um existente.',
+      [
+        [
+          { text: '✨ Criar um', callback_data: `onboard_create_${telegramUserId}` },
+          { text: '🔗 Vincular existente', callback_data: `onboard_link_${telegramUserId}` },
+        ],
+      ]
+    );
+  }
+
+  // Pin the message
+  if (message) {
+    await pinTelegramMessage(chatId, message.message_id);
+
+    // Initialize onboarding state and store pinned message ID
+    const result = groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
+    if (result.success) {
+      groupOnboardingManager.setPinnedMessageId(chatId, telegramUserId, message.message_id);
+    }
+  }
+}
+
+/**
+ * Handle bot being removed from a Telegram group
+ * Unlinks any associated agent and cleans up onboarding state
+ */
+async function handleBotRemovedFromGroup(chatId: number): Promise<void> {
+  // Find the agent linked to this group
+  const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+  if (agent) {
+    // Unlink the agent from this group
+    agentManager.setTelegramChatId(agent.id, undefined);
+    console.log(`[telegram] Unlinked agent ${agent.name} (${agent.id}) from group ${chatId}`);
+  }
+
+  // Cleanup onboarding state if any
+  const state = groupOnboardingManager.getState(chatId);
+  if (state) {
+    groupOnboardingManager.cancelOnboarding(chatId, state.userId);
+    console.log(`[telegram] Cancelled onboarding for group ${chatId}`);
+  }
 }
 
 /**
