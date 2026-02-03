@@ -371,7 +371,7 @@ async function handleTelegramCommand(chatId: number, userId: string, text: strin
 
     case '/agentes':
     case '/list':
-      const agents = agentManager.getAgentsByUserId(userId)
+      const agents = agentManager.listAgents(userId)
         .filter(a => a.name !== 'Ronin') // Exclude Ronin from Telegram list
         .map(a => ({
           id: a.id,
@@ -505,7 +505,7 @@ async function handleTelegramCallback(query: any): Promise<void> {
  * Handle Telegram status command
  */
 async function handleTelegramStatus(chatId: number, userId: string): Promise<void> {
-  const agents = agentManager.getAgentsByUserId(userId).filter(a => a.name !== 'Ronin');
+  const agents = agentManager.listAgents(userId).filter(a => a.name !== 'Ronin');
 
   if (agents.length === 0) {
     await sendTelegramMessage(chatId, 'Nenhum agente criado ainda.');
@@ -3519,7 +3519,7 @@ async function handleRoninQuery(
 
   // Process as Ronin query
   // Create or get Ronin agent
-  let roninAgentData = agentManager.getAgentsByUserId(userId).find(a => a.name === 'Ronin');
+  let roninAgentData = agentManager.listAgents(userId).find(a => a.name === 'Ronin');
 
   if (!roninAgentData) {
     roninAgentData = agentManager.createAgent(userId, 'Ronin', 'claude', '🥷');
