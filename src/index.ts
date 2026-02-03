@@ -2539,6 +2539,7 @@ async function handlePrioritySelection(
 type ExtractedMessage = {
   from: string;
   type: 'text' | 'button' | 'list' | 'image' | 'audio';
+  groupId?: string; // WhatsApp group ID if from a group
   text?: string;
   buttonId?: string;
   listId?: string;
@@ -2553,7 +2554,7 @@ type ExtractedMessage = {
   audioUrl?: string; // Direct URL from Kapso
 };
 
-function extractMessage(payload: unknown): ExtractedMessage | null {
+export function extractMessage(payload: unknown): ExtractedMessage | null {
   try {
     const p = payload as Record<string, unknown>;
 
@@ -2562,6 +2563,7 @@ function extractMessage(payload: unknown): ExtractedMessage | null {
       const message = p.message as Record<string, unknown>;
       const conversation = p.conversation as Record<string, unknown>;
       const from = ((conversation.phone_number as string) || '').replace('+', '');
+      const groupId = conversation.group_id as string | undefined;
 
       // Button reply
       if (
@@ -2570,6 +2572,7 @@ function extractMessage(payload: unknown): ExtractedMessage | null {
       ) {
         return {
           from,
+          groupId,
           type: 'button',
           buttonId:
             ((message.interactive as Record<string, unknown>)?.button_reply as Record<string, unknown>)?.id as string || '',
@@ -2583,6 +2586,7 @@ function extractMessage(payload: unknown): ExtractedMessage | null {
       ) {
         return {
           from,
+          groupId,
           type: 'list',
           listId:
             ((message.interactive as Record<string, unknown>)?.list_reply as Record<string, unknown>)?.id as string || '',
@@ -2593,6 +2597,7 @@ function extractMessage(payload: unknown): ExtractedMessage | null {
       if (message.type === 'text') {
         return {
           from,
+          groupId,
           type: 'text',
           text:
             ((message.kapso as Record<string, unknown>)?.content as string) ||
@@ -2608,6 +2613,7 @@ function extractMessage(payload: unknown): ExtractedMessage | null {
         const kapso = message.kapso as Record<string, unknown>;
         return {
           from,
+          groupId,
           type: 'image',
           text: (image?.caption as string) || '',
           imageId: image?.id as string,
@@ -2623,6 +2629,7 @@ function extractMessage(payload: unknown): ExtractedMessage | null {
         const kapso = message.kapso as Record<string, unknown>;
         return {
           from,
+          groupId,
           type: 'audio',
           audioId: audio?.id as string,
           audioMimeType: audio?.mime_type as string,
