@@ -18,6 +18,13 @@ export type OutputType = 'standard' | 'ralph-loop';
 export type ModelMode = 'selection' | 'haiku' | 'sonnet' | 'opus';
 
 /**
+ * User operation mode
+ * - ronin: All agents in WhatsApp (default, current behavior)
+ * - dojo: Agents in Telegram, WhatsApp has read-only Ronin agent
+ */
+export type UserMode = 'ronin' | 'dojo';
+
+/**
  * Represents a single output/response from an agent
  */
 export interface Output {
@@ -93,8 +100,8 @@ export interface RalphLoopState {
  */
 export interface UserContext {
   userId: string;
-  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'configure_ralph';
-  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations';
+  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'configure_ralph' | 'onboarding';
+  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_mode_selection' | 'awaiting_telegram_username';
   flowData?: {
     agentName?: string;
     agentId?: string;
@@ -104,6 +111,8 @@ export interface UserContext {
     workspace?: string;
     modelMode?: ModelMode;
     priority?: string;
+    userMode?: UserMode;           // For onboarding flow
+    telegramUsername?: string;     // For onboarding flow
     [key: string]: unknown;
   };
   pendingPrompt?: {
@@ -121,6 +130,28 @@ export interface UserContext {
   };
   bashMode?: boolean;           // Global bash mode toggle
   lastBashWorkspace?: string;   // Last workspace used for bash prefix commands
+}
+
+/**
+ * User preferences (persisted)
+ */
+export interface UserPreferences {
+  userId: string;
+  mode: UserMode;
+  telegramUsername?: string;       // Telegram username (without @)
+  telegramChatId?: number;         // Telegram chat ID for direct messages
+  onboardingComplete: boolean;     // Whether user completed mode selection
+}
+
+/**
+ * Serialized user preferences for JSON storage
+ */
+export interface SerializedUserPreferences {
+  userId: string;
+  mode: UserMode;
+  telegramUsername?: string;
+  telegramChatId?: number;
+  onboardingComplete: boolean;
 }
 
 /**
