@@ -8,16 +8,24 @@
 export type AgentType = 'claude' | 'bash';
 
 /**
+ * Output type - standard conversational or Ralph loop summary
+ */
+export type OutputType = 'standard' | 'ralph-loop';
+
+/**
  * Represents a single output/response from an agent
  */
 export interface Output {
   id: string;
+  type?: OutputType;            // Type of output (default: 'standard')
   summary: string;              // Summary of the action (e.g., "Created 3 files")
   prompt: string;               // Original user prompt
   response: string;             // Complete Claude response
   model: 'haiku' | 'sonnet' | 'opus' | 'bash';  // Model used (bash for direct execution)
   status: 'success' | 'warning' | 'error';
   timestamp: Date;
+  loopId?: string;              // Reference to Ralph loop (if type is 'ralph-loop')
+  iterationCount?: number;      // Number of iterations (for ralph-loop outputs)
 }
 
 /**
@@ -172,12 +180,15 @@ export interface SerializedAgent {
 
 export interface SerializedOutput {
   id: string;
+  type?: OutputType;            // Type of output (default: 'standard')
   summary: string;
   prompt: string;
   response: string;
   model: 'haiku' | 'sonnet' | 'opus' | 'bash';
   status: 'success' | 'warning' | 'error';
   timestamp: string;            // ISO date string
+  loopId?: string;              // Reference to Ralph loop (if type is 'ralph-loop')
+  iterationCount?: number;      // Number of iterations (for ralph-loop outputs)
 }
 
 /**
