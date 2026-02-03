@@ -301,6 +301,54 @@ export const PRIORITY_VALUES: Record<Agent['priority'], number> = {
 };
 
 /**
+ * Group onboarding step
+ */
+export type GroupOnboardingStep =
+  | 'awaiting_name'
+  | 'awaiting_emoji'
+  | 'awaiting_workspace'
+  | 'awaiting_model_mode'
+  | 'awaiting_confirmation'
+  | 'linking_agent';
+
+/**
+ * State for group-based agent onboarding flow
+ * Tracks the multi-step process of creating an agent from a Telegram group
+ */
+export interface GroupOnboardingState {
+  chatId: number;                 // Telegram group chat ID
+  userId: number;                 // Telegram user ID who initiated onboarding
+  step: GroupOnboardingStep;      // Current step in the onboarding flow
+  pinnedMessageId?: number;       // Message ID of pinned onboarding status (if any)
+  data: {
+    agentName?: string;           // Name chosen for the agent
+    emoji?: string;               // Emoji identifier for the agent
+    workspace?: string;           // Workspace path for the agent
+    modelMode?: ModelMode;        // Model selection mode
+    selectedAgentId?: string;     // ID of existing agent to link (for /link flow)
+  };
+  startedAt: Date;                // When onboarding started
+}
+
+/**
+ * Serialized version of GroupOnboardingState for JSON storage
+ */
+export interface SerializedGroupOnboardingState {
+  chatId: number;
+  userId: number;
+  step: GroupOnboardingStep;
+  pinnedMessageId?: number;
+  data: {
+    agentName?: string;
+    emoji?: string;
+    workspace?: string;
+    modelMode?: ModelMode;
+    selectedAgentId?: string;
+  };
+  startedAt: string;              // ISO date string
+}
+
+/**
  * Default values
  */
 export const DEFAULTS = {

@@ -1408,3 +1408,68 @@ export async function deleteTelegramMessage(
     return false;
   }
 }
+
+// ============================================
+// Message Pin Management
+// ============================================
+
+/**
+ * Pin a message in a Telegram chat
+ * Note: Bot must be an admin with pin_messages permission in groups
+ * Returns false on permission errors without throwing
+ */
+export async function pinTelegramMessage(
+  chatId: number | string,
+  messageId: number,
+  disableNotification: boolean = true
+): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    await telegramBot.pinChatMessage(chatId, messageId, {
+      disable_notification: disableNotification,
+    });
+    return true;
+  } catch (error: unknown) {
+    // Graceful degradation for permission errors
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes('not enough rights') ||
+        errorMessage.includes('CHAT_ADMIN_REQUIRED') ||
+        errorMessage.includes('can\'t pin')) {
+      console.warn(`[telegram] Cannot pin message in chat ${chatId}: insufficient permissions`);
+    } else {
+      console.error('Failed to pin Telegram message:', error);
+    }
+    return false;
+  }
+}
+
+/**
+ * Unpin a message in a Telegram chat
+ * Note: Bot must be an admin with pin_messages permission in groups
+ * Returns false on permission errors without throwing
+ */
+export async function unpinTelegramMessage(
+  chatId: number | string,
+  messageId: number
+): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    await telegramBot.unpinChatMessage(chatId, { message_id: messageId });
+    return true;
+  } catch (error: unknown) {
+    // Graceful degradation for permission errors
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes('not enough rights') ||
+        errorMessage.includes('CHAT_ADMIN_REQUIRED') ||
+        errorMessage.includes('can\'t unpin')) {
+      console.warn(`[telegram] Cannot unpin message in chat ${chatId}: insufficient permissions`);
+    } else {
+      console.error('Failed to unpin Telegram message:', error);
+    }
+    return false;
+  }
+}
