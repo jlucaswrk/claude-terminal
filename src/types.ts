@@ -18,6 +18,37 @@ export type OutputType = 'standard' | 'ralph-loop';
 export type ModelMode = 'selection' | 'haiku' | 'sonnet' | 'opus';
 
 /**
+ * Topic type - type of Telegram forum topic
+ * - general: Main topic, shares mainSessionId with agent
+ * - ralph: Ralph autonomous loop in isolated session
+ * - worktree: Feature/experiment in isolated session
+ * - session: Standalone conversation in isolated session
+ */
+export type TopicType = 'general' | 'ralph' | 'worktree' | 'session';
+
+/**
+ * Topic status
+ */
+export type TopicStatus = 'active' | 'closed';
+
+/**
+ * Represents a Telegram forum topic for an agent
+ */
+export interface AgentTopic {
+  id: string;                    // UUID
+  agentId: string;               // Parent agent ID
+  telegramTopicId: number;       // Telegram message_thread_id
+  type: TopicType;
+  name: string;                  // Topic name (e.g., "Auth JWT", "feature/payments")
+  emoji: string;                 // Visual identifier (🔄, 🌿, 💬, 📌)
+  sessionId?: string;            // Claude session ID (isolated, only for non-general topics)
+  loopId?: string;               // Ralph loop ID (only for type='ralph')
+  status: TopicStatus;
+  createdAt: Date;
+  lastActivity: Date;
+}
+
+/**
  * User operation mode
  * - ronin: All agents in WhatsApp (default, current behavior)
  * - dojo: Agents in Telegram, WhatsApp has read-only Ronin agent
@@ -54,7 +85,8 @@ export interface Agent {
   groupId?: string;             // WhatsApp group ID (format: 120363...@g.us, immutable)
   telegramChatId?: number;      // Telegram group/chat ID for this agent
   modelMode: ModelMode;         // 'selection' (asks each time) or fixed model
-  sessionId?: string;           // Claude session ID (managed by SDK)
+  mainSessionId?: string;       // Main Claude session ID (shared by General topic)
+  topics: AgentTopic[];         // Telegram forum topics for this agent
   currentLoopId?: string;       // Active Ralph loop ID (if in ralph mode)
   title: string;                // Auto-generated title (3-5 words)
   status: 'idle' | 'processing' | 'error' | 'ralph-loop' | 'ralph-paused';
@@ -94,6 +126,7 @@ export interface RalphLoopState {
   iterations: RalphIteration[]; // History of iterations
   currentModel: 'haiku' | 'sonnet' | 'opus';
   startTime: Date;
+  threadId?: number;            // Telegram message_thread_id for topic-based loops
 }
 
 /**
@@ -210,6 +243,23 @@ export interface SerializedAgentsState {
   agents: SerializedAgent[];
 }
 
+/**
+ * Serialized version of AgentTopic for JSON storage
+ */
+export interface SerializedAgentTopic {
+  id: string;
+  agentId: string;
+  telegramTopicId: number;
+  type: TopicType;
+  name: string;
+  emoji: string;
+  sessionId?: string;
+  loopId?: string;
+  status: TopicStatus;
+  createdAt: string;            // ISO date string
+  lastActivity: string;         // ISO date string
+}
+
 export interface SerializedAgent {
   id: string;
   userId: string;               // Owning user ID (phone number)
@@ -221,7 +271,9 @@ export interface SerializedAgent {
   groupId?: string;             // WhatsApp group ID (format: 120363...@g.us)
   telegramChatId?: number;      // Telegram group/chat ID for this agent
   modelMode?: ModelMode;        // Model mode - optional for backwards compat
-  sessionId?: string;
+  sessionId?: string;           // DEPRECATED: Use mainSessionId. Kept for migration compatibility.
+  mainSessionId?: string;       // Main Claude session ID (shared by General topic)
+  topics?: SerializedAgentTopic[]; // Telegram forum topics - optional for backwards compat
   currentLoopId?: string;       // Active Ralph loop ID (if in ralph mode)
   title: string;
   status: 'idle' | 'processing' | 'error' | 'ralph-loop' | 'ralph-paused';
@@ -274,6 +326,25 @@ export interface SerializedRalphLoopState {
   iterations: SerializedRalphIteration[];
   currentModel: 'haiku' | 'sonnet' | 'opus';
   startTime: string;            // ISO date string
+  threadId?: number;            // Telegram message_thread_id for topic-based loops
+}
+
+/**
+ * Topics file structure for persistence (data/topics/{agentId}.json)
+ */
+export interface AgentTopicsFile {
+  agentId: string;
+  mainSessionId?: string;
+  topics: AgentTopic[];
+}
+
+/**
+ * Serialized version of AgentTopicsFile for JSON storage
+ */
+export interface SerializedAgentTopicsFile {
+  agentId: string;
+  mainSessionId?: string;
+  topics: SerializedAgentTopic[];
 }
 
 /**

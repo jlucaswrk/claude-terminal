@@ -10,9 +10,15 @@ const TEST_BACKUP_FILE = './test-agents-state.json.bak';
 function createMockAgent(overrides: Partial<Agent> = {}): Agent {
   return {
     id: 'test-uuid-1234',
+    userId: 'user-123',
     name: 'Test Agent',
+    type: 'claude',
+    mode: 'conversational',
+    emoji: '🤖',
     workspace: '/test/workspace',
-    sessionId: 'session-123',
+    modelMode: 'selection',
+    mainSessionId: 'session-123',
+    topics: [],
     title: 'Test conversation',
     status: 'idle',
     statusDetails: 'Ready',

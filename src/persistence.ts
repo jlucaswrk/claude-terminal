@@ -3,11 +3,13 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import type {
   Agent,
+  AgentTopic,
   Output,
   SystemConfig,
   AgentsState,
   SerializedAgentsState,
   SerializedAgent,
+  SerializedAgentTopic,
   SerializedOutput,
   RalphLoopState,
   RalphIteration,
@@ -15,12 +17,17 @@ import type {
   SerializedRalphIteration,
   UserPreferences,
   SerializedUserPreferences,
+  AgentTopicsFile,
+  SerializedAgentTopicsFile,
+  TopicType,
+  TopicStatus,
 } from './types';
 import { DEFAULTS } from './types';
 
 const STATE_FILE = './agents-state.json';
 const BACKUP_FILE = './agents-state.json.bak';
 const LOOPS_DIR = join(homedir(), '.claude-terminal', 'loops');
+const TOPICS_DIR = './data/topics';
 const USER_PREFS_FILE = './user-preferences.json';
 
 /**
@@ -36,15 +43,23 @@ export class PersistenceService {
   private readonly stateFile: string;
   private readonly backupFile: string;
   private readonly loopsDir: string;
+  private readonly topicsDir: string;
   private readonly preferencesFile: string;
   private preferences: Map<string, UserPreferences> = new Map();
 
-  constructor(stateFile: string = STATE_FILE, loopsDir: string = LOOPS_DIR, preferencesFile: string = USER_PREFS_FILE) {
+  constructor(
+    stateFile: string = STATE_FILE,
+    loopsDir: string = LOOPS_DIR,
+    preferencesFile: string = USER_PREFS_FILE,
+    topicsDir: string = TOPICS_DIR
+  ) {
     this.stateFile = stateFile;
     this.backupFile = stateFile + '.bak';
     this.loopsDir = loopsDir;
+    this.topicsDir = topicsDir;
     this.preferencesFile = preferencesFile;
     this.ensureLoopsDir();
+    this.ensureTopicsDir();
     this.loadPreferencesFromFile();
   }
 
@@ -54,6 +69,15 @@ export class PersistenceService {
   private ensureLoopsDir(): void {
     if (!existsSync(this.loopsDir)) {
       mkdirSync(this.loopsDir, { recursive: true });
+    }
+  }
+
+  /**
+   * Ensure the topics directory exists
+   */
+  private ensureTopicsDir(): void {
+    if (!existsSync(this.topicsDir)) {
+      mkdirSync(this.topicsDir, { recursive: true });
     }
   }
 
@@ -82,7 +106,7 @@ export class PersistenceService {
    * Load state from JSON file
    * Returns null if file doesn't exist or is invalid (after trying backup)
    */
-  load(): { config: SystemConfig; agents: Agent[] } | null {
+  load(): { config: SystemConfig; agents: Agent[]; migratedAgents: string[] } | null {
     // Try main file first
     const mainResult = this.loadFile(this.stateFile);
     if (mainResult) {
@@ -95,7 +119,7 @@ export class PersistenceService {
     if (backupResult) {
       console.log('Loaded state from backup');
       // Restore backup as main file
-      this.save(backupResult);
+      this.save({ config: backupResult.config, agents: backupResult.agents });
       return backupResult;
     }
 
@@ -106,7 +130,7 @@ export class PersistenceService {
   /**
    * Load and parse a specific file
    */
-  private loadFile(filePath: string): { config: SystemConfig; agents: Agent[] } | null {
+  private loadFile(filePath: string): { config: SystemConfig; agents: Agent[]; migratedAgents: string[] } | null {
     if (!existsSync(filePath)) {
       return null;
     }
@@ -221,6 +245,44 @@ export class PersistenceService {
   }
 
   /**
+   * Serialize a topic for JSON storage (convert Dates to ISO strings)
+   */
+  serializeTopic(topic: AgentTopic): SerializedAgentTopic {
+    return {
+      id: topic.id,
+      agentId: topic.agentId,
+      telegramTopicId: topic.telegramTopicId,
+      type: topic.type,
+      name: topic.name,
+      emoji: topic.emoji,
+      sessionId: topic.sessionId,
+      loopId: topic.loopId,
+      status: topic.status,
+      createdAt: topic.createdAt.toISOString(),
+      lastActivity: topic.lastActivity.toISOString(),
+    };
+  }
+
+  /**
+   * Deserialize a topic from JSON (convert ISO strings to Dates)
+   */
+  deserializeTopic(data: SerializedAgentTopic): AgentTopic {
+    return {
+      id: data.id,
+      agentId: data.agentId,
+      telegramTopicId: data.telegramTopicId,
+      type: data.type,
+      name: data.name,
+      emoji: data.emoji,
+      sessionId: data.sessionId,
+      loopId: data.loopId,
+      status: data.status,
+      createdAt: new Date(data.createdAt),
+      lastActivity: new Date(data.lastActivity),
+    };
+  }
+
+  /**
    * Serialize state for JSON storage (convert Dates to ISO strings)
    */
   private serialize(state: { config: SystemConfig; agents: Agent[] }): SerializedAgentsState {
@@ -238,7 +300,8 @@ export class PersistenceService {
         groupId: agent.groupId,
         modelMode: agent.modelMode,
         telegramChatId: agent.telegramChatId,
-        sessionId: agent.sessionId,
+        mainSessionId: agent.mainSessionId,
+        topics: agent.topics.map(topic => this.serializeTopic(topic)),
         currentLoopId: agent.currentLoopId,
         title: agent.title,
         status: agent.status,
@@ -265,48 +328,65 @@ export class PersistenceService {
 
   /**
    * Deserialize state from JSON (convert ISO strings to Dates)
+   * Handles migration from sessionId to mainSessionId
    */
-  private deserialize(data: SerializedAgentsState): { config: SystemConfig; agents: Agent[] } {
+  private deserialize(data: SerializedAgentsState): { config: SystemConfig; agents: Agent[]; migratedAgents: string[] } {
+    const migratedAgents: string[] = [];
+
     return {
       config: data.config,
-      agents: data.agents.map((agent): Agent => ({
-        id: agent.id,
-        // Backward compatibility: use 'default' for old agents without userId
-        userId: agent.userId || 'default',
-        name: agent.name,
-        // Backward compatibility: default to 'claude' for old agents without type
-        type: agent.type || 'claude',
-        // Backward compatibility: default to 'conversational' for old agents without mode
-        mode: agent.mode || 'conversational',
-        emoji: agent.emoji,
-        workspace: agent.workspace,
-        groupId: agent.groupId,
-        // Backward compatibility: default to 'selection' for old agents without modelMode
-        modelMode: agent.modelMode || 'selection',
-        telegramChatId: agent.telegramChatId,
-        sessionId: agent.sessionId,
-        currentLoopId: agent.currentLoopId,
-        title: agent.title,
-        status: agent.status,
-        statusDetails: agent.statusDetails,
-        priority: agent.priority,
-        lastActivity: new Date(agent.lastActivity),
-        messageCount: agent.messageCount,
-        outputs: agent.outputs.map((output): Output => ({
-          id: output.id,
-          // Backward compatibility: default to 'standard' for legacy outputs without type
-          type: output.type || 'standard',
-          summary: output.summary,
-          prompt: output.prompt,
-          response: output.response,
-          model: output.model,
-          status: output.status,
-          timestamp: new Date(output.timestamp),
-          loopId: output.loopId,
-          iterationCount: output.iterationCount,
-        })),
-        createdAt: new Date(agent.createdAt),
-      })),
+      agents: data.agents.map((agent): Agent => {
+        // Migration: sessionId → mainSessionId
+        let mainSessionId = agent.mainSessionId;
+        if (!mainSessionId && agent.sessionId) {
+          // Agent has old sessionId field but no mainSessionId
+          // Mark for migration (session will be recreated at runtime)
+          migratedAgents.push(agent.id);
+          console.log(`[Migration] Agent ${agent.id} (${agent.name}): sessionId → mainSessionId migration needed`);
+        }
+
+        return {
+          id: agent.id,
+          // Backward compatibility: use 'default' for old agents without userId
+          userId: agent.userId || 'default',
+          name: agent.name,
+          // Backward compatibility: default to 'claude' for old agents without type
+          type: agent.type || 'claude',
+          // Backward compatibility: default to 'conversational' for old agents without mode
+          mode: agent.mode || 'conversational',
+          emoji: agent.emoji,
+          workspace: agent.workspace,
+          groupId: agent.groupId,
+          // Backward compatibility: default to 'selection' for old agents without modelMode
+          modelMode: agent.modelMode || 'selection',
+          telegramChatId: agent.telegramChatId,
+          mainSessionId,
+          // Backward compatibility: default to empty array for old agents without topics
+          topics: (agent.topics || []).map(topic => this.deserializeTopic(topic)),
+          currentLoopId: agent.currentLoopId,
+          title: agent.title,
+          status: agent.status,
+          statusDetails: agent.statusDetails,
+          priority: agent.priority,
+          lastActivity: new Date(agent.lastActivity),
+          messageCount: agent.messageCount,
+          outputs: agent.outputs.map((output): Output => ({
+            id: output.id,
+            // Backward compatibility: default to 'standard' for legacy outputs without type
+            type: output.type || 'standard',
+            summary: output.summary,
+            prompt: output.prompt,
+            response: output.response,
+            model: output.model,
+            status: output.status,
+            timestamp: new Date(output.timestamp),
+            loopId: output.loopId,
+            iterationCount: output.iterationCount,
+          })),
+          createdAt: new Date(agent.createdAt),
+        };
+      }),
+      migratedAgents,
     };
   }
 
@@ -349,6 +429,65 @@ export class PersistenceService {
     // 3. Associate session IDs with new agents
 
     return migratedAgents;
+  }
+
+  /**
+   * Migration result from sessionId to mainSessionId
+   */
+  migrateAgentsToMainSession(agents: Agent[]): { migratedCount: number; agents: Agent[] } {
+    let migratedCount = 0;
+
+    console.log('[Migration] Checking agents for sessionId → mainSessionId migration...');
+
+    const migratedAgents = agents.map(agent => {
+      // Check if agent needs migration (this is detected during deserialization)
+      // The agent will need a fresh session at runtime
+      if (!agent.mainSessionId && agent.topics.length === 0) {
+        // Agent was using old sessionId-based system
+        // Initialize empty topics array (already done in deserialize)
+        // mainSessionId will be created fresh when agent is first used
+        console.log(`[Migration] Agent "${agent.name}" (${agent.id}): ready for fresh mainSessionId`);
+        migratedCount++;
+      }
+
+      return agent;
+    });
+
+    if (migratedCount > 0) {
+      console.log(`[Migration] ${migratedCount} agent(s) need fresh sessions (mainSessionId will be created on first use)`);
+    } else {
+      console.log('[Migration] No agents need migration');
+    }
+
+    return { migratedCount, agents: migratedAgents };
+  }
+
+  /**
+   * Perform full migration at startup
+   * - Loads state
+   * - Migrates sessionId → mainSessionId
+   * - Saves migrated state
+   * Returns the loaded and migrated state, or null if no state file exists
+   */
+  loadAndMigrate(): { config: SystemConfig; agents: Agent[] } | null {
+    const loaded = this.load();
+
+    if (!loaded) {
+      return null;
+    }
+
+    const { config, agents, migratedAgents } = loaded;
+
+    if (migratedAgents.length > 0) {
+      console.log(`[Migration] Found ${migratedAgents.length} agent(s) with old sessionId format`);
+      console.log('[Migration] Old sessions will be replaced with fresh mainSessionId on first use');
+
+      // Save the migrated state (without old sessionId references)
+      this.save({ config, agents });
+      console.log('[Migration] Saved migrated state');
+    }
+
+    return { config, agents };
   }
 
   /**
@@ -638,6 +777,7 @@ export class PersistenceService {
       maxIterations: loop.maxIterations,
       currentModel: loop.currentModel,
       startTime: loop.startTime.toISOString(),
+      threadId: loop.threadId,
       iterations: loop.iterations.map((iter): SerializedRalphIteration => ({
         number: iter.number,
         model: iter.model,
@@ -665,6 +805,7 @@ export class PersistenceService {
       maxIterations: data.maxIterations,
       currentModel: data.currentModel,
       startTime: new Date(data.startTime),
+      threadId: data.threadId,
       iterations: data.iterations.map((iter): RalphIteration => ({
         number: iter.number,
         model: iter.model,
@@ -733,5 +874,233 @@ export class PersistenceService {
    */
   getPreferencesFilePath(): string {
     return this.preferencesFile;
+  }
+
+  // ============================================
+  // Agent Topics Persistence
+  // ============================================
+
+  /**
+   * Get the file path for a specific agent's topics
+   */
+  private getTopicsFilePath(agentId: string): string {
+    return join(this.topicsDir, `${agentId}.json`);
+  }
+
+  /**
+   * Get the path to the topics directory
+   */
+  getTopicsDir(): string {
+    return this.topicsDir;
+  }
+
+  /**
+   * Save topics for an agent to disk
+   */
+  saveTopics(agentId: string, mainSessionId: string | undefined, topics: AgentTopic[]): void {
+    this.ensureTopicsDir();
+    const serialized: SerializedAgentTopicsFile = {
+      agentId,
+      mainSessionId,
+      topics: topics.map(topic => this.serializeTopic(topic)),
+    };
+    const json = JSON.stringify(serialized, null, 2);
+    const filePath = this.getTopicsFilePath(agentId);
+    Bun.write(filePath, json);
+  }
+
+  /**
+   * Load topics for an agent from disk
+   * Returns null if file doesn't exist or is invalid
+   */
+  loadTopics(agentId: string): AgentTopicsFile | null {
+    const filePath = this.getTopicsFilePath(agentId);
+
+    if (!existsSync(filePath)) {
+      return null;
+    }
+
+    try {
+      const content = readFileSync(filePath, 'utf-8');
+      const data = JSON.parse(content) as SerializedAgentTopicsFile;
+
+      if (!this.validateTopicsFileSchema(data)) {
+        console.error(`Invalid topics schema in ${filePath}`);
+        return null;
+      }
+
+      return {
+        agentId: data.agentId,
+        mainSessionId: data.mainSessionId,
+        topics: data.topics.map(topic => this.deserializeTopic(topic)),
+      };
+    } catch (err) {
+      console.error(`Failed to load topics for agent ${agentId}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Delete topics file for an agent
+   */
+  deleteTopicsFile(agentId: string): boolean {
+    const filePath = this.getTopicsFilePath(agentId);
+
+    if (!existsSync(filePath)) {
+      return false;
+    }
+
+    try {
+      unlinkSync(filePath);
+      return true;
+    } catch (err) {
+      console.error(`Failed to delete topics file for agent ${agentId}:`, err);
+      return false;
+    }
+  }
+
+  /**
+   * List all agent IDs with topics files
+   */
+  listTopicsFiles(): string[] {
+    if (!existsSync(this.topicsDir)) {
+      return [];
+    }
+
+    try {
+      const files = readdirSync(this.topicsDir);
+      return files
+        .filter(f => f.endsWith('.json'))
+        .map(f => f.replace('.json', ''));
+    } catch (err) {
+      console.error('Failed to list topics files:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Load all topics files from disk
+   */
+  loadAllTopics(): AgentTopicsFile[] {
+    const agentIds = this.listTopicsFiles();
+    const topicsFiles: AgentTopicsFile[] = [];
+
+    for (const agentId of agentIds) {
+      const topics = this.loadTopics(agentId);
+      if (topics) {
+        topicsFiles.push(topics);
+      }
+    }
+
+    return topicsFiles;
+  }
+
+  /**
+   * Clean up orphaned topics files (agents that no longer exist)
+   * Returns the number of files deleted
+   */
+  cleanupOrphanedTopics(existingAgentIds: string[]): number {
+    const topicsFiles = this.listTopicsFiles();
+    let deletedCount = 0;
+    const agentIdSet = new Set(existingAgentIds);
+
+    for (const agentId of topicsFiles) {
+      if (!agentIdSet.has(agentId)) {
+        if (this.deleteTopicsFile(agentId)) {
+          deletedCount++;
+          console.log(`Deleted orphaned topics file for agent ${agentId}`);
+        }
+      }
+    }
+
+    return deletedCount;
+  }
+
+  /**
+   * Validate topics file schema
+   */
+  private validateTopicsFileSchema(data: unknown): data is SerializedAgentTopicsFile {
+    if (!data || typeof data !== 'object') {
+      return false;
+    }
+
+    const file = data as Partial<SerializedAgentTopicsFile>;
+
+    // Required agentId
+    if (typeof file.agentId !== 'string') {
+      return false;
+    }
+
+    // Optional mainSessionId must be string if present
+    if (file.mainSessionId !== undefined && typeof file.mainSessionId !== 'string') {
+      return false;
+    }
+
+    // Topics must be array
+    if (!Array.isArray(file.topics)) {
+      return false;
+    }
+
+    // Validate each topic
+    for (const topic of file.topics) {
+      if (!this.validateTopicSchema(topic)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Validate a single topic object
+   */
+  private validateTopicSchema(topic: unknown): topic is SerializedAgentTopic {
+    if (!topic || typeof topic !== 'object') {
+      return false;
+    }
+
+    const t = topic as Partial<SerializedAgentTopic>;
+
+    // Required string fields
+    const requiredStrings = ['id', 'agentId', 'name', 'emoji', 'status', 'createdAt', 'lastActivity'];
+    for (const field of requiredStrings) {
+      if (typeof (t as Record<string, unknown>)[field] !== 'string') {
+        return false;
+      }
+    }
+
+    // Required number field
+    if (typeof t.telegramTopicId !== 'number') {
+      return false;
+    }
+
+    // Type must be valid
+    const validTypes: TopicType[] = ['general', 'ralph', 'worktree', 'session'];
+    if (!validTypes.includes(t.type as TopicType)) {
+      return false;
+    }
+
+    // Status must be valid
+    const validStatuses: TopicStatus[] = ['active', 'closed'];
+    if (!validStatuses.includes(t.status as TopicStatus)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Get topics for a specific agent by loading from disk
+   */
+  getTopicsForAgent(agentId: string): AgentTopic[] {
+    const topicsFile = this.loadTopics(agentId);
+    return topicsFile?.topics || [];
+  }
+
+  /**
+   * Get active topics (not closed) for an agent
+   */
+  getActiveTopicsForAgent(agentId: string): AgentTopic[] {
+    return this.getTopicsForAgent(agentId).filter(topic => topic.status === 'active');
   }
 }
