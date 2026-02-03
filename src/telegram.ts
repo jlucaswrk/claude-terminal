@@ -1259,3 +1259,179 @@ export async function editTelegramMessage(
     return false;
   }
 }
+
+// ============================================
+// Typing Indicator
+// ============================================
+
+/**
+ * Send a chat action (typing indicator) to a Telegram chat
+ * The typing indicator lasts approximately 5 seconds
+ */
+export async function sendTypingAction(chatId: number): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    await telegramBot.sendChatAction(chatId, 'typing');
+    return true;
+  } catch (error) {
+    console.error('Failed to send typing action:', error);
+    return false;
+  }
+}
+
+/**
+ * Start a typing indicator that auto-renews every 4 seconds
+ * Returns a stop function to clear the interval
+ *
+ * Usage:
+ * ```typescript
+ * const stopTyping = startTypingIndicator(chatId);
+ * try {
+ *   // Process prompt...
+ * } finally {
+ *   stopTyping();
+ * }
+ * ```
+ */
+export function startTypingIndicator(chatId: number): () => void {
+  // Send initial typing action
+  sendTypingAction(chatId);
+
+  // Auto-renew every 4 seconds (indicator lasts ~5 seconds)
+  const intervalId = setInterval(() => {
+    sendTypingAction(chatId);
+  }, 4000);
+
+  // Return stop function
+  return () => {
+    clearInterval(intervalId);
+  };
+}
+
+// ============================================
+// Queue Feedback UI
+// ============================================
+
+/**
+ * Send queue position feedback with cancel button
+ */
+export async function sendTelegramQueuePosition(
+  chatId: number,
+  position: number,
+  taskId: string
+): Promise<TelegramBot.Message | null> {
+  return sendTelegramButtons(chatId,
+    `⏳ *Prompt adicionado à fila*\nPosição: ${position}`,
+    [
+      [
+        { text: '❌ Cancelar', callback_data: `queue_cancel_${taskId}` },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send task cancelled confirmation
+ */
+export async function sendTelegramTaskCancelled(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId, '✅ Tarefa cancelada.');
+}
+
+// ============================================
+// Standardized Error Messages
+// ============================================
+
+/**
+ * Error message constants for consistent UX
+ */
+export const TELEGRAM_ERRORS = {
+  UNLINKED_GROUP: '⚠️ Este grupo não está vinculado a nenhum agente.\n\nUse o chat privado do bot para criar um agente e vincular a este grupo.',
+  AGENT_LIMIT_REACHED: '⚠️ Limite de agentes atingido (50).\nDelete um agente para criar outro.',
+  TOKEN_EXPIRED: '⚠️ Token de vinculação expirado.\nUm novo link foi gerado abaixo.',
+  WORKSPACE_NOT_FOUND: (path: string) => `⚠️ Workspace não encontrado: \`${path}\`\n\nEscolha uma alternativa:`,
+  GROUP_LINKING_FAILED: '⚠️ Falha ao vincular grupo.\nTente adicionar o bot ao grupo novamente.',
+  API_TIMEOUT: '⚠️ Tempo limite excedido.\nTente novamente em alguns segundos.',
+  PROCESSING_ERROR: (agentName: string, error: string) => `❌ Erro no agente *${agentName}*:\n${error}`,
+} as const;
+
+/**
+ * Send unlinked group error message
+ */
+export async function sendTelegramUnlinkedGroupError(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId, TELEGRAM_ERRORS.UNLINKED_GROUP);
+}
+
+/**
+ * Send agent limit reached error
+ */
+export async function sendTelegramAgentLimitError(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId, TELEGRAM_ERRORS.AGENT_LIMIT_REACHED);
+}
+
+/**
+ * Send workspace not found error with suggestions
+ */
+export async function sendTelegramWorkspaceNotFound(
+  chatId: number,
+  requestedPath: string,
+  suggestions: string[]
+): Promise<void> {
+  const buttons: Array<{ text: string; callback_data: string }[]> = [];
+
+  for (const suggestion of suggestions.slice(0, 3)) {
+    buttons.push([
+      { text: `📁 ${suggestion}`, callback_data: `workspace_${suggestion}` },
+    ]);
+  }
+
+  buttons.push([
+    { text: '🧪 Usar Sandbox', callback_data: 'workspace_sandbox' },
+  ]);
+
+  await sendTelegramButtons(chatId, TELEGRAM_ERRORS.WORKSPACE_NOT_FOUND(requestedPath), buttons);
+}
+
+/**
+ * Send processing error with retry option
+ */
+export async function sendTelegramProcessingError(
+  chatId: number,
+  agentName: string,
+  error: string,
+  taskId?: string
+): Promise<void> {
+  const truncatedError = error.length > 100 ? error.slice(0, 100) + '...' : error;
+  const text = TELEGRAM_ERRORS.PROCESSING_ERROR(agentName, truncatedError);
+
+  if (taskId) {
+    await sendTelegramButtons(chatId, text, [
+      [
+        { text: '🔄 Tentar novamente', callback_data: `retry_${taskId}` },
+        { text: '❌ Ignorar', callback_data: 'error_dismiss' },
+      ],
+    ]);
+  } else {
+    await sendTelegramMessage(chatId, text);
+  }
+}
+
+/**
+ * Delete a message (useful for removing queue position messages after processing)
+ */
+export async function deleteTelegramMessage(
+  chatId: number | string,
+  messageId: number
+): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    await telegramBot.deleteMessage(chatId, messageId);
+    return true;
+  } catch (error) {
+    console.error('Failed to delete Telegram message:', error);
+    return false;
+  }
+}

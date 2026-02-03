@@ -58,6 +58,12 @@ export type SendTelegramFn = (chatId: number, text: string) => Promise<void>;
 export type SendTelegramImageFn = (chatId: number, imageUrl: string, caption?: string) => Promise<void>;
 
 /**
+ * Type for Telegram typing indicator function
+ * Returns a stop function to clear the interval
+ */
+export type StartTypingIndicatorFn = (chatId: number) => () => void;
+
+/**
  * Platform detection result
  */
 export type Platform = 'telegram' | 'whatsapp_group' | 'whatsapp_user';
@@ -155,6 +161,31 @@ class PriorityQueue {
   }
 
   /**
+   * Remove a task by ID
+   * Returns true if task was found and removed, false otherwise
+   */
+  remove(taskId: string): boolean {
+    const index = this.items.findIndex(t => t.id === taskId);
+    if (index !== -1) {
+      this.items.splice(index, 1);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get the position of a task in the queue (1-indexed)
+   * Returns undefined if task is not found
+   */
+  getPosition(taskId: string): number | undefined {
+    const index = this.items.findIndex(t => t.id === taskId);
+    if (index !== -1) {
+      return index + 1; // 1-indexed position
+    }
+    return undefined;
+  }
+
+  /**
    * Determine if task A should be inserted before task B
    * Higher priority (lower number) comes first
    * Within same priority, earlier timestamp (FIFO) comes first
@@ -190,10 +221,14 @@ export class QueueManager {
   private readonly sendErrorWithActions?: SendErrorWithActionsFn;
   private readonly sendTelegram?: SendTelegramFn;
   private readonly sendTelegramImage?: SendTelegramImageFn;
+  private readonly startTypingIndicator?: StartTypingIndicatorFn;
   private activeCount: number = 0;
 
   // Store last errors for retry functionality
   private lastErrors = new Map<string, { agentId: string; prompt: string; model: 'haiku' | 'sonnet' | 'opus' }>();
+
+  // Track active tasks for cancellation (taskId -> agentId)
+  private activeTasks = new Map<string, string>();
 
   constructor(
     semaphore: Semaphore,
@@ -204,7 +239,8 @@ export class QueueManager {
     sendErrorWithActions?: SendErrorWithActionsFn,
     sendWhatsAppMedia?: SendWhatsAppMediaFn,
     sendTelegram?: SendTelegramFn,
-    sendTelegramImage?: SendTelegramImageFn
+    sendTelegramImage?: SendTelegramImageFn,
+    startTypingIndicator?: StartTypingIndicatorFn
   ) {
     this.queue = new PriorityQueue();
     this.semaphore = semaphore;
@@ -216,6 +252,7 @@ export class QueueManager {
     this.sendWhatsAppMedia = sendWhatsAppMedia;
     this.sendTelegram = sendTelegram;
     this.sendTelegramImage = sendTelegramImage;
+    this.startTypingIndicator = startTypingIndicator;
   }
 
   /**
@@ -301,17 +338,46 @@ export class QueueManager {
   }
 
   /**
+   * Cancel a task by ID
+   * Returns true if task was found and cancelled, false otherwise
+   * Note: Can only cancel tasks that are still in the queue (not yet processing)
+   */
+  cancelTask(taskId: string): boolean {
+    return this.queue.remove(taskId);
+  }
+
+  /**
+   * Get the position of a task in the queue (1-indexed)
+   * Returns undefined if task is not found or is already processing
+   */
+  getTaskPosition(taskId: string): number | undefined {
+    return this.queue.getPosition(taskId);
+  }
+
+  /**
+   * Check if a task is currently being processed
+   */
+  isTaskActive(taskId: string): boolean {
+    return this.activeTasks.has(taskId);
+  }
+
+  /**
    * Process a single task
    */
   private async processTask(task: QueueTask): Promise<ProcessingResult> {
     const { agentId, prompt, model, userId, images, replyTo } = task;
     // Platform detection is handled by helper methods
     const targetDesc = this.getTargetDescription(replyTo);
+    const platform = detectPlatform(replyTo, userId);
+
+    // Track active task for potential cancellation
+    this.activeTasks.set(task.id, agentId);
 
     // Progress tracking state
     let lastToolName = '';
     let lastToolInput: Record<string, unknown> | undefined;
     let progressInterval: ReturnType<typeof setInterval> | null = null;
+    let stopTyping: (() => void) | null = null;
     const startTime = Date.now();
 
     try {
@@ -334,23 +400,32 @@ export class QueueManager {
         `processando - ${truncatedPrompt}...`
       );
 
-      // Notify user that task is starting
-      await this.notifyTaskStartPlatform(replyTo, userId, agent.name, model, prompt);
+      // For Telegram: use typing indicator instead of text notification
+      // For WhatsApp: use text notification as before
+      if (platform === 'telegram' && typeof replyTo === 'number' && this.startTypingIndicator) {
+        stopTyping = this.startTypingIndicator(replyTo);
+      } else {
+        // WhatsApp: Notify user that task is starting
+        await this.notifyTaskStartPlatform(replyTo, userId, agent.name, model, prompt);
+      }
 
-      // Start progress update interval (every 30 seconds)
-      progressInterval = setInterval(async () => {
-        if (lastToolName) {
-          const elapsed = this.formatElapsed(Date.now() - startTime);
-          const toolDesc = this.describeToolAction(lastToolName, lastToolInput);
-          const emoji = TOOL_EMOJI[lastToolName] || '🌐';
-          const message = `${emoji} *${agent.name}*: _${toolDesc}_ (${elapsed})`;
-          try {
-            await this.sendResponse(replyTo, userId, message);
-          } catch (err) {
-            console.error('Failed to send progress update:', err);
+      // Start progress update interval (every 30 seconds) - only for WhatsApp
+      // For Telegram, the typing indicator is sufficient
+      if (platform !== 'telegram') {
+        progressInterval = setInterval(async () => {
+          if (lastToolName) {
+            const elapsed = this.formatElapsed(Date.now() - startTime);
+            const toolDesc = this.describeToolAction(lastToolName, lastToolInput);
+            const emoji = TOOL_EMOJI[lastToolName] || '🌐';
+            const message = `${emoji} *${agent.name}*: _${toolDesc}_ (${elapsed})`;
+            try {
+              await this.sendResponse(replyTo, userId, message);
+            } catch (err) {
+              console.error('Failed to send progress update:', err);
+            }
           }
-        }
-      }, 30000);
+        }, 30000);
+      }
 
       // Progress callback to track current tool
       const onProgress = (toolName: string, toolInput?: Record<string, unknown>) => {
@@ -463,6 +538,14 @@ export class QueueManager {
       if (progressInterval) {
         clearInterval(progressInterval);
       }
+
+      // Stop typing indicator
+      if (stopTyping) {
+        stopTyping();
+      }
+
+      // Remove from active tasks
+      this.activeTasks.delete(task.id);
     }
   }
 
@@ -475,6 +558,16 @@ export class QueueManager {
   ): Promise<ProcessingResult> {
     const { agentId, prompt, userId, replyTo } = task;
     const targetDesc = this.getTargetDescription(replyTo);
+    const platform = detectPlatform(replyTo, userId);
+
+    // Track active task
+    this.activeTasks.set(task.id, agentId);
+
+    // Start typing indicator for Telegram
+    let stopTyping: (() => void) | null = null;
+    if (platform === 'telegram' && typeof replyTo === 'number' && this.startTypingIndicator) {
+      stopTyping = this.startTypingIndicator(replyTo);
+    }
 
     try {
       // Update agent status to processing (internal only, no WhatsApp message)
@@ -575,6 +668,14 @@ export class QueueManager {
         success: false,
         error: error instanceof Error ? error : new Error(errorMessage),
       };
+    } finally {
+      // Stop typing indicator
+      if (stopTyping) {
+        stopTyping();
+      }
+
+      // Remove from active tasks
+      this.activeTasks.delete(task.id);
     }
   }
 
