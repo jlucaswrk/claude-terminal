@@ -2247,3 +2247,68 @@ function generateProgressBar(percent: number): string {
   const empty = 10 - filled;
   return '▓'.repeat(filled) + '░'.repeat(empty) + ` ${percent}%`;
 }
+
+// =============================================================================
+// WhatsApp Groups API Functions
+// =============================================================================
+
+/**
+ * Create a new WhatsApp group and add the user as participant
+ * Uses the WhatsApp Groups API (available since October 2025)
+ *
+ * @param name - Group name (will be prefixed with emoji)
+ * @param description - Group description with workspace and type info
+ * @param userPhone - Phone number to add as participant
+ * @returns Group ID (format: 120363...@g.us)
+ */
+export async function createWhatsAppGroup(
+  name: string,
+  description: string,
+  userPhone: string
+): Promise<string> {
+  // Create the group
+  const createResponse = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/groups`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subject: name,
+        description,
+      }),
+    }
+  );
+
+  if (!createResponse.ok) {
+    const error = await createResponse.text();
+    console.error('WhatsApp group creation error:', error);
+    throw new Error(`Failed to create WhatsApp group: ${error}`);
+  }
+
+  const { id: groupId } = (await createResponse.json()) as { id: string };
+
+  // Add user to the group
+  const addResponse = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/groups/${groupId}/participants`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        participants: [userPhone.replace('+', '')],
+      }),
+    }
+  );
+
+  if (!addResponse.ok) {
+    console.error('Failed to add participant to group:', await addResponse.text());
+    // Group was created, return ID anyway - user can be added manually
+  }
+
+  return groupId;
+}
