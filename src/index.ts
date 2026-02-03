@@ -39,6 +39,7 @@ import {
   sendUnlinkedGroupMessage,
   createWhatsAppGroup,
   deleteWhatsAppGroup,
+  sendDeleteGroupChoice,
   sendAgentModeSelector,
   sendModelModeSelector,
 } from './whatsapp';
@@ -1435,8 +1436,20 @@ async function handleConfirmation(
     }
 
     const agent = agentManager.getAgent(agentId);
-    const agentName = agent?.name || 'Unknown';
+    if (!agent) {
+      await sendWhatsApp(userId, `❌ Falha ao deletar agente. Agente não encontrado.`);
+      return { status: 'delete_failed' };
+    }
 
+    // If agent has a group, ask what to do with it
+    if (agent.groupId) {
+      userContextManager.startDeleteAgentFlow(userId, agentId);
+      await sendDeleteGroupChoice(userId, agent.name);
+      return { status: 'awaiting_group_choice' };
+    }
+
+    // No group, delete directly
+    const agentName = agent.name;
     terminal.clearSession(userId, agentId);
     const deleted = agentManager.deleteAgent(agentId);
 
@@ -1454,6 +1467,65 @@ async function handleConfirmation(
 
     await sendWhatsApp(userId, `✅ Agente *${agentName}* deletado.`);
     return { status: 'deleted' };
+  }
+
+  // Delete with group - user chose to delete both agent and group
+  if (buttonId === 'delete_with_group') {
+    const data = userContextManager.getDeleteAgentData(userId);
+    if (data?.agentId) {
+      const agent = agentManager.getAgent(data.agentId);
+      const agentName = agent?.name || 'Unknown';
+      if (agent?.groupId) {
+        try {
+          await deleteWhatsAppGroup(agent.groupId);
+        } catch (e) {
+          console.error('Failed to delete group:', e);
+          // Continue with agent deletion even if group deletion fails
+        }
+      }
+      terminal.clearSession(userId, data.agentId);
+      agentManager.deleteAgent(data.agentId);
+
+      // Clear any cached selections that point to the deleted agent
+      pendingAgentSelection.delete(userId);
+      const lastChoice = userContextManager.getLastChoice(userId);
+      if (lastChoice?.agentId === data.agentId) {
+        userContextManager.clearLastChoice(userId);
+      }
+
+      userContextManager.clearContext(userId);
+      await sendWhatsApp(userId, `✅ Agente *${agentName}* e grupo deletados.`);
+    }
+    return { status: 'deleted_with_group' };
+  }
+
+  // Delete but keep group - user chose to keep the group
+  if (buttonId === 'delete_keep_group') {
+    const data = userContextManager.getDeleteAgentData(userId);
+    if (data?.agentId) {
+      const agent = agentManager.getAgent(data.agentId);
+      const agentName = agent?.name || 'Unknown';
+      terminal.clearSession(userId, data.agentId);
+      agentManager.deleteAgent(data.agentId);
+
+      // Clear any cached selections that point to the deleted agent
+      pendingAgentSelection.delete(userId);
+      const lastChoice = userContextManager.getLastChoice(userId);
+      if (lastChoice?.agentId === data.agentId) {
+        userContextManager.clearLastChoice(userId);
+      }
+
+      userContextManager.clearContext(userId);
+      await sendWhatsApp(userId, `✅ Agente *${agentName}* deletado. Grupo mantido.`);
+    }
+    return { status: 'deleted_keep_group' };
+  }
+
+  // Cancel deletion
+  if (buttonId === 'delete_cancel') {
+    userContextManager.clearContext(userId);
+    await sendWhatsApp(userId, '❌ Deleção cancelada.');
+    return { status: 'cancelled' };
   }
 
   // Create agent confirmation
