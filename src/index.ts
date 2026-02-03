@@ -51,7 +51,23 @@ import {
   sendRoninRejection,
 } from './whatsapp';
 import { roninAgent, RONIN_SYSTEM_PROMPT } from './ronin-agent';
-import { isTelegramConfigured, getBotInfo } from './telegram';
+import {
+  isTelegramConfigured,
+  getBotInfo,
+  sendTelegramMessage,
+  sendTelegramButtons,
+  sendTelegramCommandList,
+  sendTelegramAgentNamePrompt,
+  sendTelegramAgentTypeSelector,
+  sendTelegramEmojiSelector,
+  sendTelegramAgentModeSelector,
+  sendTelegramWorkspaceSelector,
+  sendTelegramModelModeSelector,
+  sendTelegramAgentConfirmation,
+  sendTelegramAgentsList,
+  sendTelegramDojoActivated,
+  answerCallbackQuery,
+} from './telegram';
 import { MessageRouter } from './message-router';
 import { transcribeAudio } from './transcription';
 import { PersistenceService } from './persistence';
@@ -244,6 +260,296 @@ app.post('/webhook', async (c) => {
     console.log(`[timing] Total: ${Date.now() - t0}ms`);
   }
 });
+
+// =============================================================================
+// Telegram Webhook
+// =============================================================================
+
+app.post('/telegram', async (c) => {
+  if (!isTelegramConfigured()) {
+    return c.json({ ok: false, error: 'Telegram not configured' }, 500);
+  }
+
+  try {
+    const update = await c.req.json();
+    await handleTelegramUpdate(update);
+    return c.json({ ok: true });
+  } catch (error) {
+    console.error('Telegram webhook error:', error);
+    return c.json({ ok: false }, 500);
+  }
+});
+
+/**
+ * Handle Telegram update
+ */
+async function handleTelegramUpdate(update: any): Promise<void> {
+  // Handle callback queries (button presses)
+  if (update.callback_query) {
+    await handleTelegramCallback(update.callback_query);
+    return;
+  }
+
+  // Handle messages
+  if (update.message) {
+    await handleTelegramMessage(update.message);
+    return;
+  }
+}
+
+/**
+ * Handle Telegram message
+ */
+async function handleTelegramMessage(message: any): Promise<void> {
+  const chatId = message.chat.id;
+  const text = message.text || '';
+  const from = message.from;
+
+  console.log(`[telegram] ${from.username || from.id}: ${text}`);
+
+  // Find user by telegram username
+  const allPrefs = persistenceService.getAllUserPreferences();
+  const userPrefs = allPrefs.find(p =>
+    p.telegramUsername?.toLowerCase() === from.username?.toLowerCase()
+  );
+
+  if (!userPrefs) {
+    await sendTelegramMessage(chatId,
+      'Usuario nao encontrado.\n\n' +
+      'Configure o Dojo primeiro pelo WhatsApp.'
+    );
+    return;
+  }
+
+  // Update telegram chat ID if not set
+  if (!userPrefs.telegramChatId) {
+    userPrefs.telegramChatId = chatId;
+    persistenceService.saveUserPreferences(userPrefs);
+  }
+
+  const userId = userPrefs.userId;
+
+  // Handle commands
+  if (text.startsWith('/')) {
+    await handleTelegramCommand(chatId, userId, text);
+    return;
+  }
+
+  // Handle flow states (agent creation)
+  if (userContextManager.isInFlow(userId)) {
+    await handleTelegramFlowInput(chatId, userId, text);
+    return;
+  }
+
+  // Default: show help
+  await sendTelegramCommandList(chatId);
+}
+
+/**
+ * Handle Telegram commands
+ */
+async function handleTelegramCommand(chatId: number, userId: string, text: string): Promise<void> {
+  const command = text.split(' ')[0].toLowerCase();
+
+  switch (command) {
+    case '/start':
+      await sendTelegramCommandList(chatId);
+      break;
+
+    case '/criar':
+    case '/new':
+      userContextManager.startCreateAgentFlow(userId);
+      await sendTelegramAgentNamePrompt(chatId);
+      break;
+
+    case '/agentes':
+    case '/list':
+      const agents = agentManager.getAgentsByUserId(userId)
+        .filter(a => a.name !== 'Ronin') // Exclude Ronin from Telegram list
+        .map(a => ({
+          id: a.id,
+          name: a.name,
+          emoji: a.emoji || '🤖',
+          status: a.status,
+          workspace: a.workspace,
+        }));
+      await sendTelegramAgentsList(chatId, agents);
+      break;
+
+    case '/status':
+      await handleTelegramStatus(chatId, userId);
+      break;
+
+    case '/help':
+      await sendTelegramCommandList(chatId);
+      break;
+
+    default:
+      await sendTelegramMessage(chatId, 'Comando nao reconhecido. Use /help.');
+  }
+}
+
+/**
+ * Handle Telegram flow input (agent creation steps)
+ */
+async function handleTelegramFlowInput(chatId: number, userId: string, text: string): Promise<void> {
+  const flow = userContextManager.getCurrentFlow(userId);
+  const state = userContextManager.getCurrentFlowState(userId);
+
+  if (flow === 'create_agent' && state === 'awaiting_name') {
+    userContextManager.setAgentName(userId, text.trim());
+    await sendTelegramAgentTypeSelector(chatId);
+  }
+  // Other states are handled by callback queries (button presses)
+}
+
+/**
+ * Handle Telegram callback (button press)
+ */
+async function handleTelegramCallback(query: any): Promise<void> {
+  const chatId = query.message.chat.id;
+  const data = query.data;
+  const from = query.from;
+
+  await answerCallbackQuery(query.id);
+
+  // Find user by telegram username
+  const allPrefs = persistenceService.getAllUserPreferences();
+  const userPrefs = allPrefs.find(p =>
+    p.telegramUsername?.toLowerCase() === from.username?.toLowerCase()
+  );
+
+  if (!userPrefs) return;
+  const userId = userPrefs.userId;
+
+  // Handle different callbacks
+  if (data.startsWith('type_')) {
+    const type = data.replace('type_', '') as 'claude' | 'bash';
+    userContextManager.setAgentType(userId, type);
+    await sendTelegramEmojiSelector(chatId);
+  }
+  else if (data.startsWith('emoji_')) {
+    const emoji = data.replace('emoji_', '');
+    userContextManager.setAgentEmoji(userId, emoji);
+    await sendTelegramAgentModeSelector(chatId);
+  }
+  else if (data.startsWith('agentmode_')) {
+    const mode = data.replace('agentmode_', '') as 'conversational' | 'ralph';
+    userContextManager.setAgentMode(userId, mode);
+    await sendTelegramWorkspaceSelector(chatId);
+  }
+  else if (data.startsWith('workspace_')) {
+    const workspace = data.replace('workspace_', '');
+    if (workspace !== 'skip' && workspace !== 'custom') {
+      userContextManager.setAgentWorkspace(userId, workspace);
+    } else {
+      userContextManager.setAgentWorkspace(userId, null);
+    }
+    await sendTelegramModelModeSelector(chatId);
+  }
+  else if (data.startsWith('modelmode_')) {
+    const modelMode = data.replace('modelmode_', '') as ModelMode;
+    userContextManager.setAgentModelMode(userId, modelMode);
+
+    // Show confirmation
+    const flowData = userContextManager.getFlowData(userId);
+    await sendTelegramAgentConfirmation(
+      chatId,
+      flowData?.agentName || 'Agent',
+      flowData?.emoji || '🤖',
+      flowData?.agentType || 'claude',
+      flowData?.agentMode || 'conversational',
+      flowData?.workspace as string | undefined,
+      modelMode
+    );
+  }
+  else if (data === 'confirm_create') {
+    const flowData = userContextManager.getFlowData(userId);
+    if (flowData?.agentName) {
+      const agent = agentManager.createAgent(
+        userId,
+        flowData.agentName as string,
+        (flowData.agentType || 'claude') as AgentType,
+        flowData.emoji as string,
+        flowData.workspace as string | undefined,
+        (flowData.agentMode || 'conversational') as 'conversational' | 'ralph',
+        (flowData.modelMode || 'selection') as ModelMode
+      );
+
+      userContextManager.clearContext(userId);
+
+      await sendTelegramMessage(chatId,
+        `Agente *${agent.name}* criado!\n\n` +
+        `Envie mensagens aqui para conversar com ele.`
+      );
+    }
+  }
+  else if (data === 'confirm_cancel') {
+    userContextManager.clearContext(userId);
+    await sendTelegramMessage(chatId, 'Criacao cancelada.');
+  }
+  else if (data.startsWith('agent_')) {
+    const agentId = data.replace('agent_', '');
+    await handleTelegramAgentMenu(chatId, userId, agentId);
+  }
+}
+
+/**
+ * Handle Telegram status command
+ */
+async function handleTelegramStatus(chatId: number, userId: string): Promise<void> {
+  const agents = agentManager.getAgentsByUserId(userId).filter(a => a.name !== 'Ronin');
+
+  if (agents.length === 0) {
+    await sendTelegramMessage(chatId, 'Nenhum agente criado ainda.');
+    return;
+  }
+
+  const statusEmoji: Record<string, string> = {
+    idle: '⚪',
+    processing: '🔵',
+    error: '🔴',
+    'ralph-loop': '🔄',
+    'ralph-paused': '⏸️',
+  };
+
+  let text = '*Status dos Agentes*\n\n';
+  for (const agent of agents) {
+    const status = statusEmoji[agent.status] || '⚪';
+    text += `${agent.emoji || '🤖'} *${agent.name}* ${status}\n`;
+    text += `   ${agent.statusDetails}\n`;
+  }
+
+  await sendTelegramMessage(chatId, text);
+}
+
+/**
+ * Handle Telegram agent menu
+ */
+async function handleTelegramAgentMenu(chatId: number, userId: string, agentId: string): Promise<void> {
+  const agent = agentManager.getAgent(agentId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, 'Agente nao encontrado.');
+    return;
+  }
+
+  await sendTelegramButtons(chatId,
+    `${agent.emoji || '🤖'} *${agent.name}*\n\n` +
+    `Workspace: ${agent.workspace || 'Sem workspace'}\n` +
+    `Modelo: ${agent.modelMode}\n` +
+    `Status: ${agent.status}`,
+    [
+      [
+        { text: 'Enviar prompt', callback_data: `prompt_${agentId}` },
+        { text: 'Historico', callback_data: `history_${agentId}` },
+      ],
+      [
+        { text: 'Reset', callback_data: `reset_${agentId}` },
+        { text: 'Deletar', callback_data: `delete_${agentId}` },
+      ],
+    ]
+  );
+}
 
 // =============================================================================
 // Text Message Handler
