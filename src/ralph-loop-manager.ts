@@ -20,6 +20,7 @@ export interface IterationResult {
 
 /**
  * Result of loop execution
+ * Note: status can be 'completed', 'failed', 'blocked', 'paused', or 'cancelled'
  */
 export interface LoopExecutionResult {
   loopId: string;
@@ -142,8 +143,8 @@ export class RalphLoopManager {
     this.activeLoops.set(loopId, loopState);
     this.persistenceService.saveLoop(loopState);
 
-    // Update agent to reference this loop
-    this.updateAgentLoopState(agentId, loopId, 'ralph-paused', 'Loop criado, aguardando execução');
+    // Update agent to reference this loop and set currentLoopId
+    this.agentManager.promoteToRalph(agentId, loopId);
 
     console.log(`[ralph] Created loop ${loopId} for agent ${agent.name} with task: ${task.substring(0, 50)}...`);
 
@@ -164,7 +165,7 @@ export class RalphLoopManager {
       throw new Error(`Loop ${loopId} is already running`);
     }
 
-    if (['completed', 'failed', 'cancelled'].includes(loop.status)) {
+    if (['completed', 'failed', 'cancelled', 'blocked'].includes(loop.status)) {
       throw new Error(`Loop ${loopId} has already terminated with status: ${loop.status}`);
     }
 
@@ -211,6 +212,7 @@ export class RalphLoopManager {
         if (iterationResult.isComplete) {
           loop.status = 'completed';
           this.persistLoop(loop);
+          this.agentManager.clearLoopReference(loop.agentId);
           this.updateAgentLoopState(loop.agentId, loopId, 'idle', 'Loop concluído com sucesso');
 
           console.log(`[ralph] Loop ${loopId} completed after ${loop.currentIteration} iterations`);
@@ -245,8 +247,9 @@ export class RalphLoopManager {
 
       // Max iterations reached without completion - mark as blocked
       if (loop.currentIteration >= loop.maxIterations) {
-        loop.status = 'failed';
+        loop.status = 'blocked';
         this.persistLoop(loop);
+        this.agentManager.clearLoopReference(loop.agentId);
         this.updateAgentLoopState(
           loop.agentId,
           loopId,
@@ -258,7 +261,7 @@ export class RalphLoopManager {
 
         return {
           loopId,
-          status: 'failed',
+          status: 'blocked',
           iterations: loop.currentIteration,
           isComplete: false,
           isBlocked: true,
@@ -281,6 +284,7 @@ export class RalphLoopManager {
 
       loop.status = 'failed';
       this.persistLoop(loop);
+      this.agentManager.clearLoopReference(loop.agentId);
       this.updateAgentLoopState(loop.agentId, loopId, 'error', `Erro: ${this.truncate(errorMessage, 50)}`);
 
       return {
@@ -469,13 +473,14 @@ Continue with the next step of the task.`;
       throw new Error(`Loop not found: ${loopId}`);
     }
 
-    if (['completed', 'failed', 'cancelled'].includes(loop.status)) {
+    if (['completed', 'failed', 'cancelled', 'blocked'].includes(loop.status)) {
       throw new Error(`Loop ${loopId} is already terminated with status: ${loop.status}`);
     }
 
     // Update status
     loop.status = 'cancelled';
     this.persistLoop(loop);
+    this.agentManager.clearLoopReference(loop.agentId);
     this.updateAgentLoopState(loop.agentId, loopId, 'idle', `Loop cancelado na iteração ${loop.currentIteration}`);
 
     // Release semaphore if we hold it

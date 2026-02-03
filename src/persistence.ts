@@ -487,8 +487,8 @@ export class PersistenceService {
     const agentIdSet = new Set(existingAgentIds);
 
     for (const loop of loops) {
-      // Only clean up completed/failed/cancelled loops with non-existent agents
-      const isTerminalState = ['completed', 'failed', 'cancelled'].includes(loop.status);
+      // Only clean up completed/failed/cancelled/blocked loops with non-existent agents
+      const isTerminalState = ['completed', 'failed', 'cancelled', 'blocked'].includes(loop.status);
       const agentExists = agentIdSet.has(loop.agentId);
 
       if (!agentExists && isTerminalState) {
@@ -542,7 +542,7 @@ export class PersistenceService {
     }
 
     // Status must be valid
-    const validStatuses = ['running', 'paused', 'completed', 'failed', 'cancelled', 'interrupted'];
+    const validStatuses = ['running', 'paused', 'completed', 'failed', 'cancelled', 'interrupted', 'blocked'];
     if (!validStatuses.includes(loop.status!)) {
       return false;
     }
