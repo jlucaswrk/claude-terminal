@@ -2351,3 +2351,571 @@ export async function sendRalphControlError(
 ): Promise<void> {
   await sendTelegramMessage(chatId, `⚠️ ${error}`, undefined, threadId);
 }
+
+// ============================================
+// Enhanced Topic Management UI
+// ============================================
+
+/**
+ * Topic status with display info
+ */
+export type TopicDisplayStatus = 'running' | 'paused' | 'completed' | 'inactive' | 'closed';
+
+/**
+ * Get status emoji and label for a topic
+ */
+export function getTopicStatusDisplay(
+  topicType: 'general' | 'ralph' | 'worktree' | 'session',
+  topicStatus: 'active' | 'closed',
+  ralphStatus?: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'blocked'
+): { emoji: string; label: string; displayStatus: TopicDisplayStatus } {
+  if (topicStatus === 'closed') {
+    return { emoji: '🔒', label: 'Fechado', displayStatus: 'closed' };
+  }
+
+  if (topicType === 'ralph') {
+    switch (ralphStatus) {
+      case 'running':
+        return { emoji: '▶️', label: 'Executando', displayStatus: 'running' };
+      case 'paused':
+        return { emoji: '⏸️', label: 'Pausado', displayStatus: 'paused' };
+      case 'completed':
+        return { emoji: '✅', label: 'Completo', displayStatus: 'completed' };
+      case 'failed':
+      case 'cancelled':
+      case 'interrupted':
+      case 'blocked':
+        return { emoji: '✅', label: 'Completo', displayStatus: 'completed' };
+      default:
+        return { emoji: '💤', label: 'Inativo', displayStatus: 'inactive' };
+    }
+  }
+
+  // Worktree, Session, General - always active if not closed
+  return { emoji: '💬', label: 'Ativo', displayStatus: 'inactive' };
+}
+
+/**
+ * Format relative time in Portuguese
+ */
+export function formatRelativeTime(date: Date): string {
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSeconds = Math.floor(diffMs / 1000);
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffDays > 0) {
+    return `há ${diffDays}d`;
+  }
+  if (diffHours > 0) {
+    return `há ${diffHours}h`;
+  }
+  if (diffMinutes > 0) {
+    return `há ${diffMinutes}m`;
+  }
+  return 'agora';
+}
+
+/**
+ * Topic data for display in /topicos listing
+ */
+export interface TopicListItem {
+  id: string;
+  telegramTopicId: number;
+  emoji: string;
+  name: string;
+  type: 'general' | 'ralph' | 'worktree' | 'session';
+  status: 'active' | 'closed';
+  loopId?: string;
+  lastActivity: Date;
+  // Ralph-specific
+  currentIteration?: number;
+  maxIterations?: number;
+  ralphStatus?: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'blocked';
+  // Session-specific
+  messageCount?: number;
+}
+
+/**
+ * Format a single topic line for compact listing
+ */
+export function formatTopicCompactLine(topic: TopicListItem): string {
+  const { emoji: statusEmoji, label: statusLabel } = getTopicStatusDisplay(
+    topic.type,
+    topic.status,
+    topic.ralphStatus
+  );
+
+  const timeAgo = formatRelativeTime(topic.lastActivity);
+
+  // Build progress indicator
+  let progress = '';
+  if (topic.type === 'ralph' && topic.currentIteration !== undefined && topic.maxIterations !== undefined) {
+    progress = ` │ ${topic.currentIteration}/${topic.maxIterations}`;
+  } else if (topic.messageCount !== undefined) {
+    progress = ` │ ${topic.messageCount} msgs`;
+  }
+
+  // Format: ▶️ Executando │ 🔄 Auth JWT │ 5/10 │ há 2h
+  return `${statusEmoji} ${statusLabel} │ ${topic.emoji} ${topic.name}${progress} │ ${timeAgo}`;
+}
+
+/**
+ * Send enhanced topic listing with compact view
+ * Shows all topics with status, progress, and relative time
+ * Clicking a topic expands to show full details and actions
+ */
+export async function sendEnhancedTopicsList(
+  chatId: number,
+  topics: TopicListItem[],
+  agentName: string
+): Promise<void> {
+  if (topics.length === 0) {
+    await sendTelegramButtons(chatId,
+      `📋 *Tópicos de ${agentName}*\n\n` +
+      `Nenhum tópico encontrado.\n` +
+      `Crie um novo tópico para organizar conversas.`,
+      [
+        [
+          { text: '+ Ralph', callback_data: 'topic_create_ralph' },
+          { text: '+ Worktree', callback_data: 'topic_create_worktree' },
+          { text: '+ Sessão', callback_data: 'topic_create_session' },
+        ],
+      ]
+    );
+    return;
+  }
+
+  // Sort: active first, then by lastActivity descending
+  const sortedTopics = [...topics].sort((a, b) => {
+    if (a.status !== b.status) {
+      return a.status === 'active' ? -1 : 1;
+    }
+    return b.lastActivity.getTime() - a.lastActivity.getTime();
+  });
+
+  // Build compact listing
+  const lines = sortedTopics.map(formatTopicCompactLine);
+  const text = `📋 *Tópicos de ${agentName}*\n\n` +
+    `\`\`\`\n${lines.join('\n')}\n\`\`\`\n\n` +
+    `_Toque em um tópico para ver detalhes._`;
+
+  // Build topic selection buttons (max 8 to fit Telegram limits)
+  const topicButtons: Array<{ text: string; callback_data: string }[]> = [];
+  const displayTopics = sortedTopics.slice(0, 8);
+
+  for (let i = 0; i < displayTopics.length; i += 2) {
+    const row: { text: string; callback_data: string }[] = [];
+    row.push({
+      text: `${displayTopics[i].emoji} ${displayTopics[i].name.slice(0, 15)}`,
+      callback_data: `topic_detail_${displayTopics[i].id}`,
+    });
+    if (i + 1 < displayTopics.length) {
+      row.push({
+        text: `${displayTopics[i + 1].emoji} ${displayTopics[i + 1].name.slice(0, 15)}`,
+        callback_data: `topic_detail_${displayTopics[i + 1].id}`,
+      });
+    }
+    topicButtons.push(row);
+  }
+
+  // Add creation footer
+  topicButtons.push([
+    { text: '+ Ralph', callback_data: 'topic_create_ralph' },
+    { text: '+ Worktree', callback_data: 'topic_create_worktree' },
+    { text: '+ Sessão', callback_data: 'topic_create_session' },
+  ]);
+
+  await sendTelegramButtons(chatId, text, topicButtons);
+}
+
+/**
+ * Send expanded topic detail view with context-aware buttons
+ */
+export async function sendTopicDetailView(
+  chatId: number,
+  topic: TopicListItem,
+  agentChatId: number
+): Promise<void> {
+  const { emoji: statusEmoji, label: statusLabel, displayStatus } = getTopicStatusDisplay(
+    topic.type,
+    topic.status,
+    topic.ralphStatus
+  );
+
+  const timeAgo = formatRelativeTime(topic.lastActivity);
+  const typeName = topic.type === 'ralph' ? 'Ralph Loop'
+    : topic.type === 'worktree' ? 'Worktree'
+    : topic.type === 'session' ? 'Sessão'
+    : 'General';
+
+  // Build detail text
+  let text = `${topic.emoji} *${topic.name}*\n\n` +
+    `*Tipo:* ${typeName}\n` +
+    `*Status:* ${statusEmoji} ${statusLabel}\n` +
+    `*Última atividade:* ${timeAgo}`;
+
+  // Add progress for Ralph topics
+  if (topic.type === 'ralph' && topic.currentIteration !== undefined && topic.maxIterations !== undefined) {
+    const percentage = Math.round((topic.currentIteration / topic.maxIterations) * 100);
+    text += `\n*Progresso:* ${topic.currentIteration}/${topic.maxIterations} (${percentage}%)`;
+  }
+
+  // Add message count if available
+  if (topic.messageCount !== undefined) {
+    text += `\n*Mensagens:* ${topic.messageCount}`;
+  }
+
+  // Build context-aware buttons
+  const buttons: Array<{ text: string; callback_data: string }[]> = [];
+
+  if (topic.type === 'general') {
+    // General topic: only reset session
+    buttons.push([
+      { text: '🔄 Reset sessão', callback_data: `topic_confirm_reset_${topic.id}` },
+    ]);
+  } else if (topic.status === 'closed') {
+    // Closed topic: reopen option
+    buttons.push([
+      { text: '🔓 Reabrir', callback_data: `topic_reopen_${topic.id}` },
+      { text: '🗑️ Deletar', callback_data: `topic_confirm_delete_${topic.id}` },
+    ]);
+  } else if (topic.type === 'ralph') {
+    // Ralph topic: depends on ralph status
+    if (displayStatus === 'running') {
+      buttons.push([
+        { text: '⏸️ Pausar', callback_data: `ralph_pause_${topic.loopId}` },
+        { text: '❌ Cancelar', callback_data: `ralph_stop_${topic.loopId}` },
+      ]);
+    } else if (displayStatus === 'paused') {
+      buttons.push([
+        { text: '▶️ Retomar', callback_data: `ralph_resume_${topic.loopId}` },
+        { text: '❌ Cancelar', callback_data: `ralph_stop_${topic.loopId}` },
+      ]);
+    } else {
+      // Completed or inactive Ralph
+      buttons.push([
+        { text: '💬 Ir para', callback_data: `topic_goto_${topic.id}` },
+        { text: '🗑️ Fechar', callback_data: `topic_confirm_close_${topic.id}` },
+      ]);
+    }
+  } else {
+    // Worktree or Session: navigate and close options
+    buttons.push([
+      { text: '💬 Ir para', callback_data: `topic_goto_${topic.id}` },
+      { text: '🗑️ Fechar', callback_data: `topic_confirm_close_${topic.id}` },
+    ]);
+  }
+
+  // Add back button
+  buttons.push([
+    { text: '⬅️ Voltar', callback_data: 'topic_list_back' },
+  ]);
+
+  await sendTelegramButtons(chatId, text, buttons);
+}
+
+/**
+ * Generate Telegram deep link for a topic
+ * Format: https://t.me/c/{chatId}/{threadId}
+ * Note: chatId must be without the -100 prefix for supergroups
+ */
+export function generateTopicDeepLink(chatId: number, threadId: number): string {
+  // Remove -100 prefix from supergroup chat IDs
+  const cleanChatId = chatId < 0 ? Math.abs(chatId) - 1000000000000 : chatId;
+  return `https://t.me/c/${cleanChatId}/${threadId}`;
+}
+
+/**
+ * Send "Ir para" navigation response with deep link
+ */
+export async function sendTopicNavigationLink(
+  chatId: number,
+  topicName: string,
+  topicEmoji: string,
+  topicChatId: number,
+  threadId: number
+): Promise<void> {
+  const deepLink = generateTopicDeepLink(topicChatId, threadId);
+
+  await sendTelegramButtons(chatId,
+    `${topicEmoji} *${topicName}*\n\n` +
+    `Clique no link abaixo para ir ao tópico:\n` +
+    `[Abrir tópico](${deepLink})`,
+    [
+      [
+        { text: '🔗 Abrir tópico', url: deepLink },
+      ],
+      [
+        { text: '⬅️ Voltar', callback_data: 'topic_list_back' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send fallback notification when deep link doesn't work
+ */
+export async function sendTopicNavigationFallback(
+  chatId: number,
+  threadId: number,
+  topicName: string
+): Promise<void> {
+  await sendTelegramMessage(
+    chatId,
+    `📍 *Navegação para tópico*\n\n` +
+    `Vá até o grupo e procure pelo tópico:\n` +
+    `*${topicName}*\n\n` +
+    `_Se você está no grupo, procure pelo tópico na lista de tópicos._`,
+    undefined,
+    threadId
+  );
+}
+
+// ============================================
+// Confirmation Modals
+// ============================================
+
+/**
+ * Send confirmation modal for closing a topic
+ */
+export async function sendTopicCloseConfirmation(
+  chatId: number,
+  topic: TopicListItem
+): Promise<void> {
+  const typeName = topic.type === 'ralph' ? 'Ralph Loop'
+    : topic.type === 'worktree' ? 'Worktree'
+    : 'Sessão';
+
+  await sendTelegramButtons(chatId,
+    `⚠️ *Fechar tópico?*\n\n` +
+    `${topic.emoji} *${topic.name}*\n` +
+    `Tipo: ${typeName}\n\n` +
+    `O tópico será fechado e não receberá mais mensagens.\n` +
+    `Você pode reabrir depois se necessário.`,
+    [
+      [
+        { text: '✅ Sim, fechar', callback_data: `topic_close_confirmed_${topic.id}` },
+        { text: '❌ Cancelar', callback_data: `topic_detail_${topic.id}` },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send confirmation modal for deleting a topic
+ */
+export async function sendTopicDeleteConfirmation(
+  chatId: number,
+  topic: TopicListItem
+): Promise<void> {
+  const typeName = topic.type === 'ralph' ? 'Ralph Loop'
+    : topic.type === 'worktree' ? 'Worktree'
+    : 'Sessão';
+
+  await sendTelegramButtons(chatId,
+    `🗑️ *Deletar tópico?*\n\n` +
+    `${topic.emoji} *${topic.name}*\n` +
+    `Tipo: ${typeName}\n\n` +
+    `⚠️ *ATENÇÃO:* Todas as mensagens do tópico serão perdidas.\n` +
+    `Esta ação não pode ser desfeita.`,
+    [
+      [
+        { text: '✅ Sim, deletar', callback_data: `topic_delete_confirmed_${topic.id}` },
+        { text: '❌ Cancelar', callback_data: `topic_detail_${topic.id}` },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send confirmation modal for resetting session
+ */
+export async function sendSessionResetConfirmation(
+  chatId: number,
+  topic: TopicListItem
+): Promise<void> {
+  await sendTelegramButtons(chatId,
+    `🔄 *Reset de sessão?*\n\n` +
+    `${topic.emoji} *${topic.name}*\n\n` +
+    `O histórico de conversa será apagado.\n` +
+    `O agente começará uma nova sessão do zero.`,
+    [
+      [
+        { text: '✅ Sim, resetar', callback_data: `topic_reset_confirmed_${topic.id}` },
+        { text: '❌ Cancelar', callback_data: `topic_detail_${topic.id}` },
+      ],
+    ]
+  );
+}
+
+// ============================================
+// Action Feedback Messages
+// ============================================
+
+/**
+ * Send feedback for topic action in General topic
+ */
+export async function sendTopicActionFeedbackGeneral(
+  chatId: number,
+  action: 'created' | 'closed' | 'reopened' | 'deleted' | 'reset',
+  topicName: string,
+  topicEmoji: string,
+  topicType: 'ralph' | 'worktree' | 'session',
+  threadId?: number
+): Promise<void> {
+  const actionMessages: Record<string, string> = {
+    created: `✅ Tópico criado: ${topicEmoji} *${topicName}*`,
+    closed: `🔒 Tópico fechado: ${topicEmoji} *${topicName}*`,
+    reopened: `🔓 Tópico reaberto: ${topicEmoji} *${topicName}*`,
+    deleted: `🗑️ Tópico deletado: ${topicEmoji} *${topicName}*`,
+    reset: `🔄 Sessão resetada: ${topicEmoji} *${topicName}*`,
+  };
+
+  await sendTelegramMessage(chatId, actionMessages[action], undefined, threadId);
+}
+
+/**
+ * Send welcome message in newly created topic (dual feedback)
+ */
+export async function sendTopicWelcomeMessage(
+  chatId: number,
+  threadId: number,
+  topicName: string,
+  topicEmoji: string,
+  topicType: 'ralph' | 'worktree' | 'session',
+  task?: string
+): Promise<void> {
+  const typeName = topicType === 'ralph' ? 'Ralph Loop'
+    : topicType === 'worktree' ? 'Worktree'
+    : 'Sessão';
+
+  let text = `${topicEmoji} *Bem-vindo ao ${typeName}*\n\n` +
+    `*${topicName}*\n\n`;
+
+  if (topicType === 'ralph' && task) {
+    const truncatedTask = task.length > 150 ? task.slice(0, 147) + '...' : task;
+    text += `*Tarefa:* ${truncatedTask}\n\n` +
+      `_O loop Ralph está iniciando..._`;
+  } else if (topicType === 'worktree') {
+    text += `Tópico isolado para experimentos e features.\n` +
+      `O contexto é separado do tópico General.\n\n` +
+      `_Envie uma mensagem para começar._`;
+  } else {
+    text += `Sessão de conversa isolada.\n` +
+      `O contexto é separado do tópico General.\n\n` +
+      `_Envie uma mensagem para começar._`;
+  }
+
+  await sendTelegramMessage(chatId, text, undefined, threadId);
+}
+
+/**
+ * Send action feedback for pause operation
+ */
+export async function sendPauseFeedback(
+  chatId: number,
+  threadId: number,
+  topicName: string
+): Promise<void> {
+  await sendTelegramMessage(
+    chatId,
+    `⏸️ *Loop pausado*\n\n` +
+    `O Ralph Loop em *${topicName}* foi pausado.\n` +
+    `Use ▶️ Retomar para continuar.`,
+    undefined,
+    threadId
+  );
+}
+
+/**
+ * Send action feedback for resume operation
+ */
+export async function sendResumeFeedback(
+  chatId: number,
+  threadId: number,
+  topicName: string
+): Promise<void> {
+  await sendTelegramMessage(
+    chatId,
+    `▶️ *Loop retomado*\n\n` +
+    `O Ralph Loop em *${topicName}* foi retomado.\n` +
+    `Continuando de onde parou...`,
+    undefined,
+    threadId
+  );
+}
+
+/**
+ * Send action feedback for close operation
+ */
+export async function sendCloseFeedback(
+  chatId: number,
+  threadId: number,
+  topicName: string
+): Promise<void> {
+  await sendTelegramMessage(
+    chatId,
+    `🔒 *Tópico fechado*\n\n` +
+    `O tópico *${topicName}* foi fechado.\n` +
+    `Você pode reabri-lo em /topicos se necessário.`,
+    undefined,
+    threadId
+  );
+}
+
+/**
+ * Send action feedback for reopen operation
+ */
+export async function sendReopenFeedback(
+  chatId: number,
+  threadId: number,
+  topicName: string
+): Promise<void> {
+  await sendTelegramMessage(
+    chatId,
+    `🔓 *Tópico reaberto*\n\n` +
+    `O tópico *${topicName}* foi reaberto.\n` +
+    `Você pode enviar mensagens novamente.`,
+    undefined,
+    threadId
+  );
+}
+
+/**
+ * Send action feedback for reset operation
+ */
+export async function sendResetFeedback(
+  chatId: number,
+  threadId: number,
+  topicName: string
+): Promise<void> {
+  await sendTelegramMessage(
+    chatId,
+    `🔄 *Sessão resetada*\n\n` +
+    `A sessão de *${topicName}* foi resetada.\n` +
+    `O agente começou uma nova conversa do zero.`,
+    undefined,
+    threadId
+  );
+}
+
+/**
+ * Send action feedback for cancel operation
+ */
+export async function sendCancelFeedback(
+  chatId: number,
+  threadId: number,
+  topicName: string
+): Promise<void> {
+  await sendTelegramMessage(
+    chatId,
+    `🛑 *Loop cancelado*\n\n` +
+    `O Ralph Loop em *${topicName}* foi cancelado.\n` +
+    `O tópico permanece aberto para novas interações.`,
+    undefined,
+    threadId
+  );
+}
