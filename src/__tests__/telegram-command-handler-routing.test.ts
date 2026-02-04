@@ -172,7 +172,7 @@ describe('TelegramCommandHandler - Topic Routing', () => {
       }
     });
 
-    test('returns topic_not_found for non-existent threadId', () => {
+    test('returns topic_unregistered for non-existent threadId', () => {
       agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
       const createdAgent = agentManager.listAgents('user-phone-123')[0];
       agentManager.setTelegramChatId(createdAgent.id, 12345);
@@ -186,9 +186,10 @@ describe('TelegramCommandHandler - Topic Routing', () => {
         true // isForum
       );
 
-      expect(result.action).toBe('topic_not_found');
-      if (result.action === 'topic_not_found') {
+      expect(result.action).toBe('topic_unregistered');
+      if (result.action === 'topic_unregistered') {
         expect(result.threadId).toBe(999);
+        expect(result.agentId).toBe(createdAgent.id);
       }
     });
   });

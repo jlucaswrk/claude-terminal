@@ -667,6 +667,56 @@ export class TopicManager {
     return this.persistence.cleanupOrphanedTopics(existingAgentIds);
   }
 
+  /**
+   * Register an external (pre-existing) Telegram topic that was created outside the bot
+   *
+   * This is used to register topics that already exist in Telegram but are not yet
+   * tracked in the local state. The topic is created with the correct emoji based on type.
+   *
+   * @param agentId - The agent ID to associate the topic with
+   * @param threadId - The Telegram message_thread_id of the existing topic
+   * @param type - The type of topic (session, ralph, worktree, general)
+   * @param name - The name to use for the topic
+   * @returns The created AgentTopic
+   */
+  registerExternalTopic(
+    agentId: string,
+    threadId: number,
+    type: TopicType,
+    name: string
+  ): AgentTopic {
+    // Check if topic already exists
+    const existingTopic = this.getTopicByThreadId(agentId, threadId);
+    if (existingTopic) {
+      console.log(`[topic-manager] Topic with threadId ${threadId} already registered for agent ${agentId}`);
+      return existingTopic;
+    }
+
+    // Create local topic object with correct emoji for the type
+    const now = new Date();
+    const topic: AgentTopic = {
+      id: uuidv4(),
+      agentId,
+      telegramTopicId: threadId,
+      type,
+      name: name.trim(),
+      emoji: getTopicEmojiForType(type),
+      sessionId: undefined,
+      loopId: undefined,
+      status: 'active',
+      messageCount: 0,
+      createdAt: now,
+      lastActivity: now,
+    };
+
+    // Persist topic
+    this.saveTopic(agentId, topic);
+
+    console.log(`[topic-manager] Registered external topic "${topic.name}" (threadId: ${threadId}) for agent ${agentId} with emoji ${topic.emoji}`);
+
+    return topic;
+  }
+
   // ============================================
   // Private Helper Methods
   // ============================================

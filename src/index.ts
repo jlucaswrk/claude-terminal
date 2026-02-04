@@ -960,6 +960,22 @@ async function handleTelegramMessage(message: any): Promise<void> {
         await sendTelegramMessage(chatId, TELEGRAM_ERRORS.TOPIC_NOT_FOUND(route.threadId), undefined, route.threadId);
         return;
 
+      case 'topic_unregistered':
+        // Topic exists in Telegram but not registered locally - show setup buttons
+        await sendTelegramButtons(
+          chatId,
+          TELEGRAM_ERRORS.TOPIC_UNREGISTERED,
+          [
+            [
+              { text: '🔄 Ralph', callback_data: `setup_topic_ralph:${route.agentId}:${route.threadId}` },
+              { text: '🌿 Worktree', callback_data: `setup_topic_worktree:${route.agentId}:${route.threadId}` },
+              { text: '💬 Sessão', callback_data: `setup_topic_session:${route.agentId}:${route.threadId}` },
+            ],
+          ],
+          route.threadId
+        );
+        return;
+
       case 'topic_closed':
         // Topic is closed - send educational error
         await sendTelegramMessage(chatId, TELEGRAM_ERRORS.TOPIC_CLOSED(route.topicName), undefined, route.threadId);
@@ -2739,6 +2755,40 @@ async function handleTelegramCallback(query: any): Promise<void> {
       await sendTelegramMessage(chatId, 'Bot removido do grupo.');
     } else {
       await sendTelegramMessage(chatId, 'Erro ao sair do grupo.');
+    }
+  }
+  // =============================================================================
+  // External Topic Setup Callbacks
+  // =============================================================================
+  else if (data.startsWith('setup_topic_')) {
+    // Handle setup_topic_{type}:{agentId}:{threadId}
+    const parts = data.replace('setup_topic_', '').split(':');
+    if (parts.length === 3) {
+      const [topicType, agentId, threadIdStr] = parts;
+      const threadId = parseInt(threadIdStr, 10);
+
+      // Map callback type to TopicType
+      const typeMap: Record<string, 'ralph' | 'worktree' | 'session'> = {
+        'ralph': 'ralph',
+        'worktree': 'worktree',
+        'session': 'session',
+      };
+
+      const type = typeMap[topicType];
+      if (type && !isNaN(threadId)) {
+        // Register the external topic
+        const topicName = `Tópico #${threadId}`;
+        topicManager.registerExternalTopic(agentId, threadId, type, topicName);
+
+        // Send confirmation message based on type
+        const confirmations: Record<string, string> = {
+          'ralph': `✅ Tópico configurado como *Ralph Loop*.\n\nEnvie a tarefa para iniciar o loop autônomo.`,
+          'worktree': `✅ Tópico configurado como *Worktree*.\n\nEnvie sua mensagem para começar.`,
+          'session': `✅ Tópico configurado como *Sessão*.\n\nEnvie sua mensagem para começar.`,
+        };
+
+        await sendTelegramMessage(chatId, confirmations[type], undefined, threadId);
+      }
     }
   }
   // =============================================================================

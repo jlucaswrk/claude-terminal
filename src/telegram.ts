@@ -1804,6 +1804,7 @@ export const TELEGRAM_ERRORS = {
   TOPIC_NOT_FOUND: (topicId: number) => `⚠️ *Tópico não encontrado*\n\nO tópico #${topicId} não existe ou foi deletado.\n\nUse o tópico General ou crie um novo tópico com /topic.`,
   TOPIC_CLOSED: (topicName: string) => `⚠️ *Tópico fechado*\n\nO tópico "${topicName}" está fechado.\n\nReabra com /reopen ou use outro tópico.`,
   TOPIC_RALPH_ACTIVE: (topicName: string) => `⏳ *Ralph em execução*\n\nO tópico "${topicName}" está executando um loop Ralph.\n\nSua mensagem foi adicionada à fila e será processada após a conclusão.`,
+  TOPIC_UNREGISTERED: '📋 *Novo tópico detectado!*\n\nEscolha o tipo para este tópico:',
 } as const;
 
 /**

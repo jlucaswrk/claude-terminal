@@ -30,6 +30,7 @@ export type TelegramRouteResult =
   | { action: 'bash_command'; agentId: string; command: string; chatId: number; userId: string; threadId?: number }
   | { action: 'group_onboarding_locked'; chatId: number; userId: string; lockedByUserId: number }
   | { action: 'topic_not_found'; chatId: number; userId: string; threadId: number }
+  | { action: 'topic_unregistered'; chatId: number; userId: string; threadId: number; agentId: string }
   | { action: 'topic_closed'; chatId: number; userId: string; threadId: number; topicName: string }
   | { action: 'topic_ralph_active'; chatId: number; userId: string; threadId: number; topicName: string; agentId: string; text: string; loopId: string }
   | { action: 'topic_command'; command: 'ralph' | 'worktree' | 'sessao' | 'topicos'; args: string; chatId: number; userId: string; threadId?: number; agentId?: string }
@@ -342,14 +343,15 @@ export class TelegramCommandHandler {
 
     const topic = this.topicManager.getTopicByThreadId(agent.id, threadId);
 
-    // Topic not found
+    // Topic not found - return topic_unregistered so it can be auto-registered
     if (!topic) {
       return {
         routingError: {
-          action: 'topic_not_found',
+          action: 'topic_unregistered',
           chatId: agent.telegramChatId!,
           userId: agent.userId,
           threadId,
+          agentId: agent.id,
         },
       };
     }
