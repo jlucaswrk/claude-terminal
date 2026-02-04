@@ -622,3 +622,191 @@ describe('TOPIC_COLORS', () => {
     expect(TOPIC_COLORS.RED).toBe(0xFB6F5F);
   });
 });
+
+describe('TopicManager - registerExternalTopic', () => {
+  let manager: TopicManager;
+  let persistence: PersistenceService;
+
+  beforeEach(() => {
+    cleanup();
+    persistence = new PersistenceService(TEST_STATE_FILE, TEST_LOOPS_DIR, TEST_PREFS_FILE, TEST_TOPICS_DIR);
+    manager = new TopicManager(persistence);
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  describe('Topic Type Creation', () => {
+    test('registers session topic with correct type', () => {
+      const topic = manager.registerExternalTopic('agent-123', 100, 'session', 'Test Session');
+
+      expect(topic.type).toBe('session');
+      expect(topic.agentId).toBe('agent-123');
+      expect(topic.telegramTopicId).toBe(100);
+      expect(topic.name).toBe('Test Session');
+    });
+
+    test('registers ralph topic with correct type', () => {
+      const topic = manager.registerExternalTopic('agent-123', 200, 'ralph', 'Ralph Loop');
+
+      expect(topic.type).toBe('ralph');
+    });
+
+    test('registers worktree topic with correct type', () => {
+      const topic = manager.registerExternalTopic('agent-123', 300, 'worktree', 'Feature Branch');
+
+      expect(topic.type).toBe('worktree');
+    });
+
+    test('registers general topic with correct type', () => {
+      const topic = manager.registerExternalTopic('agent-123', 400, 'general', 'General');
+
+      expect(topic.type).toBe('general');
+    });
+  });
+
+  describe('Emoji Assignment by Type', () => {
+    test('session topic gets 💬 emoji', () => {
+      const topic = manager.registerExternalTopic('agent-123', 100, 'session', 'Test Session');
+
+      expect(topic.emoji).toBe('💬');
+    });
+
+    test('ralph topic gets 🔄 emoji', () => {
+      const topic = manager.registerExternalTopic('agent-123', 200, 'ralph', 'Ralph Loop');
+
+      expect(topic.emoji).toBe('🔄');
+    });
+
+    test('worktree topic gets 🌿 emoji', () => {
+      const topic = manager.registerExternalTopic('agent-123', 300, 'worktree', 'Feature Branch');
+
+      expect(topic.emoji).toBe('🌿');
+    });
+
+    test('general topic gets 📌 emoji', () => {
+      const topic = manager.registerExternalTopic('agent-123', 400, 'general', 'General');
+
+      expect(topic.emoji).toBe('📌');
+    });
+  });
+
+  describe('Persistence', () => {
+    test('registered topic is persisted to file', () => {
+      const agentId = 'agent-persist-456';
+      const threadId = 555;
+
+      manager.registerExternalTopic(agentId, threadId, 'session', 'Persisted Topic');
+
+      // Create a new manager to verify persistence
+      const newManager = new TopicManager(persistence);
+      const topics = newManager.listTopics(agentId);
+
+      expect(topics).toHaveLength(1);
+      expect(topics[0].name).toBe('Persisted Topic');
+      expect(topics[0].telegramTopicId).toBe(threadId);
+    });
+
+    test('multiple topics for same agent are persisted correctly', () => {
+      const agentId = 'agent-multi-789';
+
+      manager.registerExternalTopic(agentId, 100, 'session', 'Session 1');
+      manager.registerExternalTopic(agentId, 200, 'ralph', 'Ralph 1');
+      manager.registerExternalTopic(agentId, 300, 'worktree', 'Worktree 1');
+
+      const newManager = new TopicManager(persistence);
+      const topics = newManager.listTopics(agentId);
+
+      expect(topics).toHaveLength(3);
+      expect(topics.map(t => t.type).sort()).toEqual(['ralph', 'session', 'worktree']);
+    });
+
+    test('registered topic has correct initial values', () => {
+      const agentId = 'agent-init-123';
+      const beforeCreate = new Date();
+
+      const topic = manager.registerExternalTopic(agentId, 999, 'session', 'Init Test');
+
+      expect(topic.status).toBe('active');
+      expect(topic.messageCount).toBe(0);
+      expect(topic.sessionId).toBeUndefined();
+      expect(topic.loopId).toBeUndefined();
+      expect(topic.createdAt.getTime()).toBeGreaterThanOrEqual(beforeCreate.getTime());
+      expect(topic.lastActivity.getTime()).toBeGreaterThanOrEqual(beforeCreate.getTime());
+    });
+  });
+
+  describe('getTopicByThreadId after registration', () => {
+    test('getTopicByThreadId returns topic after registerExternalTopic', () => {
+      const agentId = 'agent-get-123';
+      const threadId = 12345;
+
+      manager.registerExternalTopic(agentId, threadId, 'session', 'Find Me');
+
+      const found = manager.getTopicByThreadId(agentId, threadId);
+
+      expect(found).toBeDefined();
+      expect(found!.name).toBe('Find Me');
+      expect(found!.telegramTopicId).toBe(threadId);
+    });
+
+    test('getTopicByThreadId returns undefined for non-registered threadId', () => {
+      const agentId = 'agent-not-found';
+
+      const found = manager.getTopicByThreadId(agentId, 99999);
+
+      expect(found).toBeUndefined();
+    });
+
+    test('getTopicByThreadId works with multiple registered topics', () => {
+      const agentId = 'agent-multi-find';
+
+      manager.registerExternalTopic(agentId, 111, 'session', 'Session A');
+      manager.registerExternalTopic(agentId, 222, 'ralph', 'Ralph B');
+      manager.registerExternalTopic(agentId, 333, 'worktree', 'Worktree C');
+
+      const topicA = manager.getTopicByThreadId(agentId, 111);
+      const topicB = manager.getTopicByThreadId(agentId, 222);
+      const topicC = manager.getTopicByThreadId(agentId, 333);
+
+      expect(topicA!.name).toBe('Session A');
+      expect(topicB!.name).toBe('Ralph B');
+      expect(topicC!.name).toBe('Worktree C');
+    });
+  });
+
+  describe('Duplicate Registration', () => {
+    test('registering same threadId twice returns existing topic', () => {
+      const agentId = 'agent-dupe-123';
+      const threadId = 777;
+
+      const first = manager.registerExternalTopic(agentId, threadId, 'session', 'First Name');
+      const second = manager.registerExternalTopic(agentId, threadId, 'ralph', 'Second Name');
+
+      // Should return the existing topic, not create a new one
+      expect(first.id).toBe(second.id);
+      expect(second.name).toBe('First Name'); // Original name preserved
+      expect(second.type).toBe('session'); // Original type preserved
+    });
+
+    test('registering same threadId twice does not create duplicate', () => {
+      const agentId = 'agent-dupe-456';
+      const threadId = 888;
+
+      manager.registerExternalTopic(agentId, threadId, 'session', 'Topic');
+      manager.registerExternalTopic(agentId, threadId, 'session', 'Topic Again');
+
+      const topics = manager.listTopics(agentId);
+      expect(topics).toHaveLength(1);
+    });
+  });
+
+  describe('Topic Name Trimming', () => {
+    test('topic name is trimmed', () => {
+      const topic = manager.registerExternalTopic('agent-123', 100, 'session', '  Trimmed Name  ');
+
+      expect(topic.name).toBe('Trimmed Name');
+    });
+  });
+});
