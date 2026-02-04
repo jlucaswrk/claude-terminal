@@ -433,8 +433,11 @@ export class QueueManager {
         lastToolInput = toolInput;
       };
 
-      // Execute the prompt via ClaudeTerminal (with agentId, workspace, progress callback, and images)
-      const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace, onProgress, images);
+      // Generate topic session key if threadId is present (for topic isolation)
+      const topicKey = threadId ? `${userId}_${agentId}_${threadId}` : undefined;
+
+      // Execute the prompt via ClaudeTerminal (with agentId, workspace, progress callback, images, and optional topicKey)
+      const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace, onProgress, images, topicKey);
 
       // Send images first (if any) - these are screenshots captured from tool_result
       if (response.images.length > 0) {

@@ -118,9 +118,11 @@ export class ClaudeTerminal {
     agentId: string,
     workspace?: string,
     onProgress?: ProgressCallback,
-    images?: ImageInput[]
+    images?: ImageInput[],
+    topicKey?: string  // Optional: use this as session key instead of userId_agentId
   ): Promise<ClaudeResponse> {
-    const sessionKey = getSessionKey(userId, agentId);
+    // If topicKey provided, use it; otherwise fall back to agent-level session
+    const sessionKey = topicKey || getSessionKey(userId, agentId);
     const existingSessionId = sessions.get(sessionKey);
 
     console.log(`Running Claude (SDK) with ${model}${existingSessionId ? ' [resuming session]' : ' [new session]'}${workspace ? ` in ${workspace}` : ''}${images?.length ? ` [${images.length} image(s)]` : ''}...`);
@@ -342,5 +344,12 @@ export class ClaudeTerminal {
     sessions.set(sessionKey, sessionId);
     saveSessionsToDisk();
     console.log(`Session set for ${userId}/${agentId}: ${sessionId.substring(0, 8)}...`);
+  }
+
+  // Clear session for a specific topic (using topicKey directly)
+  clearTopicSession(topicKey: string): void {
+    sessions.delete(topicKey);
+    saveSessionsToDisk();
+    console.log(`Topic session cleared: ${topicKey}`);
   }
 }

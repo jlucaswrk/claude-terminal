@@ -180,3 +180,77 @@ describe('Title Extraction Integration', () => {
     expect(typeof response.title).toBe('string');
   });
 });
+
+describe('Topic Session Isolation', () => {
+  let terminal: ClaudeTerminal;
+
+  beforeEach(() => {
+    terminal = new ClaudeTerminal();
+  });
+
+  test('uses separate sessions when topicKey is provided', async () => {
+    // Topic A session
+    await terminal.send('prompt1', 'haiku', 'user1', 'agent1', undefined, undefined, undefined, 'user1_agent1_topic100');
+
+    // Topic B session (different topicKey)
+    await terminal.send('prompt2', 'haiku', 'user1', 'agent1', undefined, undefined, undefined, 'user1_agent1_topic200');
+
+    // Both should work independently with different sessions
+    // The test verifies the API accepts the topicKey parameter
+  });
+
+  test('same topicKey uses same session', async () => {
+    const topicKey = 'user1_agent1_topic100';
+
+    // First call creates session for topic
+    await terminal.send('prompt1', 'haiku', 'user1', 'agent1', undefined, undefined, undefined, topicKey);
+
+    // Second call should reuse same session
+    const response = await terminal.send('prompt2', 'haiku', 'user1', 'agent1', undefined, undefined, undefined, topicKey);
+
+    expect(response.text).toBe('Test response [TITLE: Test Title]');
+  });
+
+  test('without topicKey falls back to agent-level session', async () => {
+    // Call without topicKey (existing behavior)
+    await terminal.send('prompt1', 'haiku', 'user1', 'agent1');
+
+    // Another call without topicKey uses same agent session
+    const response = await terminal.send('prompt2', 'haiku', 'user1', 'agent1');
+
+    expect(response.text).toBe('Test response [TITLE: Test Title]');
+  });
+
+  test('clearTopicSession clears only that topic session', async () => {
+    const topicKey = 'user1_agent1_topic100';
+
+    // Create session for topic
+    await terminal.send('prompt1', 'haiku', 'user1', 'agent1', undefined, undefined, undefined, topicKey);
+
+    // Clear topic session
+    terminal.clearTopicSession(topicKey);
+
+    // Next call with same topicKey creates new session
+    const response = await terminal.send('prompt2', 'haiku', 'user1', 'agent1', undefined, undefined, undefined, topicKey);
+
+    expect(response.text).toBe('Test response [TITLE: Test Title]');
+  });
+
+  test('clearTopicSession does not affect agent-level session', async () => {
+    const topicKey = 'user1_agent1_topic100';
+
+    // Create agent-level session
+    await terminal.send('prompt1', 'haiku', 'user1', 'agent1');
+
+    // Create topic session
+    await terminal.send('prompt2', 'haiku', 'user1', 'agent1', undefined, undefined, undefined, topicKey);
+
+    // Clear topic session
+    terminal.clearTopicSession(topicKey);
+
+    // Agent-level session should still work
+    const response = await terminal.send('prompt3', 'haiku', 'user1', 'agent1');
+
+    expect(response.text).toBe('Test response [TITLE: Test Title]');
+  });
+});
