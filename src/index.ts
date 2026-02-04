@@ -127,6 +127,21 @@ import {
   sendRalphTopicPaused,
   sendRalphControlResponse,
   sendRalphControlError,
+  // Enhanced Topic Management UI
+  sendEnhancedTopicsList,
+  sendTopicDetailView,
+  sendTopicCloseConfirmation,
+  sendTopicDeleteConfirmation,
+  sendSessionResetConfirmation,
+  sendTopicNavigationLink,
+  sendPauseFeedback,
+  sendResumeFeedback,
+  sendCloseFeedback,
+  sendReopenFeedback,
+  sendResetFeedback,
+  sendCancelFeedback,
+  sendTopicActionFeedbackGeneral,
+  type TopicListItem,
 } from './telegram';
 import { GroupOnboardingManager } from './group-onboarding-manager';
 import { MessageRouter } from './message-router';
@@ -1080,6 +1095,11 @@ async function handleTelegramRalphPause(chatId: number, loopId: string): Promise
     if (threadId) {
       const queueSize = ralphLoopManager.getQueueSize(loopId);
       await sendRalphTopicPaused(chatId, threadId, loopId, loop.currentIteration, loop.maxIterations, queueSize);
+
+      // Send pause feedback to topic thread
+      const topic = topicManager.getTopicByThreadId(loop.agentId, threadId);
+      const topicName = topic?.name || 'Ralph Loop';
+      await sendPauseFeedback(chatId, threadId, topicName);
     } else {
       await sendTelegramRalphPaused(chatId, loopId, loop.currentIteration, loop.maxIterations);
     }
@@ -1104,6 +1124,11 @@ async function handleTelegramRalphResume(chatId: number, loopId: string): Promis
 
     // Use topic-aware handler for topic-based loops
     if (threadId) {
+      // Send resume feedback to topic thread
+      const topic = topicManager.getTopicByThreadId(loop.agentId, threadId);
+      const topicName = topic?.name || 'Ralph Loop';
+      await sendResumeFeedback(chatId, threadId, topicName);
+
       await handleTopicRalphResume(chatId, threadId, loopId);
       return;
     }
@@ -1148,10 +1173,14 @@ async function handleTelegramRalphStop(chatId: number, loopId: string): Promise<
     // Clear loop ID from topic and send topic-scoped feedback
     if (threadId) {
       const topic = topicManager.getTopicByThreadId(agentId, threadId);
+      const topicName = topic?.name || 'Ralph Loop';
       if (topic) {
         topicManager.clearTopicLoopId(agentId, topic.id);
       }
       await sendRalphControlResponse(chatId, threadId, 'cancelled', loopId);
+
+      // Send cancel feedback to topic thread
+      await sendCancelFeedback(chatId, threadId, topicName);
     } else {
       await sendTelegramMessage(chatId, '🛑 Loop cancelado.');
     }
@@ -1178,6 +1207,10 @@ async function handleRalphControlCommand(
       return;
     }
 
+    // Get topic name for feedback messages
+    const topic = topicManager.getTopicByThreadId(loop.agentId, threadId);
+    const topicName = topic?.name || 'Ralph Loop';
+
     switch (command) {
       case 'pausar':
         if (loop.status !== 'running') {
@@ -1190,6 +1223,9 @@ async function handleRalphControlCommand(
         // Show paused UI with queue info
         const queueSize = ralphLoopManager.getQueueSize(loopId);
         await sendRalphTopicPaused(chatId, threadId, loopId, loop.currentIteration, loop.maxIterations, queueSize);
+
+        // Send pause feedback to topic thread
+        await sendPauseFeedback(chatId, threadId, topicName);
         break;
 
       case 'retomar':
@@ -1198,6 +1234,9 @@ async function handleRalphControlCommand(
           return;
         }
         await sendRalphControlResponse(chatId, threadId, 'resumed', loopId);
+
+        // Send resume feedback to topic thread
+        await sendResumeFeedback(chatId, threadId, topicName);
 
         // Resume loop execution asynchronously (will continue in topic context)
         handleTopicRalphResume(chatId, threadId, loopId).catch((error) => {
@@ -1212,6 +1251,9 @@ async function handleRalphControlCommand(
         }
         await ralphLoopManager.cancel(loopId);
         await sendRalphControlResponse(chatId, threadId, 'cancelled', loopId);
+
+        // Send cancel feedback to topic thread
+        await sendCancelFeedback(chatId, threadId, topicName);
         break;
     }
   } catch (error) {
@@ -1465,23 +1507,31 @@ async function handleTopicSessaoCommand(
  * Handle /topicos command - list all topics for the agent
  */
 async function handleTopicosCommand(chatId: number, agentId: string): Promise<void> {
+  const agent = agentManager.getAgent(agentId);
+  const agentName = agent?.name || 'Agente';
   const topics = topicManager.listTopics(agentId);
 
-  // Get Ralph loop progress for any active Ralph topics
-  const topicsWithProgress = topics.map(topic => {
+  // Build enhanced topic list items with Ralph status and progress
+  const topicItems: TopicListItem[] = topics.map(topic => {
     let currentIteration: number | undefined;
     let maxIterations: number | undefined;
+    let ralphStatus: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'blocked' | undefined;
 
     if (topic.type === 'ralph' && topic.loopId) {
       const loop = ralphLoopManager.getLoop(topic.loopId);
       if (loop) {
         currentIteration = loop.currentIteration;
         maxIterations = loop.maxIterations;
+        ralphStatus = loop.status;
       }
     }
 
+    // For non-Ralph topics, use stored messageCount
+    const messageCount = topic.type !== 'ralph' ? topic.messageCount : undefined;
+
     return {
       id: topic.id,
+      telegramTopicId: topic.telegramTopicId,
       emoji: topic.emoji,
       name: topic.name,
       type: topic.type,
@@ -1490,10 +1540,12 @@ async function handleTopicosCommand(chatId: number, agentId: string): Promise<vo
       lastActivity: topic.lastActivity,
       currentIteration,
       maxIterations,
+      ralphStatus,
+      messageCount,
     };
   });
 
-  await sendTopicsList(chatId, topicsWithProgress);
+  await sendEnhancedTopicsList(chatId, topicItems, agentName);
 }
 
 /**
@@ -2662,6 +2714,70 @@ async function handleTelegramCallback(query: any): Promise<void> {
     }
   }
   // =============================================================================
+  // Enhanced Topic Management Callbacks
+  // =============================================================================
+  else if (data.startsWith('topic_detail_')) {
+    // Show detailed view for a specific topic
+    const topicId = data.replace('topic_detail_', '');
+    await handleTopicDetailCallback(chatId, userId, topicId);
+  }
+  else if (data.startsWith('topic_goto_')) {
+    // Navigate to a topic using deep link
+    const topicId = data.replace('topic_goto_', '');
+    await handleTopicGotoCallback(chatId, userId, topicId);
+  }
+  else if (data.startsWith('topic_confirm_close_')) {
+    // Show confirmation modal for closing a topic
+    const topicId = data.replace('topic_confirm_close_', '');
+    await handleTopicConfirmCloseCallback(chatId, userId, topicId);
+  }
+  else if (data.startsWith('topic_close_confirmed_')) {
+    // Close the topic after confirmation
+    const topicId = data.replace('topic_close_confirmed_', '');
+    await handleTopicCloseConfirmedCallback(chatId, userId, topicId);
+  }
+  else if (data.startsWith('topic_confirm_delete_')) {
+    // Show confirmation modal for deleting a topic
+    const topicId = data.replace('topic_confirm_delete_', '');
+    await handleTopicConfirmDeleteCallback(chatId, userId, topicId);
+  }
+  else if (data.startsWith('topic_delete_confirmed_')) {
+    // Delete the topic after confirmation
+    const topicId = data.replace('topic_delete_confirmed_', '');
+    await handleTopicDeleteConfirmedCallback(chatId, userId, topicId);
+  }
+  else if (data.startsWith('topic_confirm_reset_')) {
+    // Show confirmation modal for resetting session
+    const topicId = data.replace('topic_confirm_reset_', '');
+    await handleTopicConfirmResetCallback(chatId, userId, topicId);
+  }
+  else if (data.startsWith('topic_reset_confirmed_')) {
+    // Reset session after confirmation
+    const topicId = data.replace('topic_reset_confirmed_', '');
+    await handleTopicResetConfirmedCallback(chatId, userId, topicId);
+  }
+  else if (data.startsWith('topic_reopen_')) {
+    // Reopen a closed topic
+    const topicId = data.replace('topic_reopen_', '');
+    await handleTopicReopenCallback(chatId, userId, topicId);
+  }
+  else if (data === 'topic_list_back') {
+    // Go back to topic list
+    await handleTopicListBackCallback(chatId, userId);
+  }
+  else if (data === 'topic_create_ralph') {
+    // Start Ralph topic creation flow from /topicos menu
+    await handleTopicCreateCallback(chatId, userId, 'ralph');
+  }
+  else if (data === 'topic_create_worktree') {
+    // Start Worktree topic creation flow from /topicos menu
+    await handleTopicCreateCallback(chatId, userId, 'worktree');
+  }
+  else if (data === 'topic_create_session') {
+    // Start Session topic creation flow from /topicos menu
+    await handleTopicCreateCallback(chatId, userId, 'session');
+  }
+  // =============================================================================
   // Image Action Callbacks
   // =============================================================================
   else if (data.startsWith('img_analyze_') || data.startsWith('img_describe_') || data.startsWith('img_bugs_')) {
@@ -3201,6 +3317,315 @@ async function handleTelegramLinkCommand(chatId: number, userId: string): Promis
       '❌ *Erro ao vincular grupo*\n\n' +
       'Tente novamente ou crie um novo agente.'
     );
+  }
+}
+
+// =============================================================================
+// Enhanced Topic Management Callback Handlers
+// =============================================================================
+
+/**
+ * Helper to find topic and its agent
+ */
+function findTopicAndAgent(topicId: string): { topic: TopicListItem | undefined; agentId: string | undefined } {
+  const agentsWithTopics = topicManager.listAgentsWithTopics();
+  for (const agentId of agentsWithTopics) {
+    const topic = topicManager.getTopic(agentId, topicId);
+    if (topic) {
+      // Get Ralph loop status if applicable
+      let ralphStatus: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'blocked' | undefined;
+      let currentIteration: number | undefined;
+      let maxIterations: number | undefined;
+
+      if (topic.type === 'ralph' && topic.loopId) {
+        const loop = ralphLoopManager.getLoop(topic.loopId);
+        if (loop) {
+          ralphStatus = loop.status;
+          currentIteration = loop.currentIteration;
+          maxIterations = loop.maxIterations;
+        }
+      }
+
+      const topicItem: TopicListItem = {
+        id: topic.id,
+        telegramTopicId: topic.telegramTopicId,
+        emoji: topic.emoji,
+        name: topic.name,
+        type: topic.type,
+        status: topic.status,
+        loopId: topic.loopId,
+        lastActivity: topic.lastActivity,
+        currentIteration,
+        maxIterations,
+        ralphStatus,
+      };
+      return { topic: topicItem, agentId };
+    }
+  }
+  return { topic: undefined, agentId: undefined };
+}
+
+/**
+ * Handle topic detail view callback
+ */
+async function handleTopicDetailCallback(chatId: number, userId: string, topicId: string): Promise<void> {
+  const { topic, agentId } = findTopicAndAgent(topicId);
+
+  if (!topic || !agentId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  await sendTopicDetailView(chatId, topic, agent.telegramChatId || chatId);
+}
+
+/**
+ * Handle topic goto (navigate to) callback
+ */
+async function handleTopicGotoCallback(chatId: number, userId: string, topicId: string): Promise<void> {
+  const { topic, agentId } = findTopicAndAgent(topicId);
+
+  if (!topic || !agentId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const targetChatId = agent.telegramChatId || chatId;
+  await sendTopicNavigationLink(chatId, topic.name, topic.emoji, targetChatId, topic.telegramTopicId);
+}
+
+/**
+ * Handle confirm close topic callback (show confirmation modal)
+ */
+async function handleTopicConfirmCloseCallback(chatId: number, userId: string, topicId: string): Promise<void> {
+  const { topic, agentId } = findTopicAndAgent(topicId);
+
+  if (!topic || !agentId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  await sendTopicCloseConfirmation(chatId, topic);
+}
+
+/**
+ * Handle topic close confirmed callback
+ */
+async function handleTopicCloseConfirmedCallback(chatId: number, userId: string, topicId: string): Promise<void> {
+  const { topic, agentId } = findTopicAndAgent(topicId);
+
+  if (!topic || !agentId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const targetChatId = agent.telegramChatId || chatId;
+  const success = await topicManager.closeTopic(agentId, topicId, targetChatId);
+
+  if (success) {
+    // Send feedback in the topic being closed
+    await sendCloseFeedback(targetChatId, topic.telegramTopicId, topic.name);
+    // Send feedback in General topic (chatId)
+    await sendTopicActionFeedbackGeneral(chatId, 'closed', topic.name, topic.emoji, topic.type as 'ralph' | 'worktree' | 'session');
+  } else {
+    await sendTelegramMessage(chatId, '⚠️ Erro ao fechar tópico.');
+  }
+}
+
+/**
+ * Handle confirm delete topic callback (show confirmation modal)
+ */
+async function handleTopicConfirmDeleteCallback(chatId: number, userId: string, topicId: string): Promise<void> {
+  const { topic, agentId } = findTopicAndAgent(topicId);
+
+  if (!topic || !agentId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  await sendTopicDeleteConfirmation(chatId, topic);
+}
+
+/**
+ * Handle topic delete confirmed callback
+ */
+async function handleTopicDeleteConfirmedCallback(chatId: number, userId: string, topicId: string): Promise<void> {
+  const { topic, agentId } = findTopicAndAgent(topicId);
+
+  if (!topic || !agentId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const targetChatId = agent.telegramChatId || chatId;
+  const topicName = topic.name;
+  const topicEmoji = topic.emoji;
+  const topicType = topic.type as 'ralph' | 'worktree' | 'session';
+
+  const success = await topicManager.deleteTopic(agentId, topicId, targetChatId, true);
+
+  if (success) {
+    // Send feedback in General topic
+    await sendTopicActionFeedbackGeneral(chatId, 'deleted', topicName, topicEmoji, topicType);
+  } else {
+    await sendTelegramMessage(chatId, '⚠️ Erro ao deletar tópico.');
+  }
+}
+
+/**
+ * Handle confirm reset session callback (show confirmation modal)
+ */
+async function handleTopicConfirmResetCallback(chatId: number, userId: string, topicId: string): Promise<void> {
+  const { topic, agentId } = findTopicAndAgent(topicId);
+
+  if (!topic || !agentId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  await sendSessionResetConfirmation(chatId, topic);
+}
+
+/**
+ * Handle session reset confirmed callback
+ */
+async function handleTopicResetConfirmedCallback(chatId: number, userId: string, topicId: string): Promise<void> {
+  const { topic, agentId } = findTopicAndAgent(topicId);
+
+  if (!topic || !agentId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  // For general topic, clear the main session
+  // For other topics, clear the topic's session
+  if (topic.type === 'general') {
+    terminal.clearSession(userId, agentId);
+    topicManager.updateTopicSession(agentId, topicId, undefined);
+  } else {
+    // Clear topic-specific session by removing sessionId
+    topicManager.updateTopicSession(agentId, topicId, undefined);
+  }
+
+  const targetChatId = agent.telegramChatId || chatId;
+  await sendResetFeedback(targetChatId, topic.telegramTopicId, topic.name);
+  await sendTopicActionFeedbackGeneral(chatId, 'reset', topic.name, topic.emoji, topic.type as 'ralph' | 'worktree' | 'session');
+}
+
+/**
+ * Handle topic reopen callback
+ */
+async function handleTopicReopenCallback(chatId: number, userId: string, topicId: string): Promise<void> {
+  const { topic, agentId } = findTopicAndAgent(topicId);
+
+  if (!topic || !agentId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    return;
+  }
+
+  const targetChatId = agent.telegramChatId || chatId;
+  const success = await topicManager.reopenTopic(agentId, topicId, targetChatId);
+
+  if (success) {
+    await sendReopenFeedback(targetChatId, topic.telegramTopicId, topic.name);
+    await sendTopicActionFeedbackGeneral(chatId, 'reopened', topic.name, topic.emoji, topic.type as 'ralph' | 'worktree' | 'session');
+  } else {
+    await sendTelegramMessage(chatId, '⚠️ Erro ao reabrir tópico.');
+  }
+}
+
+/**
+ * Handle topic list back callback
+ */
+async function handleTopicListBackCallback(chatId: number, userId: string): Promise<void> {
+  // Find agent linked to this chat
+  const agent = agentManager.getAgentByTelegramChatId(chatId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Agente não encontrado.');
+    return;
+  }
+
+  await handleTopicosCommand(chatId, agent.id);
+}
+
+/**
+ * Handle topic creation button callbacks from /topicos menu
+ */
+async function handleTopicCreateCallback(chatId: number, userId: string, type: 'ralph' | 'worktree' | 'session'): Promise<void> {
+  // Find agent linked to this chat
+  const agent = agentManager.getAgentByTelegramChatId(chatId);
+  if (!agent || agent.userId !== userId) {
+    await sendTelegramMessage(chatId, '⚠️ Agente não encontrado.');
+    return;
+  }
+
+  switch (type) {
+    case 'ralph':
+      userContextManager.startTopicRalphFlow(userId, agent.id, chatId);
+      await sendTopicRalphTaskPrompt(chatId);
+      break;
+    case 'worktree':
+      userContextManager.startTopicWorktreeFlow(userId, agent.id, chatId);
+      await sendTopicNamePrompt(chatId, 'worktree');
+      break;
+    case 'session':
+      userContextManager.startTopicSessaoFlow(userId, agent.id, chatId);
+      await sendTopicNamePrompt(chatId, 'sessao');
+      break;
   }
 }
 

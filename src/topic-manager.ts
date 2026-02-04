@@ -213,6 +213,7 @@ export class TopicManager {
       sessionId,
       loopId,
       status: 'active',
+      messageCount: 0,
       createdAt: now,
       lastActivity: now,
     };
@@ -472,6 +473,25 @@ export class TopicManager {
 
     this.updateTopic(agentId, updatedTopic);
     console.log(`[topic-manager] Cleared loopId for topic ${topicId}`);
+  }
+
+  /**
+   * Increment the message count for a topic
+   *
+   * @param agentId - The agent ID
+   * @param topicId - The topic ID
+   */
+  incrementTopicMessageCount(agentId: string, topicId: string): void {
+    const topic = this.getTopic(agentId, topicId);
+    if (!topic) return;
+
+    const updatedTopic: AgentTopic = {
+      ...topic,
+      messageCount: (topic.messageCount || 0) + 1,
+      lastActivity: new Date(),
+    };
+
+    this.updateTopic(agentId, updatedTopic);
   }
 
   /**

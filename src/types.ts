@@ -44,6 +44,7 @@ export interface AgentTopic {
   sessionId?: string;            // Claude session ID (isolated, only for non-general topics)
   loopId?: string;               // Ralph loop ID (only for type='ralph')
   status: TopicStatus;
+  messageCount: number;          // Counter for messages sent to this topic
   createdAt: Date;
   lastActivity: Date;
 }
@@ -259,6 +260,7 @@ export interface SerializedAgentTopic {
   sessionId?: string;
   loopId?: string;
   status: TopicStatus;
+  messageCount: number;         // Counter for messages sent to this topic
   createdAt: string;            // ISO date string
   lastActivity: string;         // ISO date string
 }

@@ -258,6 +258,7 @@ export class PersistenceService {
       sessionId: topic.sessionId,
       loopId: topic.loopId,
       status: topic.status,
+      messageCount: topic.messageCount ?? 0,
       createdAt: topic.createdAt.toISOString(),
       lastActivity: topic.lastActivity.toISOString(),
     };
@@ -277,6 +278,7 @@ export class PersistenceService {
       sessionId: data.sessionId,
       loopId: data.loopId,
       status: data.status,
+      messageCount: data.messageCount ?? 0,
       createdAt: new Date(data.createdAt),
       lastActivity: new Date(data.lastActivity),
     };
