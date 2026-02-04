@@ -9,7 +9,7 @@
  * - Error handling and timeout behavior
  */
 import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
-import { existsSync, unlinkSync, mkdirSync, rmdirSync, readdirSync } from 'fs';
+import { existsSync, unlinkSync, mkdirSync, rmdirSync, readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { TopicManager, type CreateTopicOptions } from '../topic-manager';
 import { RalphLoopManager } from '../ralph-loop-manager';
@@ -23,6 +23,7 @@ import type { AgentTopic, TopicType, TopicStatus } from '../types';
 // Test file paths
 const TEST_STATE_FILE = './test-startup-sync-state.json';
 const TEST_LOOPS_DIR = './test-startup-sync-loops';
+const TEST_LEGACY_LOOPS_DIR = './test-startup-sync-legacy-loops';
 const TEST_PREFS_FILE = './test-startup-sync-preferences.json';
 const TEST_TOPICS_DIR = './test-startup-sync-topics';
 
@@ -39,6 +40,14 @@ function cleanup() {
       unlinkSync(join(TEST_LOOPS_DIR, file));
     }
     rmdirSync(TEST_LOOPS_DIR);
+  }
+
+  if (existsSync(TEST_LEGACY_LOOPS_DIR)) {
+    const files = readdirSync(TEST_LEGACY_LOOPS_DIR);
+    for (const file of files) {
+      unlinkSync(join(TEST_LEGACY_LOOPS_DIR, file));
+    }
+    rmdirSync(TEST_LEGACY_LOOPS_DIR);
   }
 
   if (existsSync(TEST_TOPICS_DIR)) {
@@ -129,7 +138,7 @@ describe('Startup Sync - Topic Validation', () => {
 
   beforeEach(() => {
     cleanup();
-    persistence = new PersistenceService(TEST_STATE_FILE, TEST_LOOPS_DIR, TEST_PREFS_FILE, TEST_TOPICS_DIR);
+    persistence = new PersistenceService(TEST_STATE_FILE, TEST_LOOPS_DIR, TEST_PREFS_FILE, TEST_TOPICS_DIR, TEST_LEGACY_LOOPS_DIR);
     manager = new TopicManager(persistence);
   });
 
@@ -340,7 +349,7 @@ describe('Startup Sync - Ralph Loop Recovery', () => {
     cleanup();
 
     semaphore = new Semaphore(2);
-    persistence = new PersistenceService(TEST_STATE_FILE, TEST_LOOPS_DIR, TEST_PREFS_FILE, TEST_TOPICS_DIR);
+    persistence = new PersistenceService(TEST_STATE_FILE, TEST_LOOPS_DIR, TEST_PREFS_FILE, TEST_TOPICS_DIR, TEST_LEGACY_LOOPS_DIR);
     agentManager = new AgentManager(persistence);
     topicManager = new TopicManager(persistence);
 
@@ -458,7 +467,7 @@ describe('Startup Sync - Integration', () => {
   beforeEach(() => {
     cleanup();
 
-    persistence = new PersistenceService(TEST_STATE_FILE, TEST_LOOPS_DIR, TEST_PREFS_FILE, TEST_TOPICS_DIR);
+    persistence = new PersistenceService(TEST_STATE_FILE, TEST_LOOPS_DIR, TEST_PREFS_FILE, TEST_TOPICS_DIR, TEST_LEGACY_LOOPS_DIR);
     agentManager = new AgentManager(persistence);
     topicManager = new TopicManager(persistence);
     semaphore = new Semaphore(2);
@@ -525,5 +534,388 @@ describe('Startup Sync - Integration', () => {
     mockGetExtendedChat.mockRestore();
     mockValidate.mockRestore();
     mockWithRetry.mockRestore();
+  });
+});
+
+describe('Startup Sync - Legacy Loop Migration', () => {
+  let persistence: PersistenceService;
+  let agentManager: AgentManager;
+  let topicManager: TopicManager;
+  let loopManager: RalphLoopManager;
+  let semaphore: Semaphore;
+  let mockTerminal: ClaudeTerminal;
+
+  // Helper to create a legacy loop file directly in the legacy directory
+  function createLegacyLoopFile(loop: {
+    id: string;
+    agentId: string;
+    userId: string;
+    status: string;
+    task: string;
+    currentIteration: number;
+    maxIterations: number;
+    currentModel: string;
+    startTime: string;
+    threadId?: number;
+    iterations: Array<{
+      number: number;
+      model: string;
+      action: string;
+      prompt: string;
+      response: string;
+      completionPromiseFound: boolean;
+      timestamp: string;
+      duration: number;
+    }>;
+  }): void {
+    if (!existsSync(TEST_LEGACY_LOOPS_DIR)) {
+      mkdirSync(TEST_LEGACY_LOOPS_DIR, { recursive: true });
+    }
+    const filePath = join(TEST_LEGACY_LOOPS_DIR, `${loop.id}.json`);
+    writeFileSync(filePath, JSON.stringify(loop, null, 2));
+  }
+
+  beforeEach(() => {
+    cleanup();
+
+    persistence = new PersistenceService(TEST_STATE_FILE, TEST_LOOPS_DIR, TEST_PREFS_FILE, TEST_TOPICS_DIR, TEST_LEGACY_LOOPS_DIR);
+    agentManager = new AgentManager(persistence);
+    topicManager = new TopicManager(persistence);
+    semaphore = new Semaphore(2);
+
+    mockTerminal = {
+      send: mock(() => Promise.resolve({ text: 'Mock response', sessionId: 'session-123' })),
+    } as unknown as ClaudeTerminal;
+
+    loopManager = new RalphLoopManager(semaphore, agentManager, persistence, mockTerminal);
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  describe('migrateLegacyLoops', () => {
+    test('migrates legacy loops to new directory', () => {
+      // Create an agent
+      const agent = agentManager.createAgent('user-123', 'Migration Test Agent', undefined, '🤖', 'claude', 'sonnet');
+
+      // Create a legacy loop file
+      const legacyLoop = {
+        id: 'legacy-loop-123',
+        agentId: agent.id,
+        userId: 'user-123',
+        status: 'paused',
+        task: 'Legacy test task',
+        currentIteration: 3,
+        maxIterations: 10,
+        currentModel: 'sonnet',
+        startTime: new Date().toISOString(),
+        threadId: 12345,
+        iterations: [
+          {
+            number: 1,
+            model: 'sonnet',
+            action: 'Action 1',
+            prompt: 'Prompt 1',
+            response: 'Response 1',
+            completionPromiseFound: false,
+            timestamp: new Date().toISOString(),
+            duration: 1000,
+          },
+        ],
+      };
+      createLegacyLoopFile(legacyLoop);
+
+      // Verify legacy loop exists
+      expect(persistence.listLegacyLoops()).toContain('legacy-loop-123');
+
+      // Migrate with active topic
+      const result = persistence.migrateLegacyLoops(
+        (agentId, threadId) => ({ status: 'active' })
+      );
+
+      expect(result.migratedCount).toBe(1);
+      expect(result.interruptedCount).toBe(0);
+
+      // Verify loop was migrated to new directory
+      expect(persistence.listLoops()).toContain('legacy-loop-123');
+
+      // Verify loop data is correct
+      const migratedLoop = persistence.loadLoop('legacy-loop-123');
+      expect(migratedLoop).not.toBeNull();
+      expect(migratedLoop?.task).toBe('Legacy test task');
+      expect(migratedLoop?.status).toBe('paused');
+      expect(migratedLoop?.currentIteration).toBe(3);
+    });
+
+    test('marks loop as interrupted when topic is missing', () => {
+      const agent = agentManager.createAgent('user-123', 'Migration Test Agent', undefined, '🤖', 'claude', 'sonnet');
+
+      const legacyLoop = {
+        id: 'legacy-loop-missing-topic',
+        agentId: agent.id,
+        userId: 'user-123',
+        status: 'running',
+        task: 'Task with missing topic',
+        currentIteration: 2,
+        maxIterations: 10,
+        currentModel: 'sonnet',
+        startTime: new Date().toISOString(),
+        threadId: 99999, // This topic doesn't exist
+        iterations: [],
+      };
+      createLegacyLoopFile(legacyLoop);
+
+      // Migrate with topic not found
+      const result = persistence.migrateLegacyLoops(
+        (agentId, threadId) => undefined // Topic not found
+      );
+
+      expect(result.migratedCount).toBe(1);
+      expect(result.interruptedCount).toBe(1);
+
+      // Verify loop was marked as interrupted
+      const migratedLoop = persistence.loadLoop('legacy-loop-missing-topic');
+      expect(migratedLoop?.status).toBe('interrupted');
+    });
+
+    test('marks loop as interrupted when topic is closed', () => {
+      const agent = agentManager.createAgent('user-123', 'Migration Test Agent', undefined, '🤖', 'claude', 'sonnet');
+
+      const legacyLoop = {
+        id: 'legacy-loop-closed-topic',
+        agentId: agent.id,
+        userId: 'user-123',
+        status: 'paused',
+        task: 'Task with closed topic',
+        currentIteration: 5,
+        maxIterations: 10,
+        currentModel: 'sonnet',
+        startTime: new Date().toISOString(),
+        threadId: 88888,
+        iterations: [],
+      };
+      createLegacyLoopFile(legacyLoop);
+
+      // Migrate with closed topic
+      const result = persistence.migrateLegacyLoops(
+        (agentId, threadId) => ({ status: 'closed' })
+      );
+
+      expect(result.migratedCount).toBe(1);
+      expect(result.interruptedCount).toBe(1);
+
+      // Verify loop was marked as interrupted
+      const migratedLoop = persistence.loadLoop('legacy-loop-closed-topic');
+      expect(migratedLoop?.status).toBe('interrupted');
+    });
+
+    test('skips already migrated loops', () => {
+      const agent = agentManager.createAgent('user-123', 'Migration Test Agent', undefined, '🤖', 'claude', 'sonnet');
+
+      // Create a loop that already exists in the new directory
+      const loopId = loopManager.start(agent.id, 'Already existing loop', 10, 'sonnet', 12345);
+
+      // Create a legacy loop with the same ID
+      const legacyLoop = {
+        id: loopId, // Same ID as the existing loop
+        agentId: agent.id,
+        userId: 'user-123',
+        status: 'running',
+        task: 'Legacy version of the loop',
+        currentIteration: 1,
+        maxIterations: 5,
+        currentModel: 'haiku', // Different model to verify it's skipped
+        startTime: new Date().toISOString(),
+        threadId: 12345,
+        iterations: [],
+      };
+      createLegacyLoopFile(legacyLoop);
+
+      // Migrate - should skip the already existing loop
+      const result = persistence.migrateLegacyLoops(
+        (agentId, threadId) => ({ status: 'active' })
+      );
+
+      expect(result.migratedCount).toBe(0);
+
+      // Verify the original loop data is preserved
+      const existingLoop = persistence.loadLoop(loopId);
+      expect(existingLoop?.task).toBe('Already existing loop');
+      expect(existingLoop?.currentModel).toBe('sonnet'); // Original model, not 'haiku'
+    });
+
+    test('does not interrupt completed/failed loops even with missing topic', () => {
+      const agent = agentManager.createAgent('user-123', 'Migration Test Agent', undefined, '🤖', 'claude', 'sonnet');
+
+      // Create a completed legacy loop
+      const legacyLoop = {
+        id: 'legacy-loop-completed',
+        agentId: agent.id,
+        userId: 'user-123',
+        status: 'completed', // Already completed
+        task: 'Completed task',
+        currentIteration: 10,
+        maxIterations: 10,
+        currentModel: 'sonnet',
+        startTime: new Date().toISOString(),
+        threadId: 77777,
+        iterations: [],
+      };
+      createLegacyLoopFile(legacyLoop);
+
+      // Migrate with topic not found
+      const result = persistence.migrateLegacyLoops(
+        (agentId, threadId) => undefined
+      );
+
+      expect(result.migratedCount).toBe(1);
+      expect(result.interruptedCount).toBe(0); // Not interrupted because already completed
+
+      // Verify loop status is preserved
+      const migratedLoop = persistence.loadLoop('legacy-loop-completed');
+      expect(migratedLoop?.status).toBe('completed');
+    });
+
+    test('handles loops without threadId', () => {
+      const agent = agentManager.createAgent('user-123', 'Migration Test Agent', undefined, '🤖', 'claude', 'sonnet');
+
+      // Create a legacy loop without threadId
+      const legacyLoop = {
+        id: 'legacy-loop-no-thread',
+        agentId: agent.id,
+        userId: 'user-123',
+        status: 'paused',
+        task: 'Task without topic',
+        currentIteration: 2,
+        maxIterations: 10,
+        currentModel: 'sonnet',
+        startTime: new Date().toISOString(),
+        // No threadId
+        iterations: [],
+      };
+      createLegacyLoopFile(legacyLoop);
+
+      // Migrate - should not check topic since there's no threadId
+      const result = persistence.migrateLegacyLoops(
+        (agentId, threadId) => undefined // Would return undefined, but shouldn't be called
+      );
+
+      expect(result.migratedCount).toBe(1);
+      expect(result.interruptedCount).toBe(0);
+
+      // Verify loop status is preserved
+      const migratedLoop = persistence.loadLoop('legacy-loop-no-thread');
+      expect(migratedLoop?.status).toBe('paused');
+    });
+
+    test('returns zero counts when no legacy loops exist', () => {
+      const result = persistence.migrateLegacyLoops(
+        (agentId, threadId) => ({ status: 'active' })
+      );
+
+      expect(result.migratedCount).toBe(0);
+      expect(result.interruptedCount).toBe(0);
+    });
+
+    test('logs migration message with count', () => {
+      const agent = agentManager.createAgent('user-123', 'Migration Test Agent', undefined, '🤖', 'claude', 'sonnet');
+
+      // Create multiple legacy loops
+      for (let i = 1; i <= 3; i++) {
+        createLegacyLoopFile({
+          id: `legacy-loop-batch-${i}`,
+          agentId: agent.id,
+          userId: 'user-123',
+          status: 'paused',
+          task: `Batch task ${i}`,
+          currentIteration: i,
+          maxIterations: 10,
+          currentModel: 'sonnet',
+          startTime: new Date().toISOString(),
+          threadId: 10000 + i,
+          iterations: [],
+        });
+      }
+
+      // Capture console.log output
+      const logs: string[] = [];
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => {
+        logs.push(args.join(' '));
+      };
+
+      try {
+        const result = persistence.migrateLegacyLoops(
+          (agentId, threadId) => ({ status: 'active' })
+        );
+
+        expect(result.migratedCount).toBe(3);
+
+        // Verify the migration log message was emitted
+        const migrationLog = logs.find(log => log.includes('✅ Migrados'));
+        expect(migrationLog).toBeDefined();
+        expect(migrationLog).toContain('3 agentes');
+      } finally {
+        console.log = originalLog;
+      }
+    });
+  });
+
+  describe('loadAllLegacyLoops', () => {
+    test('loads all valid legacy loops', () => {
+      const agent = agentManager.createAgent('user-123', 'Test Agent', undefined, '🤖', 'claude', 'sonnet');
+
+      // Create multiple legacy loops
+      for (let i = 1; i <= 2; i++) {
+        createLegacyLoopFile({
+          id: `legacy-${i}`,
+          agentId: agent.id,
+          userId: 'user-123',
+          status: 'paused',
+          task: `Task ${i}`,
+          currentIteration: i,
+          maxIterations: 10,
+          currentModel: 'sonnet',
+          startTime: new Date().toISOString(),
+          iterations: [],
+        });
+      }
+
+      const loops = persistence.loadAllLegacyLoops();
+      expect(loops).toHaveLength(2);
+      expect(loops.map(l => l.id).sort()).toEqual(['legacy-1', 'legacy-2']);
+    });
+
+    test('skips invalid legacy loop files', () => {
+      const agent = agentManager.createAgent('user-123', 'Test Agent', undefined, '🤖', 'claude', 'sonnet');
+
+      // Create a valid legacy loop
+      createLegacyLoopFile({
+        id: 'valid-legacy',
+        agentId: agent.id,
+        userId: 'user-123',
+        status: 'paused',
+        task: 'Valid task',
+        currentIteration: 1,
+        maxIterations: 10,
+        currentModel: 'sonnet',
+        startTime: new Date().toISOString(),
+        iterations: [],
+      });
+
+      // Create an invalid file (missing required fields)
+      if (!existsSync(TEST_LEGACY_LOOPS_DIR)) {
+        mkdirSync(TEST_LEGACY_LOOPS_DIR, { recursive: true });
+      }
+      writeFileSync(
+        join(TEST_LEGACY_LOOPS_DIR, 'invalid-legacy.json'),
+        JSON.stringify({ id: 'invalid', broken: true })
+      );
+
+      const loops = persistence.loadAllLegacyLoops();
+      expect(loops).toHaveLength(1);
+      expect(loops[0].id).toBe('valid-legacy');
+    });
   });
 });

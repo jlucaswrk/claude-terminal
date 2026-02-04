@@ -27,6 +27,7 @@ import { DEFAULTS } from './types';
 const STATE_FILE = './agents-state.json';
 const BACKUP_FILE = './agents-state.json.bak';
 const LOOPS_DIR = join(homedir(), '.claude-terminal', 'loops');
+const LEGACY_LOOPS_DIR = './data/loops';
 const TOPICS_DIR = './data/topics';
 const USER_PREFS_FILE = './user-preferences.json';
 
@@ -43,6 +44,7 @@ export class PersistenceService {
   private readonly stateFile: string;
   private readonly backupFile: string;
   private readonly loopsDir: string;
+  private readonly legacyLoopsDir: string;
   private readonly topicsDir: string;
   private readonly preferencesFile: string;
   private preferences: Map<string, UserPreferences> = new Map();
@@ -51,11 +53,13 @@ export class PersistenceService {
     stateFile: string = STATE_FILE,
     loopsDir: string = LOOPS_DIR,
     preferencesFile: string = USER_PREFS_FILE,
-    topicsDir: string = TOPICS_DIR
+    topicsDir: string = TOPICS_DIR,
+    legacyLoopsDir: string = LEGACY_LOOPS_DIR
   ) {
     this.stateFile = stateFile;
     this.backupFile = stateFile + '.bak';
     this.loopsDir = loopsDir;
+    this.legacyLoopsDir = legacyLoopsDir;
     this.topicsDir = topicsDir;
     this.preferencesFile = preferencesFile;
     this.ensureLoopsDir();
@@ -514,10 +518,24 @@ export class PersistenceService {
   }
 
   /**
+   * Get the path to the legacy loops directory (data/loops)
+   */
+  getLegacyLoopsDir(): string {
+    return this.legacyLoopsDir;
+  }
+
+  /**
    * Get the file path for a specific loop
    */
   private getLoopFilePath(loopId: string): string {
     return join(this.loopsDir, `${loopId}.json`);
+  }
+
+  /**
+   * Get the file path for a legacy loop
+   */
+  private getLegacyLoopFilePath(loopId: string): string {
+    return join(this.legacyLoopsDir, `${loopId}.json`);
   }
 
   /**
@@ -594,6 +612,136 @@ export class PersistenceService {
       console.error('Failed to list loops:', err);
       return [];
     }
+  }
+
+  /**
+   * List all loop IDs in the legacy loops directory (data/loops)
+   */
+  listLegacyLoops(): string[] {
+    if (!existsSync(this.legacyLoopsDir)) {
+      return [];
+    }
+
+    try {
+      const files = readdirSync(this.legacyLoopsDir);
+      return files
+        .filter(f => f.endsWith('.json'))
+        .map(f => f.replace('.json', ''));
+    } catch (err) {
+      console.error('Failed to list legacy loops:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Load a legacy loop state from disk (data/loops directory)
+   * Returns null if file doesn't exist or is invalid
+   */
+  loadLegacyLoop(loopId: string): RalphLoopState | null {
+    const filePath = this.getLegacyLoopFilePath(loopId);
+
+    if (!existsSync(filePath)) {
+      return null;
+    }
+
+    try {
+      const content = readFileSync(filePath, 'utf-8');
+      const data = JSON.parse(content) as SerializedRalphLoopState;
+
+      if (!this.validateLoopSchema(data)) {
+        console.error(`Invalid legacy loop schema in ${filePath}`);
+        return null;
+      }
+
+      return this.deserializeLoop(data);
+    } catch (err) {
+      console.error(`Failed to load legacy loop ${loopId}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Load all legacy loops from data/loops directory
+   */
+  loadAllLegacyLoops(): RalphLoopState[] {
+    const loopIds = this.listLegacyLoops();
+    const loops: RalphLoopState[] = [];
+
+    for (const loopId of loopIds) {
+      const loop = this.loadLegacyLoop(loopId);
+      if (loop) {
+        loops.push(loop);
+      }
+    }
+
+    return loops;
+  }
+
+  /**
+   * Migrate legacy loops from data/loops to the new loops directory (~/.claude-terminal/loops)
+   * Associates loops with topics via threadId.
+   * Marks loops as 'interrupted' if their topic is missing/closed.
+   *
+   * @param getTopicByThreadId - Function to lookup topic by agentId and threadId
+   * @returns Object with migrated count and interrupted count
+   */
+  migrateLegacyLoops(
+    getTopicByThreadId: (agentId: string, threadId: number) => { status: string } | undefined
+  ): { migratedCount: number; interruptedCount: number } {
+    const legacyLoops = this.loadAllLegacyLoops();
+
+    if (legacyLoops.length === 0) {
+      return { migratedCount: 0, interruptedCount: 0 };
+    }
+
+    console.log(`[migration] Encontrados ${legacyLoops.length} loops legados em ${this.legacyLoopsDir}`);
+
+    let migratedCount = 0;
+    let interruptedCount = 0;
+    const existingLoopIds = new Set(this.listLoops());
+
+    for (const loop of legacyLoops) {
+      // Skip if already migrated (exists in new directory)
+      if (existingLoopIds.has(loop.id)) {
+        console.log(`[migration] Loop ${loop.id} já migrado, pulando`);
+        continue;
+      }
+
+      // Check if loop needs to be marked as interrupted
+      let shouldInterrupt = false;
+
+      // Only check topic for loops with threadId
+      if (loop.threadId) {
+        const topic = getTopicByThreadId(loop.agentId, loop.threadId);
+
+        if (!topic) {
+          // Topic not found - mark as interrupted
+          shouldInterrupt = true;
+          console.log(`[migration] Loop ${loop.id}: tópico não encontrado, marcando como interrompido`);
+        } else if (topic.status === 'closed') {
+          // Topic closed - mark as interrupted
+          shouldInterrupt = true;
+          console.log(`[migration] Loop ${loop.id}: tópico fechado, marcando como interrompido`);
+        }
+      }
+
+      // For loops that were running/paused, check if they should be interrupted
+      if (shouldInterrupt && ['running', 'paused'].includes(loop.status)) {
+        loop.status = 'interrupted';
+        interruptedCount++;
+      }
+
+      // Save to new directory
+      this.saveLoop(loop);
+      migratedCount++;
+      console.log(`[migration] Loop ${loop.id} migrado com status: ${loop.status}`);
+    }
+
+    if (migratedCount > 0) {
+      console.log(`[migration] ✅ Migrados ${migratedCount} agentes`);
+    }
+
+    return { migratedCount, interruptedCount };
   }
 
   /**

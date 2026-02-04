@@ -398,6 +398,22 @@ async function performStartupSync(): Promise<void> {
       const totalClosed = totalTopics - totalActive;
       console.log(`[startup] ✅ Sincronizados ${totalTopics} tópicos (${totalActive} ativos, ${totalClosed} fechados)`);
 
+      // Check abort flag before loop migration
+      if (aborted) {
+        console.log('[startup] Sincronização abortada por timeout');
+        return;
+      }
+
+      // Migrate legacy loops from data/loops to new directory
+      console.log('[startup] Migrando loops legados...');
+      const migrationResult = persistenceService.migrateLegacyLoops(
+        (agentId, threadId) => topicManager.getTopicByThreadId(agentId, threadId)
+      );
+
+      if (migrationResult.migratedCount > 0) {
+        console.log(`[startup] ✅ Migrados ${migrationResult.migratedCount} agentes`);
+      }
+
       // Check abort flag before loop validation
       if (aborted) {
         console.log('[startup] Sincronização abortada por timeout');
