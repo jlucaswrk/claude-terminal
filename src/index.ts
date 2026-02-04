@@ -112,6 +112,7 @@ import {
   startTypingIndicator,
   // Topic management UI
   TOPIC_ERRORS,
+  sendTopicSetupButtons,
   sendTopicRalphTaskPrompt,
   sendTopicRalphIterationsPrompt,
   sendTopicRalphCustomIterationsPrompt,
@@ -962,18 +963,7 @@ async function handleTelegramMessage(message: any): Promise<void> {
 
       case 'topic_unregistered':
         // Topic exists in Telegram but not registered locally - show setup buttons
-        await sendTelegramButtons(
-          chatId,
-          TELEGRAM_ERRORS.TOPIC_UNREGISTERED,
-          [
-            [
-              { text: '🔄 Ralph', callback_data: `setup_topic_ralph:${route.agentId}:${route.threadId}` },
-              { text: '🌿 Worktree', callback_data: `setup_topic_worktree:${route.agentId}:${route.threadId}` },
-              { text: '💬 Sessão', callback_data: `setup_topic_session:${route.agentId}:${route.threadId}` },
-            ],
-          ],
-          route.threadId
-        );
+        await sendTopicSetupButtons(chatId, route.threadId, route.agentId);
         return;
 
       case 'topic_closed':
@@ -2766,6 +2756,21 @@ async function handleTelegramCallback(query: any): Promise<void> {
     if (parts.length === 3) {
       const [topicType, agentId, threadIdStr] = parts;
       const threadId = parseInt(threadIdStr, 10);
+
+      // Validate agent ownership and chat before registering topic
+      const agent = agentManager.getAgent(agentId);
+      if (!agent) {
+        await sendTelegramMessage(chatId, '❌ Agente não encontrado.');
+        return;
+      }
+      if (agent.userId !== userId) {
+        await sendTelegramMessage(chatId, '❌ Você não tem permissão para configurar este agente.');
+        return;
+      }
+      if (agent.telegramChatId && agent.telegramChatId !== chatId) {
+        await sendTelegramMessage(chatId, '❌ Este agente pertence a outro grupo.');
+        return;
+      }
 
       // Map callback type to TopicType
       const typeMap: Record<string, 'ralph' | 'worktree' | 'session'> = {

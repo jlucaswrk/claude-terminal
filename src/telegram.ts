@@ -1822,6 +1822,31 @@ export async function sendTelegramAgentLimitError(chatId: number): Promise<void>
 }
 
 /**
+ * Send topic setup buttons for unregistered external topics
+ * @param chatId - The chat ID to send to
+ * @param threadId - The thread ID of the topic
+ * @param agentId - The agent ID that owns this group
+ */
+export async function sendTopicSetupButtons(
+  chatId: number,
+  threadId: number,
+  agentId: string
+): Promise<void> {
+  await sendTelegramButtons(
+    chatId,
+    TELEGRAM_ERRORS.TOPIC_UNREGISTERED,
+    [
+      [
+        { text: '🔄 Ralph', callback_data: `setup_topic_ralph:${agentId}:${threadId}` },
+        { text: '🌿 Worktree', callback_data: `setup_topic_worktree:${agentId}:${threadId}` },
+        { text: '💬 Sessão', callback_data: `setup_topic_session:${agentId}:${threadId}` },
+      ],
+    ],
+    threadId
+  );
+}
+
+/**
  * Send workspace not found error with suggestions
  */
 export async function sendTelegramWorkspaceNotFound(
