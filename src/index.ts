@@ -342,6 +342,105 @@ for (const agent of agentManager.getAllAgents()) {
 
 console.log(`Loaded ${agentManager.getAllAgents().length} agents from state`);
 
+/**
+ * Startup sync: Validate topics and loops with 30s timeout
+ * Runs asynchronously, logs errors but doesn't block startup
+ */
+async function performStartupSync(): Promise<void> {
+  console.log('[startup] Iniciando sincronização de tópicos e loops...');
+
+  // Abort flag for timeout cancellation
+  let aborted = false;
+
+  const syncPromise = (async () => {
+    try {
+      // Get all agents with Telegram chats
+      const agents = agentManager.getAllAgents();
+      const telegramAgents = agents.filter(a => a.telegramChatId);
+
+      if (telegramAgents.length === 0) {
+        console.log('[startup] Nenhum agente com Telegram configurado');
+        return;
+      }
+
+      console.log(`[startup] Sincronizando ${telegramAgents.length} agentes com Telegram`);
+
+      let totalTopics = 0;
+      let totalActive = 0;
+      let totalNewlyClosed = 0;
+
+      // Sync topics for each agent
+      for (const agent of telegramAgents) {
+        // Check abort flag
+        if (aborted) {
+          console.log('[startup] Sincronização abortada por timeout');
+          return;
+        }
+
+        if (!agent.telegramChatId) continue;
+
+        console.log(`[startup] Sincronizando tópicos do agente "${agent.name}" (${agent.id})`);
+
+        const syncResult = await topicManager.syncTopicsWithTelegram(
+          agent.id,
+          agent.telegramChatId
+        );
+
+        if (!syncResult.success) {
+          console.error(`[startup] Erro ao sincronizar agente ${agent.name}:`, syncResult.errors);
+        } else {
+          totalTopics += syncResult.synced + syncResult.newlyClosed + syncResult.alreadyClosed;
+          totalActive += syncResult.synced;
+          totalNewlyClosed += syncResult.newlyClosed;
+        }
+      }
+
+      const totalClosed = totalTopics - totalActive;
+      console.log(`[startup] ✅ Sincronizados ${totalTopics} tópicos (${totalActive} ativos, ${totalClosed} fechados)`);
+
+      // Check abort flag before loop validation
+      if (aborted) {
+        console.log('[startup] Sincronização abortada por timeout');
+        return;
+      }
+
+      // Validate Ralph loops against topics
+      console.log('[startup] Validando loops Ralph contra tópicos...');
+      const interruptedLoops = await ralphLoopManager.validateLoopsAgainstTopics(
+        (agentId, threadId) => topicManager.getTopicByThreadId(agentId, threadId)
+      );
+
+      if (interruptedLoops > 0) {
+        console.log(`[startup] ✅ Recuperados ${interruptedLoops} loops Ralph`);
+      }
+
+      console.log(`[startup] ✅ Sincronizados ${telegramAgents.length} agentes Telegram`);
+      console.log('[startup] Sincronização concluída com sucesso');
+    } catch (error) {
+      console.error('[startup] Erro durante sincronização:', error);
+    }
+  })();
+
+  // Apply 30s timeout
+  const timeoutPromise = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      aborted = true; // Signal sync to stop
+      console.warn('[startup] Timeout de 30s atingido, continuando inicialização');
+      resolve();
+    }, 30000);
+  });
+
+  await Promise.race([syncPromise, timeoutPromise]);
+}
+
+// Trigger sync asynchronously if Telegram is configured (don't block startup)
+const isTestEnv = process.env.NODE_ENV === 'test' || process.env.BUN_ENV === 'test';
+if (!isTestEnv && isTelegramConfigured()) {
+  performStartupSync().catch(err => {
+    console.error('[startup] Erro fatal na sincronização:', err);
+  });
+}
+
 // =============================================================================
 // Hono App
 // =============================================================================

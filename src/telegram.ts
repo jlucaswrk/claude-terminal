@@ -818,6 +818,109 @@ export async function getTelegramChat(chatId: number): Promise<TelegramBot.Chat 
 }
 
 // ============================================
+// Retry Utilities for API Rate Limits
+// ============================================
+
+/**
+ * Sleep utility for exponential backoff
+ */
+export function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Exponential backoff retry wrapper for Telegram API calls
+ * Base delay: 1s, max retries: 3
+ *
+ * @param fn - Async function to retry
+ * @param context - Description for logging
+ * @param maxRetries - Maximum number of retries (default: 3)
+ * @param baseDelay - Base delay in ms (default: 1000)
+ * @returns Result of fn or null if all retries fail
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  context: string,
+  maxRetries: number = 3,
+  baseDelay: number = 1000
+): Promise<T | null> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Check for rate limit errors (429 Too Many Requests)
+      if (errorMessage.includes('429') || errorMessage.toLowerCase().includes('too many requests')) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(`[telegram] Rate limit em ${context}, aguardando ${delay}ms (tentativa ${attempt + 1}/${maxRetries})`);
+        await sleep(delay);
+        continue;
+      }
+
+      // Non-retryable error - throw immediately
+      throw error;
+    }
+  }
+
+  console.error(`[telegram] Falha após ${maxRetries} tentativas: ${context}`);
+  return null;
+}
+
+/**
+ * Validate if a forum topic still exists
+ * Returns true if topic exists, false if deleted/not found
+ *
+ * Note: Telegram API doesn't provide direct topic listing.
+ * We use sendChatAction to verify topic exists - it's lightweight and doesn't spam.
+ *
+ * @param chatId - The chat ID containing the topic
+ * @param messageThreadId - The topic's message_thread_id
+ * @returns true if topic exists, false if deleted
+ */
+export async function validateForumTopicExists(
+  chatId: number,
+  messageThreadId: number
+): Promise<boolean> {
+  const telegramBot = getTelegramBot();
+  if (!telegramBot) return false;
+
+  try {
+    // sendChatAction is lightweight and doesn't create messages
+    await telegramBot.sendChatAction(chatId, 'typing', {
+      message_thread_id: messageThreadId,
+    } as TelegramBot.SendChatActionOptions);
+
+    return true;
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorLower = errorMessage.toLowerCase();
+
+    // Topic deleted/closed errors from Telegram API
+    if (
+      errorLower.includes('topic_deleted') ||
+      errorLower.includes('topic_closed') ||
+      errorLower.includes('thread not found') ||
+      errorLower.includes('message thread not found') ||
+      errorLower.includes('invalid message thread') ||
+      errorLower.includes('topic not found')
+    ) {
+      console.log(`[telegram] Tópico ${messageThreadId} no chat ${chatId} foi deletado/não encontrado`);
+      return false;
+    }
+
+    // Rate limit - let caller handle retry
+    if (errorLower.includes('429') || errorLower.includes('too many requests')) {
+      throw error;
+    }
+
+    // Other errors - assume topic exists (conservative approach)
+    console.warn(`[telegram] Erro ao validar tópico ${messageThreadId}: ${errorMessage}`);
+    return true;
+  }
+}
+
+// ============================================
 // Workspace Sandbox Management
 // ============================================
 

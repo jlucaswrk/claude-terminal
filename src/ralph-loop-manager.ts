@@ -763,4 +763,73 @@ Continue with the next step of the task.`;
   getActivePermitCount(): number {
     return this.loopsWithPermit.size;
   }
+
+  /**
+   * Validate active loops against their associated topics
+   * Marks loops as 'interrupted' if their topic was deleted or closed
+   *
+   * @param getTopicByThreadId - Function to lookup topic by agentId and threadId
+   * @returns Number of loops marked as interrupted
+   */
+  async validateLoopsAgainstTopics(
+    getTopicByThreadId: (agentId: string, threadId: number) => { status: string } | undefined
+  ): Promise<number> {
+    const activeLoops = this.persistenceService.getActiveLoops();
+    let interruptedCount = 0;
+
+    console.log(`[ralph] Validando ${activeLoops.length} loops ativos contra tópicos`);
+
+    for (const loop of activeLoops) {
+      // Skip loops without threadId (not topic-based)
+      if (!loop.threadId) {
+        continue;
+      }
+
+      // Get agent to verify it exists
+      const agent = this.agentManager.getAgent(loop.agentId);
+      if (!agent) {
+        // Agent deleted - mark loop as interrupted
+        const interruptedLoop: RalphLoopState = {
+          ...loop,
+          status: 'interrupted',
+        };
+        this.persistenceService.saveLoop(interruptedLoop);
+        this.activeLoops.set(loop.id, interruptedLoop);
+        interruptedCount++;
+        console.log(`[ralph] ✓ Loop ${loop.id} marcado como interrompido (agente não encontrado)`);
+        continue;
+      }
+
+      // Find topic by threadId
+      const topic = getTopicByThreadId(loop.agentId, loop.threadId);
+
+      if (!topic) {
+        // Topic not found - mark loop as interrupted
+        const interruptedLoop: RalphLoopState = {
+          ...loop,
+          status: 'interrupted',
+        };
+        this.persistenceService.saveLoop(interruptedLoop);
+        this.activeLoops.set(loop.id, interruptedLoop);
+        interruptedCount++;
+        console.log(`[ralph] ✓ Loop ${loop.id} marcado como interrompido (tópico deletado)`);
+      } else if (topic.status === 'closed') {
+        // Topic exists but is closed - mark loop as interrupted
+        const interruptedLoop: RalphLoopState = {
+          ...loop,
+          status: 'interrupted',
+        };
+        this.persistenceService.saveLoop(interruptedLoop);
+        this.activeLoops.set(loop.id, interruptedLoop);
+        interruptedCount++;
+        console.log(`[ralph] ✓ Loop ${loop.id} marcado como interrompido (tópico fechado)`);
+      }
+    }
+
+    if (interruptedCount > 0) {
+      console.log(`[ralph] ✅ Recuperados ${interruptedCount} loops Ralph`);
+    }
+
+    return interruptedCount;
+  }
 }

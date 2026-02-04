@@ -20,6 +20,9 @@ import {
   deleteForumTopic,
   isChatForum,
   getExtendedChat,
+  validateForumTopicExists,
+  withRetry,
+  sleep,
   TOPIC_COLORS,
   type ForumTopicCreated,
 } from './telegram';
@@ -59,7 +62,9 @@ export interface CreateTopicResult {
  */
 export interface SyncResult {
   success: boolean;
-  synced: number;
+  synced: number;          // Topics that remain active
+  newlyClosed: number;     // Topics marked as closed during this sync
+  alreadyClosed: number;   // Topics that were already closed before sync
   errors: string[];
 }
 
@@ -497,40 +502,126 @@ export class TopicManager {
   /**
    * Sync topics with Telegram
    * Verifies that local topics still exist in Telegram and updates status
+   * Marks deleted/closed topics as 'closed' in local state
    *
    * @param agentId - The agent ID
    * @param chatId - The Telegram chat ID
-   * @returns Sync result
+   * @returns Sync result with active/closed counts
    */
   async syncTopicsWithTelegram(agentId: string, chatId: number): Promise<SyncResult> {
     const result: SyncResult = {
       success: true,
       synced: 0,
+      newlyClosed: 0,
+      alreadyClosed: 0,
       errors: [],
     };
+
+    console.log(`[topic-manager] Iniciando sincronização de tópicos para agente ${agentId}`);
 
     // Verify chat is a forum
     const chat = await getExtendedChat(chatId);
     if (!chat) {
       result.success = false;
-      result.errors.push(`Failed to get chat info for ${chatId}`);
+      result.errors.push(`Falha ao obter informações do chat ${chatId}`);
+      console.error(`[topic-manager] ${result.errors[0]}`);
       return result;
     }
 
     if (!chat.is_forum) {
       result.success = false;
-      result.errors.push(`Chat ${chatId} is not a forum`);
+      result.errors.push(`Chat ${chatId} não é um fórum`);
+      console.error(`[topic-manager] ${result.errors[0]}`);
       return result;
     }
 
     const topics = this.listTopics(agentId);
+    let consecutiveRateLimitErrors = 0;
+    const MAX_CONSECUTIVE_RATE_LIMITS = 3;
 
-    // We can't list topics from Telegram API (no such endpoint exists)
-    // So we'll just verify the chat is still a forum and count local topics
-    // Individual topic verification happens when sending messages
+    console.log(`[topic-manager] Validando ${topics.length} tópicos para agente ${agentId}`);
 
-    result.synced = topics.length;
-    console.log(`[topic-manager] Synced ${result.synced} topics for agent ${agentId} in chat ${chatId}`);
+    // Validate each topic individually
+    for (const topic of topics) {
+      // Skip validation for general topic (always exists as chat itself)
+      if (topic.type === 'general' || topic.telegramTopicId <= 1) {
+        result.synced++;
+        continue;
+      }
+
+      // Skip already closed topics
+      if (topic.status === 'closed') {
+        result.alreadyClosed++;
+        continue;
+      }
+
+      // Check if topic exists with retry logic for rate limits
+      try {
+        const exists = await withRetry(
+          () => validateForumTopicExists(chatId, topic.telegramTopicId),
+          `validação tópico "${topic.name}" (${topic.telegramTopicId})`,
+          3,
+          1000
+        );
+
+        if (exists === false) {
+          // Topic deleted - mark as closed
+          // Reset rate limit counter on successful API call
+          consecutiveRateLimitErrors = 0;
+          const updatedTopic: AgentTopic = {
+            ...topic,
+            status: 'closed',
+            lastActivity: new Date(),
+          };
+          this.updateTopic(agentId, updatedTopic);
+          result.newlyClosed++;
+          console.log(`[topic-manager] ✓ Tópico "${topic.name}" marcado como fechado (deletado no Telegram)`);
+        } else if (exists === true) {
+          // Topic validated successfully
+          // Reset rate limit counter on successful API call
+          consecutiveRateLimitErrors = 0;
+          result.synced++;
+        } else {
+          // null = retry exhausted (likely rate limit), count it
+          consecutiveRateLimitErrors++;
+          result.errors.push(`Não foi possível validar tópico "${topic.name}"`);
+
+          // Check if we should abort due to rate limits
+          if (consecutiveRateLimitErrors >= MAX_CONSECUTIVE_RATE_LIMITS) {
+            console.warn(`[topic-manager] Abortando sincronização após ${MAX_CONSECUTIVE_RATE_LIMITS} erros consecutivos de rate limit`);
+            result.errors.push(`Sincronização abortada: muitos erros de rate limit`);
+            break;
+          }
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        const errorLower = errorMsg.toLowerCase();
+
+        // Detect rate limit errors
+        if (errorLower.includes('429') || errorLower.includes('too many requests')) {
+          consecutiveRateLimitErrors++;
+          console.warn(`[topic-manager] Rate limit detectado (${consecutiveRateLimitErrors}/${MAX_CONSECUTIVE_RATE_LIMITS})`);
+
+          if (consecutiveRateLimitErrors >= MAX_CONSECUTIVE_RATE_LIMITS) {
+            console.warn(`[topic-manager] Abortando sincronização após ${MAX_CONSECUTIVE_RATE_LIMITS} erros consecutivos de rate limit`);
+            result.errors.push(`Sincronização abortada: muitos erros de rate limit`);
+            break;
+          }
+
+          // Longer delay after rate limit
+          await sleep(5000);
+        } else {
+          result.errors.push(`Erro ao validar tópico "${topic.name}": ${errorMsg}`);
+          console.error(`[topic-manager] Erro ao validar tópico "${topic.name}": ${errorMsg}`);
+        }
+      }
+
+      // Small delay between validations to avoid rate limits
+      await sleep(100);
+    }
+
+    const totalClosed = result.newlyClosed + result.alreadyClosed;
+    console.log(`[topic-manager] ✅ Sincronizados ${topics.length} tópicos (${result.synced} ativos, ${totalClosed} fechados)`);
 
     return result;
   }
