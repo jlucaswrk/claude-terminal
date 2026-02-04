@@ -230,12 +230,12 @@ async function sendMedia(to: string, mediaId: string, mediaType: string, filenam
 }
 
 // Direct Telegram send functions for QueueManager
-async function sendTelegramDirectMessage(chatId: number, text: string): Promise<void> {
-  await sendTelegramMessage(chatId, text);
+async function sendTelegramDirectMessage(chatId: number, text: string, threadId?: number): Promise<void> {
+  await sendTelegramMessage(chatId, text, undefined, threadId);
 }
 
-async function sendTelegramDirectImage(chatId: number, imageUrl: string, caption?: string): Promise<void> {
-  await sendTelegramPhoto(chatId, imageUrl, caption);
+async function sendTelegramDirectImage(chatId: number, imageUrl: string, caption?: string, threadId?: number): Promise<void> {
+  await sendTelegramPhoto(chatId, imageUrl, caption, threadId);
 }
 
 // Queue manager (with image, file, error recovery, and Telegram support)
@@ -248,7 +248,8 @@ const queueManager = new QueueManager(
   sendErrorWithActionsWrapper,
   sendMedia,
   sendTelegramDirectMessage,
-  sendTelegramDirectImage
+  sendTelegramDirectImage,
+  startTypingIndicator
 );
 
 // Telegram command handler (stateless router)
@@ -755,6 +756,7 @@ async function handleTelegramMessage(message: any): Promise<void> {
   const from = message.from;
   const chatType = message.chat.type || 'private';
   const threadId = message.message_thread_id as number | undefined;
+  const isGroup = telegramCommandHandler.isGroupChat(chatType);
 
   // Log message type
   const hasPhoto = !!message.photo;
@@ -764,42 +766,9 @@ async function handleTelegramMessage(message: any): Promise<void> {
   console.log(`[telegram] ${from.username || from.id} (${chatType}${threadInfo}): ${msgType}`);
   console.log(`[telegram] DEBUG: chatId=${chatId}, chatType=${chatType}, threadId=${threadId}, from.username=${from.username}, from.id=${from.id}`);
 
-  // Find user by telegram username
-  const allPrefs = persistenceService.getAllUserPreferences();
-  const userPrefs = allPrefs.find(p =>
-    p.telegramUsername?.toLowerCase() === from.username?.toLowerCase()
-  );
-
-  if (!userPrefs) {
-    await sendTelegramMessage(chatId,
-      'Usuario nao encontrado.\n\n' +
-      'Configure o Dojo primeiro pelo WhatsApp.'
-    );
-    return;
-  }
-
-  // Update telegram chat ID for private chats
-  if (chatType === 'private' && !userPrefs.telegramChatId) {
-    userPrefs.telegramChatId = chatId;
-    persistenceService.saveUserPreferences(userPrefs);
-  }
-
-  const userId = userPrefs.userId;
-  const isGroup = telegramCommandHandler.isGroupChat(chatType);
-
-  // Handle photo messages in groups
-  if (isGroup && message.photo) {
-    await handleTelegramImageMessage(chatId, userId, message.photo, caption);
-    return;
-  }
-
-  // Handle document messages in groups
-  if (isGroup && message.document) {
-    await handleTelegramDocumentMessage(chatId, userId, message.document, caption);
-    return;
-  }
-
-  // Handle group onboarding text input (name or custom workspace)
+  // =============================================================================
+  // Group Onboarding (check BEFORE userPrefs - onboarding doesn't require prefs)
+  // =============================================================================
   if (isGroup && text && groupOnboardingManager.hasActiveOnboarding(chatId)) {
     const state = groupOnboardingManager.getState(chatId);
 
@@ -851,7 +820,45 @@ async function handleTelegramMessage(message: any): Promise<void> {
     }
   }
 
+  // =============================================================================
+  // User Preferences Check (required for all non-onboarding operations)
+  // =============================================================================
+  const allPrefs = persistenceService.getAllUserPreferences();
+  const userPrefs = allPrefs.find(p =>
+    p.telegramUsername?.toLowerCase() === from.username?.toLowerCase()
+  );
+
+  if (!userPrefs) {
+    await sendTelegramMessage(chatId,
+      'Usuario nao encontrado.\n\n' +
+      'Configure o Dojo primeiro pelo WhatsApp.'
+    );
+    return;
+  }
+
+  // Update telegram chat ID for private chats
+  if (chatType === 'private' && !userPrefs.telegramChatId) {
+    userPrefs.telegramChatId = chatId;
+    persistenceService.saveUserPreferences(userPrefs);
+  }
+
+  const userId = userPrefs.userId;
+
+  // Handle photo messages in groups
+  if (isGroup && message.photo) {
+    await handleTelegramImageMessage(chatId, userId, message.photo, caption);
+    return;
+  }
+
+  // Handle document messages in groups
+  if (isGroup && message.document) {
+    await handleTelegramDocumentMessage(chatId, userId, message.document, caption);
+    return;
+  }
+
+  // =============================================================================
   // Route based on chat type using TelegramCommandHandler
+  // =============================================================================
   if (isGroup) {
     // Check if chat is a forum (has topics enabled)
     // Note: is_forum is available in the chat object for supergroups
@@ -883,8 +890,8 @@ async function handleTelegramMessage(message: any): Promise<void> {
             prompt: route.text,
             model: route.model!,
             userId,
-            replyTo: chatId, // Number type for Telegram
-            // Store threadId for response routing (handled in queue-manager)
+            replyTo: chatId,
+            threadId: route.threadId,
           });
         } finally {
           stopTyping();
@@ -1491,7 +1498,7 @@ async function processQueuedRalphMessages(
       model: 'sonnet', // Default model for queued messages
       userId: message.userId,
       replyTo: chatId,
-      // Note: threadId is used via the agent's topic routing
+      threadId,
     });
   }
 }

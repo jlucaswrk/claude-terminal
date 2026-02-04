@@ -214,6 +214,7 @@ export interface QueueTask {
   timestamp: Date;
   userId: string;
   replyTo?: string | number;    // Where to send response (userId, groupId, or Telegram chatId)
+  threadId?: number;            // Telegram topic thread ID for forum responses
   images?: Array<{
     data: string; // base64 encoded
     mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
