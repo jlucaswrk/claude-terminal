@@ -1004,7 +1004,8 @@ export async function sendTelegramRalphProgress(
   iteration: number,
   maxIterations: number,
   action: string,
-  elapsedSeconds?: number
+  elapsedSeconds?: number,
+  threadId?: number
 ): Promise<void> {
   const percentage = Math.round((iteration / maxIterations) * 100);
   const progressBar = generateProgressBar(iteration, maxIterations);
@@ -1020,7 +1021,8 @@ export async function sendTelegramRalphProgress(
         { text: '⏸️ Pausar', callback_data: `ralph_pause_${loopId}` },
         { text: '❌ Cancelar', callback_data: `ralph_stop_${loopId}` },
       ],
-    ]
+    ],
+    threadId
   );
 }
 
@@ -1051,10 +1053,12 @@ export async function sendTelegramRalphPaused(
  */
 export async function sendTelegramRalphComplete(
   chatId: number,
+  loopId: string,
   iterations: number,
   durationSeconds: number,
   status: 'completed' | 'cancelled' | 'blocked' | 'failed',
-  errorMessage?: string
+  errorMessage?: string,
+  threadId?: number
 ): Promise<void> {
   const statusEmoji: Record<string, string> = {
     completed: '✅',
@@ -1082,7 +1086,7 @@ export async function sendTelegramRalphComplete(
     text += `\n\n*Erro:* ${errorMessage}`;
   }
 
-  await sendTelegramMessage(chatId, text);
+  await sendTelegramMessage(chatId, text, undefined, threadId);
 }
 
 // ============================================
@@ -1970,4 +1974,380 @@ export function validateGroupAgentName(name: string): string | null {
   }
 
   return null;
+}
+
+// ============================================
+// Topic Management UI
+// ============================================
+
+/**
+ * Topic error messages
+ */
+export const TOPIC_ERRORS = {
+  TOPICS_NOT_ENABLED: '⚠️ *Tópicos não habilitados*\n\nEste grupo não tem tópicos habilitados. Para usar /ralph, /worktree e /sessao, habilite tópicos nas configurações do grupo Telegram.',
+  NO_LINKED_AGENT: '⚠️ *Agente não vinculado*\n\nEste grupo não está vinculado a nenhum agente. Use /criar no chat privado para criar um agente.',
+  TOPIC_NAME_TOO_LONG: 'Nome do tópico excede o limite de 100 caracteres.',
+  TOPIC_NAME_INVALID: 'Nome do tópico contém caracteres inválidos.',
+} as const;
+
+/**
+ * Send prompt to enter task for Ralph topic
+ */
+export async function sendTopicRalphTaskPrompt(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId,
+    '🔄 *Novo tópico Ralph*\n\n' +
+    'Qual tarefa o Ralph deve executar?\n\n' +
+    '_Descreva a tarefa em detalhes._'
+  );
+}
+
+/**
+ * Send iteration selection for Ralph topic
+ */
+export async function sendTopicRalphIterationsPrompt(chatId: number, task: string): Promise<void> {
+  const truncatedTask = task.length > 100 ? task.slice(0, 97) + '...' : task;
+  await sendTelegramButtons(chatId,
+    `🔄 *Novo tópico Ralph*\n\n` +
+    `*Tarefa:* ${truncatedTask}\n\n` +
+    `Quantas iterações máximas?`,
+    [
+      [
+        { text: '5', callback_data: 'topic_ralph_iter_5' },
+        { text: '10', callback_data: 'topic_ralph_iter_10' },
+      ],
+      [
+        { text: '20', callback_data: 'topic_ralph_iter_20' },
+        { text: '50', callback_data: 'topic_ralph_iter_50' },
+      ],
+      [
+        { text: '✏️ Personalizado', callback_data: 'topic_ralph_iter_custom' },
+      ],
+    ]
+  );
+}
+
+/**
+ * Send custom iterations prompt for Ralph topic
+ */
+export async function sendTopicRalphCustomIterationsPrompt(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId,
+    '*Iterações personalizadas*\n\n' +
+    'Digite o número de iterações (1-100):'
+  );
+}
+
+/**
+ * Send prompt to enter topic name for worktree/sessao
+ */
+export async function sendTopicNamePrompt(chatId: number, type: 'worktree' | 'sessao'): Promise<void> {
+  const emoji = type === 'worktree' ? '🌿' : '💬';
+  const typeName = type === 'worktree' ? 'Worktree' : 'Sessão';
+
+  await sendTelegramMessage(chatId,
+    `${emoji} *Novo tópico ${typeName}*\n\n` +
+    'Digite um nome para o tópico:\n\n' +
+    '_Máximo 100 caracteres._'
+  );
+}
+
+/**
+ * Send topic created confirmation (General topic)
+ */
+export async function sendTopicCreatedInGeneral(
+  chatId: number,
+  topicName: string,
+  topicType: 'ralph' | 'worktree' | 'session',
+  threadId: number
+): Promise<void> {
+  const emoji = topicType === 'ralph' ? '🔄' : topicType === 'worktree' ? '🌿' : '💬';
+  const typeName = topicType === 'ralph' ? 'Ralph' : topicType === 'worktree' ? 'Worktree' : 'Sessão';
+
+  await sendTelegramMessage(chatId,
+    `✅ *Tópico ${typeName} criado*\n\n` +
+    `${emoji} *${topicName}*\n\n` +
+    `_Acesse o tópico para interagir._`
+  );
+}
+
+/**
+ * Send welcome message in newly created topic
+ */
+export async function sendTopicWelcome(
+  chatId: number,
+  threadId: number,
+  topicName: string,
+  topicType: 'ralph' | 'worktree' | 'session',
+  task?: string
+): Promise<void> {
+  const emoji = topicType === 'ralph' ? '🔄' : topicType === 'worktree' ? '🌿' : '💬';
+
+  if (topicType === 'ralph' && task) {
+    const truncatedTask = task.length > 200 ? task.slice(0, 197) + '...' : task;
+    await sendTelegramMessage(chatId,
+      `${emoji} *${topicName}*\n\n` +
+      `*Tarefa:* ${truncatedTask}\n\n` +
+      `_Loop Ralph iniciando..._`,
+      undefined,
+      threadId
+    );
+  } else {
+    const description = topicType === 'worktree'
+      ? 'Tópico isolado para experimentos e features.'
+      : 'Tópico com sessão de conversa isolada.';
+
+    await sendTelegramMessage(chatId,
+      `${emoji} *${topicName}*\n\n` +
+      `${description}\n\n` +
+      `_Envie uma mensagem para começar._`,
+      undefined,
+      threadId
+    );
+  }
+}
+
+/**
+ * Format topic for display in /topicos list
+ */
+export function formatTopicListItem(topic: {
+  emoji: string;
+  name: string;
+  type: 'general' | 'ralph' | 'worktree' | 'session';
+  status: 'active' | 'closed';
+  loopId?: string;
+  lastActivity: Date;
+  currentIteration?: number;
+  maxIterations?: number;
+}): string {
+  const statusIcon = topic.status === 'active' ? '🟢' : '🔴';
+  const typeLabel = topic.type === 'ralph' ? 'Ralph'
+    : topic.type === 'worktree' ? 'Worktree'
+    : topic.type === 'session' ? 'Sessão'
+    : 'General';
+
+  let line = `${statusIcon} ${topic.emoji} *${topic.name}*\n`;
+  line += `   Tipo: ${typeLabel}`;
+
+  // Add progress for Ralph topics
+  if (topic.type === 'ralph' && topic.loopId && topic.currentIteration !== undefined && topic.maxIterations !== undefined) {
+    line += ` | Progresso: ${topic.currentIteration}/${topic.maxIterations}`;
+  }
+
+  // Add last activity (relative time)
+  const now = new Date();
+  const diff = now.getTime() - topic.lastActivity.getTime();
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  let timeAgo: string;
+  if (days > 0) {
+    timeAgo = `${days}d atrás`;
+  } else if (hours > 0) {
+    timeAgo = `${hours}h atrás`;
+  } else if (minutes > 0) {
+    timeAgo = `${minutes}m atrás`;
+  } else {
+    timeAgo = 'agora';
+  }
+
+  line += `\n   Última atividade: ${timeAgo}`;
+
+  return line;
+}
+
+/**
+ * Send topics list with action buttons
+ */
+export async function sendTopicsList(
+  chatId: number,
+  topics: Array<{
+    id: string;
+    emoji: string;
+    name: string;
+    type: 'general' | 'ralph' | 'worktree' | 'session';
+    status: 'active' | 'closed';
+    loopId?: string;
+    lastActivity: Date;
+    currentIteration?: number;
+    maxIterations?: number;
+  }>
+): Promise<void> {
+  if (topics.length === 0) {
+    await sendTelegramMessage(chatId,
+      '📋 *Nenhum tópico encontrado*\n\n' +
+      'Use /ralph, /worktree ou /sessao para criar tópicos.'
+    );
+    return;
+  }
+
+  // Format topic list
+  const topicLines = topics.map(formatTopicListItem);
+  const text = `📋 *Tópicos do agente*\n\n${topicLines.join('\n\n')}`;
+
+  // Build action buttons for each non-general topic (max 3 rows due to Telegram limits)
+  const actionableTopics = topics.filter(t => t.type !== 'general').slice(0, 3);
+  const buttons: TelegramBot.InlineKeyboardButton[][] = actionableTopics.map(topic => {
+    const actionBtn = topic.status === 'active'
+      ? { text: `🔴 Fechar ${topic.name}`, callback_data: `topic_close_${topic.id}` }
+      : { text: `🟢 Reabrir ${topic.name}`, callback_data: `topic_reopen_${topic.id}` };
+
+    return [
+      actionBtn,
+      { text: `🗑️ Deletar`, callback_data: `topic_delete_${topic.id}` },
+    ];
+  });
+
+  if (buttons.length > 0) {
+    await sendTelegramButtons(chatId, text, buttons);
+  } else {
+    await sendTelegramMessage(chatId, text);
+  }
+}
+
+/**
+ * Send topics not enabled error
+ */
+export async function sendTopicsNotEnabledError(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId, TOPIC_ERRORS.TOPICS_NOT_ENABLED);
+}
+
+/**
+ * Send no linked agent error for topic commands
+ */
+export async function sendTopicNoAgentError(chatId: number): Promise<void> {
+  await sendTelegramMessage(chatId, TOPIC_ERRORS.NO_LINKED_AGENT);
+}
+
+// ============================================
+// Ralph Topic Integration UI
+// ============================================
+
+/**
+ * Send message queued feedback for active Ralph topic
+ */
+export async function sendRalphMessageQueued(
+  chatId: number,
+  threadId: number,
+  queuePosition: number
+): Promise<TelegramBot.Message | null> {
+  const positionText = queuePosition === 1 ? '' : ` (posição ${queuePosition} na fila)`;
+  return sendTelegramMessage(
+    chatId,
+    `📥 *Mensagem enfileirada*${positionText}\n\n_Será processada quando o loop pausar ou terminar._`,
+    undefined,
+    threadId
+  );
+}
+
+/**
+ * Send Ralph loop completion summary with topic action buttons
+ */
+export async function sendRalphTopicComplete(
+  chatId: number,
+  threadId: number,
+  loopId: string,
+  topicId: string,
+  iterations: number,
+  durationSeconds: number,
+  status: 'completed' | 'cancelled' | 'blocked' | 'failed',
+  hasQueuedMessages: boolean = false
+): Promise<void> {
+  const statusEmoji: Record<string, string> = {
+    completed: '✅',
+    cancelled: '🛑',
+    blocked: '⚠️',
+    failed: '❌',
+  };
+
+  const statusText: Record<string, string> = {
+    completed: 'Concluído com sucesso',
+    cancelled: 'Cancelado',
+    blocked: 'Bloqueado (máximo de iterações)',
+    failed: 'Falhou',
+  };
+
+  const minutes = Math.floor(durationSeconds / 60);
+  const seconds = durationSeconds % 60;
+  const timeText = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+
+  let text = `${statusEmoji[status]} *Ralph Loop ${statusText[status]}*\n\n` +
+    `*Iterações:* ${iterations}\n` +
+    `*Tempo:* ${timeText}`;
+
+  if (hasQueuedMessages) {
+    text += `\n\n_Processando mensagens enfileiradas..._`;
+  }
+
+  // Show topic action buttons
+  await sendTelegramButtons(
+    chatId,
+    text,
+    [
+      [
+        { text: '📁 Manter aberto', callback_data: `ralph_topic_keep_${topicId}` },
+        { text: '🗑️ Fechar tópico', callback_data: `ralph_topic_close_${topicId}` },
+      ],
+    ],
+    threadId
+  );
+}
+
+/**
+ * Send Ralph loop paused message with control buttons (for topic)
+ */
+export async function sendRalphTopicPaused(
+  chatId: number,
+  threadId: number,
+  loopId: string,
+  iteration: number,
+  maxIterations: number,
+  queueSize: number = 0
+): Promise<void> {
+  let text = `⏸️ *Ralph Loop pausado*\n\n` +
+    `Iteração ${iteration}/${maxIterations}`;
+
+  if (queueSize > 0) {
+    text += `\n\n📥 ${queueSize} mensagem(s) na fila`;
+  }
+
+  await sendTelegramButtons(
+    chatId,
+    text,
+    [
+      [
+        { text: '▶️ Retomar', callback_data: `ralph_resume_${loopId}` },
+        { text: '❌ Cancelar', callback_data: `ralph_stop_${loopId}` },
+      ],
+    ],
+    threadId
+  );
+}
+
+/**
+ * Send Ralph control command response
+ */
+export async function sendRalphControlResponse(
+  chatId: number,
+  threadId: number,
+  action: 'paused' | 'resumed' | 'cancelled',
+  loopId?: string
+): Promise<void> {
+  const messages: Record<string, string> = {
+    paused: '⏸️ Loop pausado.',
+    resumed: '▶️ Loop retomado.',
+    cancelled: '🛑 Loop cancelado.',
+  };
+
+  await sendTelegramMessage(chatId, messages[action], undefined, threadId);
+}
+
+/**
+ * Send error for Ralph control command
+ */
+export async function sendRalphControlError(
+  chatId: number,
+  threadId: number,
+  error: string
+): Promise<void> {
+  await sendTelegramMessage(chatId, `⚠️ ${error}`, undefined, threadId);
 }

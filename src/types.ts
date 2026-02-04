@@ -135,8 +135,8 @@ export interface RalphLoopState {
 export interface UserContext {
   userId: string;
   activeAgentId?: string;         // Persists across clearContext() for continuous conversations
-  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'onboarding' | 'ralph_loop' | 'image_action' | 'document_action';
-  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_mode_selection' | 'awaiting_telegram_username' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt';
+  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'onboarding' | 'ralph_loop' | 'image_action' | 'document_action' | 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
+  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_mode_selection' | 'awaiting_telegram_username' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt' | 'awaiting_topic_name' | 'awaiting_topic_task' | 'awaiting_topic_iterations';
   flowData?: {
     agentName?: string;
     agentId?: string;
@@ -155,6 +155,9 @@ export interface UserContext {
     pendingImageFileId?: string;   // Telegram file ID for pending image
     pendingDocumentFileId?: string; // Telegram file ID for pending document
     pendingDocumentFilename?: string; // Original filename of pending document
+    topicName?: string;              // Topic name for topic creation flows
+    topicTask?: string;              // Task description for Ralph topic
+    topicMaxIterations?: number;     // Max iterations for Ralph topic
     [key: string]: unknown;
   };
   pendingPrompt?: {

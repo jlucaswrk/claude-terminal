@@ -434,6 +434,47 @@ export class TopicManager {
   }
 
   /**
+   * Set the Ralph loop ID for a topic
+   *
+   * @param agentId - The agent ID
+   * @param topicId - The topic ID
+   * @param loopId - The Ralph loop ID
+   */
+  setTopicLoopId(agentId: string, topicId: string, loopId: string): void {
+    const topic = this.getTopic(agentId, topicId);
+    if (!topic) return;
+
+    const updatedTopic: AgentTopic = {
+      ...topic,
+      loopId,
+      lastActivity: new Date(),
+    };
+
+    this.updateTopic(agentId, updatedTopic);
+    console.log(`[topic-manager] Set loopId ${loopId} for topic ${topicId}`);
+  }
+
+  /**
+   * Clear the Ralph loop ID from a topic
+   *
+   * @param agentId - The agent ID
+   * @param topicId - The topic ID
+   */
+  clearTopicLoopId(agentId: string, topicId: string): void {
+    const topic = this.getTopic(agentId, topicId);
+    if (!topic) return;
+
+    const updatedTopic: AgentTopic = {
+      ...topic,
+      loopId: undefined,
+      lastActivity: new Date(),
+    };
+
+    this.updateTopic(agentId, updatedTopic);
+    console.log(`[topic-manager] Cleared loopId for topic ${topicId}`);
+  }
+
+  /**
    * Sync topics with Telegram
    * Verifies that local topics still exist in Telegram and updates status
    *

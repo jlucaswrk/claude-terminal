@@ -347,24 +347,48 @@ describe('TelegramCommandHandler - Topic Routing', () => {
       }
     });
 
-    test('includes threadId in ralph_loop result', () => {
+    test('includes threadId in ralph_loop result (non-forum group)', () => {
       agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
       const createdAgent = agentManager.listAgents('user-phone-123')[0];
       agentManager.setTelegramChatId(createdAgent.id, 12345);
 
+      // Non-forum groups should still use ralph_loop for /ralph <task>
       const result = handler.routeGroupMessage(
         12345,
         'user-phone-123',
         '/ralph Build a new feature',
         111,
         85,
-        true
+        false // isForum = false
       );
 
       expect(result.action).toBe('ralph_loop');
       if (result.action === 'ralph_loop') {
         expect(result.threadId).toBe(85);
         expect(result.task).toBe('Build a new feature');
+      }
+    });
+
+    test('includes threadId in topic_command result (forum group)', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      // Forum groups should use topic_command for /ralph <task>
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/ralph Build a new feature',
+        111,
+        85,
+        true // isForum = true
+      );
+
+      expect(result.action).toBe('topic_command');
+      if (result.action === 'topic_command') {
+        expect(result.threadId).toBe(85);
+        expect(result.command).toBe('ralph');
+        expect(result.args).toBe('Build a new feature');
       }
     });
 
@@ -460,6 +484,411 @@ describe('TelegramCommandHandler - Topic Routing', () => {
     test('returns undefined for non-existent threadId', () => {
       const result = handler.getTopicByThreadId('agent-123', 999);
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('Topic Command Routing', () => {
+    test('/ralph command in forum group routes to topic_command', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/ralph Fix the bug',
+        111,
+        1, // threadId
+        true // isForum = true
+      );
+
+      expect(result.action).toBe('topic_command');
+      if (result.action === 'topic_command') {
+        expect(result.command).toBe('ralph');
+        expect(result.args).toBe('Fix the bug');
+        expect(result.agentId).toBe(createdAgent.id);
+      }
+    });
+
+    test('/ralph command without task in forum group routes to topic_command', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/ralph',
+        111,
+        1,
+        true
+      );
+
+      expect(result.action).toBe('topic_command');
+      if (result.action === 'topic_command') {
+        expect(result.command).toBe('ralph');
+        expect(result.args).toBe('');
+      }
+    });
+
+    test('/worktree command in forum group routes to topic_command', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/worktree feature/auth',
+        111,
+        1,
+        true
+      );
+
+      expect(result.action).toBe('topic_command');
+      if (result.action === 'topic_command') {
+        expect(result.command).toBe('worktree');
+        expect(result.args).toBe('feature/auth');
+      }
+    });
+
+    test('/sessao command in forum group routes to topic_command', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/sessao Debug session',
+        111,
+        1,
+        true
+      );
+
+      expect(result.action).toBe('topic_command');
+      if (result.action === 'topic_command') {
+        expect(result.command).toBe('sessao');
+        expect(result.args).toBe('Debug session');
+      }
+    });
+
+    test('/topicos command routes to topic_command', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/topicos',
+        111,
+        1,
+        true
+      );
+
+      expect(result.action).toBe('topic_command');
+      if (result.action === 'topic_command') {
+        expect(result.command).toBe('topicos');
+      }
+    });
+
+    test('/ralph in non-forum group with task routes to ralph_loop', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/ralph Build feature',
+        111,
+        undefined,
+        false // isForum = false
+      );
+
+      expect(result.action).toBe('ralph_loop');
+      if (result.action === 'ralph_loop') {
+        expect(result.task).toBe('Build feature');
+      }
+    });
+
+    test('/worktree in non-forum group routes to topic_command for error handling', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/worktree feature/auth',
+        111,
+        undefined,
+        false
+      );
+
+      expect(result.action).toBe('topic_command');
+      if (result.action === 'topic_command') {
+        expect(result.command).toBe('worktree');
+      }
+    });
+
+    test('topic_command includes agentId when agent is linked', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/topicos',
+        111,
+        1,
+        true
+      );
+
+      expect(result.action).toBe('topic_command');
+      if (result.action === 'topic_command') {
+        expect(result.agentId).toBe(createdAgent.id);
+      }
+    });
+
+    test('topic_command has undefined agentId when no agent linked', () => {
+      const result = handler.routeGroupMessage(
+        99999, // Unlinked group
+        'user-phone-123',
+        '/topicos',
+        111,
+        1,
+        true
+      );
+
+      expect(result.action).toBe('topic_command');
+      if (result.action === 'topic_command') {
+        expect(result.agentId).toBeUndefined();
+      }
+    });
+  });
+
+  describe('Ralph Control Commands', () => {
+    test('/pausar routes to ralph_control in Ralph topic', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      // Create a Ralph topic with active loop
+      const topic = createMockTopic({
+        agentId: createdAgent.id,
+        telegramTopicId: 400,
+        type: 'ralph',
+        name: 'Active Ralph',
+        loopId: 'loop-active-123',
+        status: 'active',
+      });
+      persistence.saveTopics(createdAgent.id, undefined, [topic]);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/pausar',
+        111,
+        400, // Ralph topic threadId
+        true // isForum
+      );
+
+      expect(result.action).toBe('ralph_control');
+      if (result.action === 'ralph_control') {
+        expect(result.command).toBe('pausar');
+        expect(result.loopId).toBe('loop-active-123');
+        expect(result.threadId).toBe(400);
+        expect(result.agentId).toBe(createdAgent.id);
+      }
+    });
+
+    test('/retomar routes to ralph_control in Ralph topic', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const topic = createMockTopic({
+        agentId: createdAgent.id,
+        telegramTopicId: 401,
+        type: 'ralph',
+        name: 'Paused Ralph',
+        loopId: 'loop-paused-456',
+        status: 'active',
+      });
+      persistence.saveTopics(createdAgent.id, undefined, [topic]);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/retomar',
+        111,
+        401,
+        true
+      );
+
+      expect(result.action).toBe('ralph_control');
+      if (result.action === 'ralph_control') {
+        expect(result.command).toBe('retomar');
+        expect(result.loopId).toBe('loop-paused-456');
+      }
+    });
+
+    test('/cancelar routes to ralph_control in Ralph topic', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const topic = createMockTopic({
+        agentId: createdAgent.id,
+        telegramTopicId: 402,
+        type: 'ralph',
+        name: 'Running Ralph',
+        loopId: 'loop-running-789',
+        status: 'active',
+      });
+      persistence.saveTopics(createdAgent.id, undefined, [topic]);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/cancelar',
+        111,
+        402,
+        true
+      );
+
+      // Note: /cancelar in Ralph topic routes to ralph_control
+      expect(result.action).toBe('ralph_control');
+      if (result.action === 'ralph_control') {
+        expect(result.command).toBe('cancelar');
+        expect(result.loopId).toBe('loop-running-789');
+      }
+    });
+
+    test('Ralph control commands require forum and threadId > 1', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      // /pausar in non-forum group routes to regular command
+      const result1 = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/pausar',
+        111,
+        undefined,
+        false // Not a forum
+      );
+
+      expect(result1.action).toBe('command');
+      if (result1.action === 'command') {
+        expect(result1.command).toBe('/pausar');
+      }
+
+      // /pausar in General topic (threadId=1) routes to regular command
+      const result2 = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/pausar',
+        111,
+        1, // General topic
+        true
+      );
+
+      expect(result2.action).toBe('command');
+    });
+
+    test('Ralph control commands require topic with active loopId', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      // Create a Ralph topic WITHOUT active loop
+      const topic = createMockTopic({
+        agentId: createdAgent.id,
+        telegramTopicId: 403,
+        type: 'ralph',
+        name: 'Completed Ralph',
+        loopId: undefined, // No active loop
+        status: 'active',
+      });
+      persistence.saveTopics(createdAgent.id, undefined, [topic]);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/pausar',
+        111,
+        403,
+        true
+      );
+
+      // Without active loopId, routes to regular command
+      expect(result.action).toBe('command');
+    });
+
+    test('Ralph control commands require ralph type topic', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      // Create a session topic (not ralph)
+      const topic = createMockTopic({
+        agentId: createdAgent.id,
+        telegramTopicId: 404,
+        type: 'session', // Not ralph
+        name: 'Session Topic',
+        status: 'active',
+      });
+      persistence.saveTopics(createdAgent.id, undefined, [topic]);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        '/pausar',
+        111,
+        404,
+        true
+      );
+
+      // Not a ralph topic, routes to regular command
+      expect(result.action).toBe('command');
+    });
+  });
+
+  describe('topic_ralph_active includes loopId', () => {
+    test('topic_ralph_active result includes loopId', () => {
+      agentManager.createAgent('user-phone-123', 'Test Agent', TEST_WORKSPACE, '🤖', 'claude', 'sonnet');
+      const createdAgent = agentManager.listAgents('user-phone-123')[0];
+      agentManager.setTelegramChatId(createdAgent.id, 12345);
+
+      const topic = createMockTopic({
+        agentId: createdAgent.id,
+        telegramTopicId: 500,
+        type: 'ralph',
+        name: 'Ralph with Loop',
+        loopId: 'specific-loop-id-xyz',
+        status: 'active',
+      });
+      persistence.saveTopics(createdAgent.id, undefined, [topic]);
+
+      const result = handler.routeGroupMessage(
+        12345,
+        'user-phone-123',
+        'Add this to the queue',
+        111,
+        500,
+        true
+      );
+
+      expect(result.action).toBe('topic_ralph_active');
+      if (result.action === 'topic_ralph_active') {
+        expect(result.loopId).toBe('specific-loop-id-xyz');
+        expect(result.text).toBe('Add this to the queue');
+      }
     });
   });
 });

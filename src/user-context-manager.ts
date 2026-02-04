@@ -1057,4 +1057,259 @@ export class UserContextManager {
     context.flowData = { ...context.flowData, telegramUsername: username };
     // Flow data is preserved for the caller to use, then they clear context
   }
+
+  // ============================================
+  // Topic Creation Flows
+  // States for topic_ralph: awaiting_topic_task → awaiting_topic_iterations → complete
+  // States for topic_worktree/topic_sessao: awaiting_topic_name → complete
+  // ============================================
+
+  /**
+   * Start the Ralph topic creation flow
+   * @param userId - User ID
+   * @param agentId - Agent ID
+   * @param telegramChatId - Telegram chat ID for the flow
+   * @param task - Optional task if provided inline with command
+   */
+  startTopicRalphFlow(userId: string, agentId: string, telegramChatId: number, task?: string): void {
+    const existingContext = this.contexts.get(userId);
+    this.contexts.set(userId, {
+      userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
+      currentFlow: 'topic_ralph',
+      flowState: task ? 'awaiting_topic_iterations' : 'awaiting_topic_task',
+      flowData: {
+        agentId,
+        telegramChatId,
+        topicTask: task,
+      },
+    });
+  }
+
+  /**
+   * Check if user is in a topic Ralph flow
+   */
+  isInTopicRalphFlow(userId: string): boolean {
+    return this.contexts.get(userId)?.currentFlow === 'topic_ralph';
+  }
+
+  /**
+   * Check if we're awaiting topic task input
+   */
+  isAwaitingTopicTask(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'topic_ralph' && context?.flowState === 'awaiting_topic_task';
+  }
+
+  /**
+   * Set the topic task description
+   */
+  setTopicTask(userId: string, task: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'topic_ralph') {
+      throw new Error('Not in topic Ralph flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      topicTask: task,
+    };
+    context.flowState = 'awaiting_topic_iterations';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if we're awaiting topic max iterations
+   */
+  isAwaitingTopicIterations(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'topic_ralph' && context?.flowState === 'awaiting_topic_iterations';
+  }
+
+  /**
+   * Set the topic max iterations
+   */
+  setTopicMaxIterations(userId: string, maxIterations: number): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'topic_ralph') {
+      throw new Error('Not in topic Ralph flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      topicMaxIterations: maxIterations,
+    };
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the topic Ralph flow data
+   */
+  getTopicRalphData(userId: string): {
+    agentId?: string;
+    telegramChatId?: number;
+    topicTask?: string;
+    topicMaxIterations?: number;
+  } | undefined {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'topic_ralph') {
+      return undefined;
+    }
+    return {
+      agentId: context.flowData?.agentId as string | undefined,
+      telegramChatId: context.flowData?.telegramChatId as number | undefined,
+      topicTask: context.flowData?.topicTask as string | undefined,
+      topicMaxIterations: context.flowData?.topicMaxIterations as number | undefined,
+    };
+  }
+
+  /**
+   * Start the worktree topic creation flow
+   * @param userId - User ID
+   * @param agentId - Agent ID
+   * @param telegramChatId - Telegram chat ID for the flow
+   * @param name - Optional name if provided inline with command
+   */
+  startTopicWorktreeFlow(userId: string, agentId: string, telegramChatId: number, name?: string): void {
+    const existingContext = this.contexts.get(userId);
+
+    // If name is provided, flow completes immediately (no state needed)
+    if (name) {
+      this.contexts.set(userId, {
+        userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
+        currentFlow: 'topic_worktree',
+        flowState: undefined,
+        flowData: {
+          agentId,
+          telegramChatId,
+          topicName: name,
+        },
+      });
+    } else {
+      this.contexts.set(userId, {
+        userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
+        currentFlow: 'topic_worktree',
+        flowState: 'awaiting_topic_name',
+        flowData: {
+          agentId,
+          telegramChatId,
+        },
+      });
+    }
+  }
+
+  /**
+   * Check if user is in a topic worktree flow
+   */
+  isInTopicWorktreeFlow(userId: string): boolean {
+    return this.contexts.get(userId)?.currentFlow === 'topic_worktree';
+  }
+
+  /**
+   * Start the session topic creation flow
+   * @param userId - User ID
+   * @param agentId - Agent ID
+   * @param telegramChatId - Telegram chat ID for the flow
+   * @param name - Optional name if provided inline with command
+   */
+  startTopicSessaoFlow(userId: string, agentId: string, telegramChatId: number, name?: string): void {
+    const existingContext = this.contexts.get(userId);
+
+    // If name is provided, flow completes immediately (no state needed)
+    if (name) {
+      this.contexts.set(userId, {
+        userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
+        currentFlow: 'topic_sessao',
+        flowState: undefined,
+        flowData: {
+          agentId,
+          telegramChatId,
+          topicName: name,
+        },
+      });
+    } else {
+      this.contexts.set(userId, {
+        userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
+        currentFlow: 'topic_sessao',
+        flowState: 'awaiting_topic_name',
+        flowData: {
+          agentId,
+          telegramChatId,
+        },
+      });
+    }
+  }
+
+  /**
+   * Check if user is in a topic session flow
+   */
+  isInTopicSessaoFlow(userId: string): boolean {
+    return this.contexts.get(userId)?.currentFlow === 'topic_sessao';
+  }
+
+  /**
+   * Check if we're awaiting topic name input (for worktree or sessao)
+   */
+  isAwaitingTopicName(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return (context?.currentFlow === 'topic_worktree' || context?.currentFlow === 'topic_sessao')
+      && context?.flowState === 'awaiting_topic_name';
+  }
+
+  /**
+   * Set the topic name
+   */
+  setTopicName(userId: string, name: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || (context.currentFlow !== 'topic_worktree' && context.currentFlow !== 'topic_sessao')) {
+      throw new Error('Not in topic creation flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      topicName: name,
+    };
+    context.flowState = undefined; // Flow complete, ready to create
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the topic creation flow data (for worktree or sessao)
+   */
+  getTopicCreationData(userId: string): {
+    agentId?: string;
+    telegramChatId?: number;
+    topicName?: string;
+    flowType?: 'topic_worktree' | 'topic_sessao';
+  } | undefined {
+    const context = this.contexts.get(userId);
+    if (!context || (context.currentFlow !== 'topic_worktree' && context.currentFlow !== 'topic_sessao')) {
+      return undefined;
+    }
+    return {
+      agentId: context.flowData?.agentId as string | undefined,
+      telegramChatId: context.flowData?.telegramChatId as number | undefined,
+      topicName: context.flowData?.topicName as string | undefined,
+      flowType: context.currentFlow,
+    };
+  }
+
+  /**
+   * Check if user is in any topic creation flow
+   */
+  isInTopicFlow(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'topic_ralph'
+      || context?.currentFlow === 'topic_worktree'
+      || context?.currentFlow === 'topic_sessao';
+  }
 }

@@ -38,8 +38,28 @@ export type LoopProgressCallback = (
   loopId: string,
   iteration: number,
   maxIterations: number,
-  action: string
+  action: string,
+  threadId?: number
 ) => void;
+
+/**
+ * Callback for loop completion
+ */
+export type LoopCompletionCallback = (
+  loopId: string,
+  status: RalphLoopState['status'],
+  iterations: number,
+  threadId?: number
+) => void;
+
+/**
+ * Message queued during active Ralph loop
+ */
+export interface QueuedRalphMessage {
+  text: string;
+  timestamp: Date;
+  userId: string;
+}
 
 /**
  * RalphLoopManager handles autonomous loop execution for Ralph-mode agents
@@ -67,6 +87,12 @@ export class RalphLoopManager {
 
   // Progress callback
   private progressCallback?: LoopProgressCallback;
+
+  // Completion callback
+  private completionCallback?: LoopCompletionCallback;
+
+  // Message queue for active Ralph topics (loopId -> queued messages)
+  private messageQueues: Map<string, QueuedRalphMessage[]> = new Map();
 
   constructor(
     semaphore: Semaphore,
@@ -97,14 +123,81 @@ export class RalphLoopManager {
   }
 
   /**
+   * Set the completion callback for loop completion events
+   */
+  setCompletionCallback(callback: LoopCompletionCallback): void {
+    this.completionCallback = callback;
+  }
+
+  /**
+   * Enqueue a message for a running loop
+   * Messages are processed in FIFO order when the loop pauses or completes
+   * @returns true if message was queued, false if loop doesn't exist or isn't running
+   */
+  enqueueMessage(loopId: string, text: string, userId: string): boolean {
+    const loop = this.getLoop(loopId);
+    if (!loop || !['running', 'paused'].includes(loop.status)) {
+      return false;
+    }
+
+    const queue = this.messageQueues.get(loopId) || [];
+    queue.push({
+      text,
+      timestamp: new Date(),
+      userId,
+    });
+    this.messageQueues.set(loopId, queue);
+
+    console.log(`[ralph] Enqueued message for loop ${loopId}: "${text.substring(0, 50)}..."`);
+    return true;
+  }
+
+  /**
+   * Get all queued messages for a loop
+   */
+  getQueuedMessages(loopId: string): QueuedRalphMessage[] {
+    return this.messageQueues.get(loopId) || [];
+  }
+
+  /**
+   * Dequeue all messages for a loop (clears the queue)
+   * @returns Array of queued messages
+   */
+  dequeueMessages(loopId: string): QueuedRalphMessage[] {
+    const queue = this.messageQueues.get(loopId) || [];
+    this.messageQueues.delete(loopId);
+    return queue;
+  }
+
+  /**
+   * Get the number of queued messages for a loop
+   */
+  getQueueSize(loopId: string): number {
+    return (this.messageQueues.get(loopId) || []).length;
+  }
+
+  /**
+   * Check if a loop has queued messages
+   */
+  hasQueuedMessages(loopId: string): boolean {
+    return this.getQueueSize(loopId) > 0;
+  }
+
+  /**
    * Start a new autonomous loop
    * Creates loop state and returns loopId (does not execute)
+   * @param agentId - Agent running this loop
+   * @param task - Task description
+   * @param maxIterations - Maximum iterations allowed
+   * @param model - Model to use (default: sonnet)
+   * @param threadId - Optional Telegram message_thread_id for topic-based loops
    */
   start(
     agentId: string,
     task: string,
     maxIterations: number,
-    model: Model = 'sonnet'
+    model: Model = 'sonnet',
+    threadId?: number
   ): string {
     const agent = this.agentManager.getAgent(agentId);
     if (!agent) {
@@ -133,6 +226,7 @@ export class RalphLoopManager {
       iterations: [],
       currentModel: model,
       startTime: now,
+      threadId,
     };
 
     // Store in memory and persist
@@ -201,7 +295,7 @@ export class RalphLoopManager {
 
         // Notify progress
         if (this.progressCallback) {
-          this.progressCallback(loopId, loop.currentIteration, loop.maxIterations, iterationResult.iteration.action);
+          this.progressCallback(loopId, loop.currentIteration, loop.maxIterations, iterationResult.iteration.action, loop.threadId);
         }
 
         // Check for completion
@@ -212,6 +306,11 @@ export class RalphLoopManager {
           this.updateAgentLoopState(loop.agentId, loopId, 'idle', 'Loop concluído com sucesso');
 
           console.log(`[ralph] Loop ${loopId} completed after ${loop.currentIteration} iterations`);
+
+          // Notify completion
+          if (this.completionCallback) {
+            this.completionCallback(loopId, 'completed', loop.currentIteration, loop.threadId);
+          }
 
           return {
             loopId,
@@ -255,6 +354,11 @@ export class RalphLoopManager {
 
         console.log(`[ralph] Loop ${loopId} blocked after ${loop.currentIteration} iterations (max reached)`);
 
+        // Notify completion (blocked)
+        if (this.completionCallback) {
+          this.completionCallback(loopId, 'blocked', loop.currentIteration, loop.threadId);
+        }
+
         return {
           loopId,
           status: 'blocked',
@@ -282,6 +386,11 @@ export class RalphLoopManager {
       this.persistLoop(loop);
       this.agentManager.clearLoopReference(loop.agentId);
       this.updateAgentLoopState(loop.agentId, loopId, 'error', `Erro: ${this.truncate(errorMessage, 50)}`);
+
+      // Notify completion (failed)
+      if (this.completionCallback) {
+        this.completionCallback(loopId, 'failed', loop.currentIteration, loop.threadId);
+      }
 
       return {
         loopId,
@@ -497,6 +606,11 @@ Continue with the next step of the task.`;
       this.semaphore.release();
     }
 
+    // Notify completion (cancelled)
+    if (this.completionCallback) {
+      this.completionCallback(loopId, 'cancelled', loop.currentIteration, loop.threadId);
+    }
+
     console.log(`[ralph] Cancelled loop ${loopId} at iteration ${loop.currentIteration}`);
   }
 
@@ -517,6 +631,53 @@ Continue with the next step of the task.`;
     }
 
     return loop ?? null;
+  }
+
+  /**
+   * Get active loop for an agent by threadId
+   * Useful for finding the loop running in a specific topic
+   */
+  getLoopByThreadId(agentId: string, threadId: number): RalphLoopState | null {
+    // Check in-memory loops first
+    for (const loop of this.activeLoops.values()) {
+      if (loop.agentId === agentId && loop.threadId === threadId && ['running', 'paused'].includes(loop.status)) {
+        return loop;
+      }
+    }
+
+    // Check persisted loops
+    const persistedLoops = this.persistenceService.getLoopsForAgent(agentId);
+    for (const loop of persistedLoops) {
+      if (loop.threadId === threadId && ['running', 'paused'].includes(loop.status)) {
+        this.activeLoops.set(loop.id, loop);
+        return loop;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Get the active loop for an agent (if any)
+   */
+  getActiveLoopForAgent(agentId: string): RalphLoopState | null {
+    // Check in-memory loops first
+    for (const loop of this.activeLoops.values()) {
+      if (loop.agentId === agentId && ['running', 'paused'].includes(loop.status)) {
+        return loop;
+      }
+    }
+
+    // Check persisted loops
+    const persistedLoops = this.persistenceService.getLoopsForAgent(agentId);
+    for (const loop of persistedLoops) {
+      if (['running', 'paused'].includes(loop.status)) {
+        this.activeLoops.set(loop.id, loop);
+        return loop;
+      }
+    }
+
+    return null;
   }
 
   /**

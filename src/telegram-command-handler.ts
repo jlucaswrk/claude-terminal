@@ -31,7 +31,9 @@ export type TelegramRouteResult =
   | { action: 'group_onboarding_locked'; chatId: number; userId: string; lockedByUserId: number }
   | { action: 'topic_not_found'; chatId: number; userId: string; threadId: number }
   | { action: 'topic_closed'; chatId: number; userId: string; threadId: number; topicName: string }
-  | { action: 'topic_ralph_active'; chatId: number; userId: string; threadId: number; topicName: string; agentId: string; text: string }
+  | { action: 'topic_ralph_active'; chatId: number; userId: string; threadId: number; topicName: string; agentId: string; text: string; loopId: string }
+  | { action: 'topic_command'; command: 'ralph' | 'worktree' | 'sessao' | 'topicos'; args: string; chatId: number; userId: string; threadId?: number; agentId?: string }
+  | { action: 'ralph_control'; command: 'pausar' | 'retomar' | 'cancelar'; chatId: number; userId: string; threadId: number; agentId: string; loopId: string }
   | { action: 'ignore' };
 
 /**
@@ -94,6 +96,27 @@ export class TelegramCommandHandler {
       const commandLower = command.toLowerCase();
       const args = argParts.join(' ');
 
+      // Ralph control commands - check FIRST for forum topics with active Ralph loop
+      // (must be checked before /cancelar special handling for onboarding)
+      const ralphControlCommands = ['/pausar', '/retomar', '/cancelar'];
+      if (ralphControlCommands.includes(commandLower) && isForum && threadId !== undefined && threadId > 1) {
+        const agent = this.agentManager.getAgentByTelegramChatId(chatId);
+        if (agent && agent.userId === userId && this.topicManager) {
+          const topic = this.topicManager.getTopicByThreadId(agent.id, threadId);
+          if (topic && topic.type === 'ralph' && topic.loopId) {
+            return {
+              action: 'ralph_control',
+              command: commandLower.slice(1) as 'pausar' | 'retomar' | 'cancelar',
+              chatId,
+              userId,
+              threadId,
+              agentId: agent.id,
+              loopId: topic.loopId,
+            };
+          }
+        }
+      }
+
       // /cancelar always goes through as a command (lock validation happens in handler)
       if (commandLower === '/cancelar') {
         return {
@@ -129,17 +152,46 @@ export class TelegramCommandHandler {
         }
       }
 
-      // Special handling for /ralph command - parse task inline
-      if (commandLower === '/ralph' && args.trim()) {
-        const agent = this.agentManager.getAgentByTelegramChatId(chatId);
-        if (agent && agent.userId === userId) {
+      // Topic management commands - route to topic_command handler only for forum groups
+      // For non-forum groups, /ralph uses the old ralph_loop route and other topic commands show error
+      const topicCommands = ['/ralph', '/worktree', '/sessao', '/topicos'];
+      if (topicCommands.includes(commandLower)) {
+        if (isForum) {
+          // Forum group - route all topic commands to topic_command handler
+          const agent = this.agentManager.getAgentByTelegramChatId(chatId);
           return {
-            action: 'ralph_loop',
-            agentId: agent.id,
-            task: args.trim(),
+            action: 'topic_command',
+            command: commandLower.slice(1) as 'ralph' | 'worktree' | 'sessao' | 'topicos',
+            args,
             chatId,
             userId,
             threadId,
+            agentId: agent?.userId === userId ? agent.id : undefined,
+          };
+        } else if (commandLower === '/ralph' && args.trim()) {
+          // Non-forum group with /ralph <task> - use old ralph_loop route
+          const agent = this.agentManager.getAgentByTelegramChatId(chatId);
+          if (agent && agent.userId === userId) {
+            return {
+              action: 'ralph_loop',
+              agentId: agent.id,
+              task: args.trim(),
+              chatId,
+              userId,
+              threadId,
+            };
+          }
+        } else if (commandLower !== '/ralph') {
+          // Non-forum group with /worktree, /sessao, /topicos - route to topic_command to show error
+          const agent = this.agentManager.getAgentByTelegramChatId(chatId);
+          return {
+            action: 'topic_command',
+            command: commandLower.slice(1) as 'ralph' | 'worktree' | 'sessao' | 'topicos',
+            args,
+            chatId,
+            userId,
+            threadId,
+            agentId: agent?.userId === userId ? agent.id : undefined,
           };
         }
       }
@@ -326,6 +378,7 @@ export class TelegramCommandHandler {
           topicName: topic.name,
           agentId: agent.id,
           text,
+          loopId: topic.loopId,
         },
       };
     }

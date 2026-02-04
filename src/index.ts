@@ -110,6 +110,23 @@ import {
   isChatForum,
   TELEGRAM_ERRORS,
   startTypingIndicator,
+  // Topic management UI
+  TOPIC_ERRORS,
+  sendTopicRalphTaskPrompt,
+  sendTopicRalphIterationsPrompt,
+  sendTopicRalphCustomIterationsPrompt,
+  sendTopicNamePrompt,
+  sendTopicCreatedInGeneral,
+  sendTopicWelcome,
+  sendTopicsList,
+  sendTopicsNotEnabledError,
+  sendTopicNoAgentError,
+  // Ralph Topic Integration UI
+  sendRalphMessageQueued,
+  sendRalphTopicComplete,
+  sendRalphTopicPaused,
+  sendRalphControlResponse,
+  sendRalphControlError,
 } from './telegram';
 import { GroupOnboardingManager } from './group-onboarding-manager';
 import { MessageRouter } from './message-router';
@@ -813,8 +830,29 @@ async function handleTelegramMessage(message: any): Promise<void> {
 
       case 'topic_ralph_active':
         // Topic has active Ralph loop - queue message for later
-        await sendTelegramMessage(chatId, TELEGRAM_ERRORS.TOPIC_RALPH_ACTIVE(route.topicName), undefined, route.threadId);
-        // TODO: Actually queue the message for processing after Ralph completes
+        const enqueued = ralphLoopManager.enqueueMessage(route.loopId, route.text, route.userId);
+        if (enqueued) {
+          const queuePosition = ralphLoopManager.getQueueSize(route.loopId);
+          await sendRalphMessageQueued(chatId, route.threadId, queuePosition);
+        } else {
+          // Loop no longer exists or isn't running - send regular error
+          await sendTelegramMessage(chatId, TELEGRAM_ERRORS.TOPIC_RALPH_ACTIVE(route.topicName), undefined, route.threadId);
+        }
+        return;
+
+      case 'topic_command':
+        // Handle topic management commands
+        await handleTopicCommand(chatId, userId, route.command, route.args, route.agentId, isForum);
+        return;
+
+      case 'ralph_control':
+        // Handle /pausar, /retomar, /cancelar commands in Ralph topics
+        await handleRalphControlCommand(
+          chatId,
+          route.threadId,
+          route.loopId,
+          route.command
+        );
         return;
 
       case 'ignore':
@@ -997,24 +1035,25 @@ async function handleTelegramRalphStart(
       }
     });
 
-    // Execute and handle completion
-    const result = await ralphLoopManager.execute(loopId);
+    try {
+      // Execute and handle completion
+      const result = await ralphLoopManager.execute(loopId);
 
-    // Restore original callback
-    if (originalCallback) {
+      const durationSeconds = Math.floor((Date.now() - startTime) / 1000);
+
+      // Send completion message
+      await sendTelegramRalphComplete(
+        chatId,
+        loopId,
+        result.iterations,
+        durationSeconds,
+        result.status as 'completed' | 'cancelled' | 'blocked' | 'failed',
+        result.error
+      );
+    } finally {
+      // Restore original callback even if execute() throws
       ralphLoopManager.setProgressCallback(originalCallback);
     }
-
-    const durationSeconds = Math.floor((Date.now() - startTime) / 1000);
-
-    // Send completion message
-    await sendTelegramRalphComplete(
-      chatId,
-      result.iterations,
-      durationSeconds,
-      result.status as 'completed' | 'cancelled' | 'blocked' | 'failed',
-      result.error
-    );
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1034,8 +1073,16 @@ async function handleTelegramRalphPause(chatId: number, loopId: string): Promise
       return;
     }
 
+    const threadId = loop.threadId;
     await ralphLoopManager.pause(loopId);
-    await sendTelegramRalphPaused(chatId, loopId, loop.currentIteration, loop.maxIterations);
+
+    // Use topic-aware UI if this is a topic-based loop
+    if (threadId) {
+      const queueSize = ralphLoopManager.getQueueSize(loopId);
+      await sendRalphTopicPaused(chatId, threadId, loopId, loop.currentIteration, loop.maxIterations, queueSize);
+    } else {
+      await sendTelegramRalphPaused(chatId, loopId, loop.currentIteration, loop.maxIterations);
+    }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     await sendTelegramMessage(chatId, `❌ Erro ao pausar: ${errorMessage}`);
@@ -1053,6 +1100,15 @@ async function handleTelegramRalphResume(chatId: number, loopId: string): Promis
       return;
     }
 
+    const threadId = loop.threadId;
+
+    // Use topic-aware handler for topic-based loops
+    if (threadId) {
+      await handleTopicRalphResume(chatId, threadId, loopId);
+      return;
+    }
+
+    // Standard non-topic resume
     await sendTelegramMessage(chatId, '▶️ Retomando loop...');
 
     const startTime = Date.now() - (loop.currentIteration * 30000); // Estimate previous time
@@ -1061,6 +1117,7 @@ async function handleTelegramRalphResume(chatId: number, loopId: string): Promis
 
     await sendTelegramRalphComplete(
       chatId,
+      loopId,
       result.iterations,
       durationSeconds,
       result.status as 'completed' | 'cancelled' | 'blocked' | 'failed',
@@ -1083,11 +1140,519 @@ async function handleTelegramRalphStop(chatId: number, loopId: string): Promise<
       return;
     }
 
+    const threadId = loop.threadId;
+    const agentId = loop.agentId;
+
     await ralphLoopManager.cancel(loopId);
-    await sendTelegramMessage(chatId, '🛑 Loop cancelado.');
+
+    // Clear loop ID from topic and send topic-scoped feedback
+    if (threadId) {
+      const topic = topicManager.getTopicByThreadId(agentId, threadId);
+      if (topic) {
+        topicManager.clearTopicLoopId(agentId, topic.id);
+      }
+      await sendRalphControlResponse(chatId, threadId, 'cancelled', loopId);
+    } else {
+      await sendTelegramMessage(chatId, '🛑 Loop cancelado.');
+    }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     await sendTelegramMessage(chatId, `❌ Erro ao cancelar: ${errorMessage}`);
+  }
+}
+
+/**
+ * Handle Ralph control commands (/pausar, /retomar, /cancelar) in topic context
+ * Sends feedback to the specific thread
+ */
+async function handleRalphControlCommand(
+  chatId: number,
+  threadId: number,
+  loopId: string,
+  command: 'pausar' | 'retomar' | 'cancelar'
+): Promise<void> {
+  try {
+    const loop = ralphLoopManager.getLoop(loopId);
+    if (!loop) {
+      await sendRalphControlError(chatId, threadId, 'Loop não encontrado.');
+      return;
+    }
+
+    switch (command) {
+      case 'pausar':
+        if (loop.status !== 'running') {
+          await sendRalphControlError(chatId, threadId, `Loop não está em execução (status: ${loop.status}).`);
+          return;
+        }
+        await ralphLoopManager.pause(loopId);
+        await sendRalphControlResponse(chatId, threadId, 'paused', loopId);
+
+        // Show paused UI with queue info
+        const queueSize = ralphLoopManager.getQueueSize(loopId);
+        await sendRalphTopicPaused(chatId, threadId, loopId, loop.currentIteration, loop.maxIterations, queueSize);
+        break;
+
+      case 'retomar':
+        if (loop.status !== 'paused') {
+          await sendRalphControlError(chatId, threadId, `Loop não está pausado (status: ${loop.status}).`);
+          return;
+        }
+        await sendRalphControlResponse(chatId, threadId, 'resumed', loopId);
+
+        // Resume loop execution asynchronously (will continue in topic context)
+        handleTopicRalphResume(chatId, threadId, loopId).catch((error) => {
+          console.error('[ralph] Error resuming loop from topic command:', error);
+        });
+        break;
+
+      case 'cancelar':
+        if (['completed', 'failed', 'cancelled', 'blocked'].includes(loop.status)) {
+          await sendRalphControlError(chatId, threadId, `Loop já finalizado (status: ${loop.status}).`);
+          return;
+        }
+        await ralphLoopManager.cancel(loopId);
+        await sendRalphControlResponse(chatId, threadId, 'cancelled', loopId);
+        break;
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendRalphControlError(chatId, threadId, errorMessage);
+  }
+}
+
+/**
+ * Handle Ralph loop resume in topic context
+ */
+async function handleTopicRalphResume(
+  chatId: number,
+  threadId: number,
+  loopId: string
+): Promise<void> {
+  try {
+    const loop = ralphLoopManager.getLoop(loopId);
+    if (!loop) {
+      await sendRalphControlError(chatId, threadId, 'Loop não encontrado.');
+      return;
+    }
+
+    const startTime = Date.now() - (loop.currentIteration * 30000); // Estimate previous time
+
+    // Set up progress callback for this specific loop
+    const originalCallback = ralphLoopManager['progressCallback'];
+    ralphLoopManager.setProgressCallback(async (loopIdCallback, iteration, max, action) => {
+      if (loopIdCallback === loopId) {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        await sendTelegramRalphProgress(chatId, loopId, iteration, max, action, elapsed, threadId);
+      }
+      if (originalCallback) {
+        originalCallback(loopIdCallback, iteration, max, action);
+      }
+    });
+
+    try {
+      const result = await ralphLoopManager.resume(loopId);
+      const durationSeconds = Math.floor((Date.now() - startTime) / 1000);
+
+      // Get topic info for the completion UI
+      const topic = topicManager.getTopicByThreadId(loop.agentId, threadId);
+      const hasQueuedMessages = ralphLoopManager.hasQueuedMessages(loopId);
+
+      if (topic) {
+        // Update topic status
+        topicManager.clearTopicLoopId(loop.agentId, topic.id);
+
+        // Send topic-aware completion UI
+        await sendRalphTopicComplete(
+          chatId,
+          threadId,
+          loopId,
+          topic.id,
+          result.iterations,
+          durationSeconds,
+          result.status as 'completed' | 'cancelled' | 'blocked' | 'failed',
+          hasQueuedMessages
+        );
+
+        // Process queued messages after completion
+        await processQueuedRalphMessages(chatId, threadId, loopId, loop.agentId);
+      } else {
+        // Fallback to standard completion message
+        await sendTelegramRalphComplete(
+          chatId,
+          loopId,
+          result.iterations,
+          durationSeconds,
+          result.status as 'completed' | 'cancelled' | 'blocked' | 'failed',
+          result.error,
+          threadId
+        );
+      }
+    } finally {
+      ralphLoopManager.setProgressCallback(originalCallback);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendRalphControlError(chatId, threadId, errorMessage);
+  }
+}
+
+/**
+ * Process queued messages after Ralph loop completion
+ * Dequeues all messages and sends them through the normal prompt pipeline
+ */
+async function processQueuedRalphMessages(
+  chatId: number,
+  threadId: number,
+  loopId: string,
+  agentId: string
+): Promise<void> {
+  const queuedMessages = ralphLoopManager.dequeueMessages(loopId);
+  if (queuedMessages.length === 0) {
+    return;
+  }
+
+  console.log(`[ralph] Processing ${queuedMessages.length} queued messages for loop ${loopId}`);
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    console.error(`[ralph] Agent ${agentId} not found for processing queued messages`);
+    return;
+  }
+
+  // Get the topic's session ID for routing
+  const topic = topicManager.getTopicByThreadId(agentId, threadId);
+  const sessionId = topic?.sessionId || agent.mainSessionId;
+
+  // Process each queued message in FIFO order
+  for (const message of queuedMessages) {
+    await sendTelegramMessage(chatId, `📤 Processando mensagem enfileirada...`, undefined, threadId);
+
+    // Queue the message through the normal pipeline
+    queueManager.enqueue({
+      agentId,
+      prompt: message.text,
+      model: 'sonnet', // Default model for queued messages
+      userId: message.userId,
+      replyTo: chatId,
+      // Note: threadId is used via the agent's topic routing
+    });
+  }
+}
+
+// =============================================================================
+// Telegram Topic Command Handler
+// =============================================================================
+
+/**
+ * Handle topic management commands (/ralph, /worktree, /sessao, /topicos)
+ */
+async function handleTopicCommand(
+  chatId: number,
+  userId: string,
+  command: 'ralph' | 'worktree' | 'sessao' | 'topicos',
+  args: string,
+  agentId: string | undefined,
+  isForum: boolean
+): Promise<void> {
+  // Check if group has topics enabled
+  if (!isForum) {
+    await sendTopicsNotEnabledError(chatId);
+    return;
+  }
+
+  // Check if agent is linked to this group
+  if (!agentId) {
+    await sendTopicNoAgentError(chatId);
+    return;
+  }
+
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    await sendTelegramMessage(chatId, '❌ Agente não encontrado.');
+    return;
+  }
+
+  switch (command) {
+    case 'ralph':
+      await handleTopicRalphCommand(chatId, userId, agentId, args.trim());
+      break;
+
+    case 'worktree':
+      await handleTopicWorktreeCommand(chatId, userId, agentId, args.trim());
+      break;
+
+    case 'sessao':
+      await handleTopicSessaoCommand(chatId, userId, agentId, args.trim());
+      break;
+
+    case 'topicos':
+      await handleTopicosCommand(chatId, agentId);
+      break;
+  }
+}
+
+/**
+ * Handle /ralph command - start Ralph topic creation flow
+ */
+async function handleTopicRalphCommand(
+  chatId: number,
+  userId: string,
+  agentId: string,
+  task: string
+): Promise<void> {
+  if (task) {
+    // Task provided inline - start with task, ask for iterations
+    userContextManager.startTopicRalphFlow(userId, agentId, chatId, task);
+    await sendTopicRalphIterationsPrompt(chatId, task);
+  } else {
+    // No task provided - ask for task first
+    userContextManager.startTopicRalphFlow(userId, agentId, chatId);
+    await sendTopicRalphTaskPrompt(chatId);
+  }
+}
+
+/**
+ * Handle /worktree command - start worktree topic creation flow
+ */
+async function handleTopicWorktreeCommand(
+  chatId: number,
+  userId: string,
+  agentId: string,
+  name: string
+): Promise<void> {
+  if (name) {
+    // Name provided inline - validate and create
+    const error = validateTopicName(name);
+    if (error) {
+      await sendTelegramMessage(chatId, `❌ ${error}`);
+      return;
+    }
+    userContextManager.startTopicWorktreeFlow(userId, agentId, chatId, name);
+    await createTopicAndNotify(chatId, userId, agentId, name, 'worktree');
+  } else {
+    // No name provided - ask for name
+    userContextManager.startTopicWorktreeFlow(userId, agentId, chatId);
+    await sendTopicNamePrompt(chatId, 'worktree');
+  }
+}
+
+/**
+ * Handle /sessao command - start session topic creation flow
+ */
+async function handleTopicSessaoCommand(
+  chatId: number,
+  userId: string,
+  agentId: string,
+  name: string
+): Promise<void> {
+  if (name) {
+    // Name provided inline - validate and create
+    const error = validateTopicName(name);
+    if (error) {
+      await sendTelegramMessage(chatId, `❌ ${error}`);
+      return;
+    }
+    userContextManager.startTopicSessaoFlow(userId, agentId, chatId, name);
+    await createTopicAndNotify(chatId, userId, agentId, name, 'session');
+  } else {
+    // No name provided - ask for name
+    userContextManager.startTopicSessaoFlow(userId, agentId, chatId);
+    await sendTopicNamePrompt(chatId, 'sessao');
+  }
+}
+
+/**
+ * Handle /topicos command - list all topics for the agent
+ */
+async function handleTopicosCommand(chatId: number, agentId: string): Promise<void> {
+  const topics = topicManager.listTopics(agentId);
+
+  // Get Ralph loop progress for any active Ralph topics
+  const topicsWithProgress = topics.map(topic => {
+    let currentIteration: number | undefined;
+    let maxIterations: number | undefined;
+
+    if (topic.type === 'ralph' && topic.loopId) {
+      const loop = ralphLoopManager.getLoop(topic.loopId);
+      if (loop) {
+        currentIteration = loop.currentIteration;
+        maxIterations = loop.maxIterations;
+      }
+    }
+
+    return {
+      id: topic.id,
+      emoji: topic.emoji,
+      name: topic.name,
+      type: topic.type,
+      status: topic.status,
+      loopId: topic.loopId,
+      lastActivity: topic.lastActivity,
+      currentIteration,
+      maxIterations,
+    };
+  });
+
+  await sendTopicsList(chatId, topicsWithProgress);
+}
+
+/**
+ * Validate topic name
+ */
+function validateTopicName(name: string): string | null {
+  if (!name || name.trim().length === 0) {
+    return 'Nome do tópico não pode ser vazio.';
+  }
+  if (name.length > 100) {
+    return TOPIC_ERRORS.TOPIC_NAME_TOO_LONG;
+  }
+  // Check for dangerous characters
+  const dangerousPattern = /[<>{}|\\^`]/;
+  if (dangerousPattern.test(name)) {
+    return TOPIC_ERRORS.TOPIC_NAME_INVALID;
+  }
+  return null;
+}
+
+/**
+ * Create a topic and send notifications to both General and the new topic
+ */
+async function createTopicAndNotify(
+  chatId: number,
+  userId: string,
+  agentId: string,
+  name: string,
+  type: 'worktree' | 'session'
+): Promise<void> {
+  try {
+    // Create the topic via TopicManager
+    const result = await topicManager.createTopic({
+      agentId,
+      chatId,
+      name,
+      type,
+    });
+
+    if (!result.success || !result.topic) {
+      await sendTelegramMessage(chatId, `❌ Erro ao criar tópico: ${result.error || 'Falha desconhecida'}`);
+      userContextManager.clearContext(userId);
+      return;
+    }
+
+    const topic = result.topic;
+
+    // Send notification to General topic
+    await sendTopicCreatedInGeneral(chatId, name, type, topic.telegramTopicId);
+
+    // Send welcome message in the new topic
+    await sendTopicWelcome(chatId, topic.telegramTopicId, name, type);
+
+    // Clear the flow
+    userContextManager.clearContext(userId);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendTelegramMessage(chatId, `❌ Erro ao criar tópico: ${errorMessage}`);
+    userContextManager.clearContext(userId);
+  }
+}
+
+/**
+ * Create a Ralph topic and start the loop
+ */
+async function createRalphTopicAndStart(
+  chatId: number,
+  userId: string,
+  agentId: string,
+  task: string,
+  maxIterations: number
+): Promise<void> {
+  try {
+    // Generate topic name from task (first 30 chars)
+    const topicName = task.length > 30 ? task.slice(0, 27) + '...' : task;
+
+    // Create the topic via TopicManager
+    const result = await topicManager.createTopic({
+      agentId,
+      chatId,
+      name: topicName,
+      type: 'ralph',
+    });
+
+    if (!result.success || !result.topic) {
+      await sendTelegramMessage(chatId, `❌ Erro ao criar tópico Ralph: ${result.error || 'Falha desconhecida'}`);
+      userContextManager.clearContext(userId);
+      return;
+    }
+
+    const topic = result.topic;
+
+    // Create and start the Ralph loop
+    const loopId = ralphLoopManager.start(agentId, task, maxIterations, 'sonnet');
+
+    // Link loop to topic
+    topicManager.setTopicLoopId(agentId, topic.id, loopId);
+
+    // Send notification to General topic
+    await sendTopicCreatedInGeneral(chatId, topicName, 'ralph', topic.telegramTopicId);
+
+    // Send welcome message in the new topic with task
+    await sendTopicWelcome(chatId, topic.telegramTopicId, topicName, 'ralph', task);
+
+    // Clear the flow
+    userContextManager.clearContext(userId);
+
+    // Execute the loop (async - will send progress updates to the topic)
+    const startTime = Date.now();
+    const threadId = topic.telegramTopicId;
+
+    // Set up progress callback for this specific loop
+    const originalCallback = ralphLoopManager['progressCallback'];
+    ralphLoopManager.setProgressCallback(async (loopIdCallback, iteration, max, action) => {
+      if (loopIdCallback === loopId) {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        await sendTelegramRalphProgress(chatId, loopId, iteration, max, action, elapsed, threadId);
+      }
+      // Call original callback too
+      if (originalCallback) {
+        originalCallback(loopIdCallback, iteration, max, action);
+      }
+    });
+
+    try {
+      // Execute and handle completion
+      const execResult = await ralphLoopManager.execute(loopId);
+
+      // Update topic status if loop completed (all terminal statuses)
+      const terminalStatuses = ['completed', 'cancelled', 'failed', 'blocked', 'interrupted'];
+      if (terminalStatuses.includes(execResult.status)) {
+        topicManager.clearTopicLoopId(agentId, topic.id);
+      }
+
+      // Send completion message in the topic with action buttons
+      const durationSeconds = Math.floor((Date.now() - startTime) / 1000);
+      const hasQueuedMessages = ralphLoopManager.hasQueuedMessages(loopId);
+
+      await sendRalphTopicComplete(
+        chatId,
+        threadId,
+        loopId,
+        topic.id,
+        execResult.iterations,
+        durationSeconds,
+        execResult.status as 'completed' | 'cancelled' | 'blocked' | 'failed',
+        hasQueuedMessages
+      );
+
+      // Process queued messages after completion
+      await processQueuedRalphMessages(chatId, threadId, loopId, agentId);
+    } finally {
+      // Restore original callback even if execute() throws
+      ralphLoopManager.setProgressCallback(originalCallback);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await sendTelegramMessage(chatId, `❌ Erro ao criar tópico Ralph: ${errorMessage}`);
+    userContextManager.clearContext(userId);
   }
 }
 
@@ -1608,6 +2173,51 @@ async function handleTelegramFlowInput(chatId: number, userId: string, text: str
       }
     }
   }
+  // =============================================================================
+  // Topic Flow Handlers
+  // =============================================================================
+  // Handle topic Ralph task input
+  else if (userContextManager.isAwaitingTopicTask(userId)) {
+    const task = text.trim();
+    if (!task) {
+      await sendTelegramMessage(chatId, '❌ A tarefa não pode ser vazia.');
+      return;
+    }
+
+    userContextManager.setTopicTask(userId, task);
+    await sendTopicRalphIterationsPrompt(chatId, task);
+  }
+  // Handle topic Ralph custom iterations input
+  else if (userContextManager.isAwaitingTopicIterations(userId)) {
+    const iterations = parseInt(text.trim(), 10);
+
+    if (isNaN(iterations) || iterations < 1 || iterations > 100) {
+      await sendTelegramMessage(chatId, '❌ Número inválido. Envie um valor entre 1 e 100.');
+      return;
+    }
+
+    const flowData = userContextManager.getTopicRalphData(userId);
+    if (flowData?.agentId && flowData?.topicTask) {
+      await createRalphTopicAndStart(chatId, userId, flowData.agentId, flowData.topicTask, iterations);
+    }
+  }
+  // Handle topic name input for worktree/sessao
+  else if (userContextManager.isAwaitingTopicName(userId)) {
+    const name = text.trim();
+    const error = validateTopicName(name);
+    if (error) {
+      await sendTelegramMessage(chatId, `❌ ${error}`);
+      return;
+    }
+
+    userContextManager.setTopicName(userId, name);
+    const flowData = userContextManager.getTopicCreationData(userId);
+
+    if (flowData?.agentId && flowData?.flowType) {
+      const topicType = flowData.flowType === 'topic_worktree' ? 'worktree' : 'session';
+      await createTopicAndNotify(chatId, userId, flowData.agentId, name, topicType);
+    }
+  }
   // Other states are handled by callback queries (button presses)
 }
 
@@ -2021,6 +2631,37 @@ async function handleTelegramCallback(query: any): Promise<void> {
     await handleTelegramRalphStop(chatId, loopId);
   }
   // =============================================================================
+  // Ralph Topic Completion Callbacks
+  // =============================================================================
+  else if (data.startsWith('ralph_topic_keep_')) {
+    // Keep the topic open after Ralph completion
+    const topicId = data.replace('ralph_topic_keep_', '');
+    // No action needed - topic stays open by default
+    await sendTelegramMessage(chatId, '✅ Tópico mantido aberto. Envie novas mensagens para continuar a conversa.');
+  }
+  else if (data.startsWith('ralph_topic_close_')) {
+    // Close the topic after Ralph completion
+    const topicId = data.replace('ralph_topic_close_', '');
+
+    // Find the agent that owns this topic
+    const agentsWithTopics = topicManager.listAgentsWithTopics();
+    let closedSuccessfully = false;
+
+    for (const agentId of agentsWithTopics) {
+      const topic = topicManager.getTopic(agentId, topicId);
+      if (topic) {
+        await topicManager.closeTopic(agentId, topicId, chatId);
+        closedSuccessfully = true;
+        await sendTelegramMessage(chatId, `🔒 Tópico "${topic.name}" fechado.`);
+        break;
+      }
+    }
+
+    if (!closedSuccessfully) {
+      await sendTelegramMessage(chatId, '⚠️ Tópico não encontrado.');
+    }
+  }
+  // =============================================================================
   // Image Action Callbacks
   // =============================================================================
   else if (data.startsWith('img_analyze_') || data.startsWith('img_describe_') || data.startsWith('img_bugs_')) {
@@ -2342,6 +2983,82 @@ async function handleTelegramCallback(query: any): Promise<void> {
       const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
       await sendTelegramMessage(chatId, `❌ Erro ao criar agente: ${errorMessage}`);
       groupOnboardingManager.cancelOnboarding(chatId, from.id);
+    }
+  }
+  // =============================================================================
+  // Topic Management Callbacks
+  // =============================================================================
+  else if (data.startsWith('topic_ralph_iter_')) {
+    // Handle iteration count selection for Ralph topic
+    const iterValue = data.replace('topic_ralph_iter_', '');
+
+    if (iterValue === 'custom') {
+      // Ask for custom iteration count
+      const context = userContextManager.getContext(userId);
+      if (context) {
+        context.flowState = 'awaiting_topic_iterations';
+        userContextManager.updateContext(userId, context);
+      }
+      await sendTopicRalphCustomIterationsPrompt(chatId);
+    } else {
+      const iterations = parseInt(iterValue, 10);
+      const flowData = userContextManager.getTopicRalphData(userId);
+
+      if (flowData?.agentId && flowData?.topicTask) {
+        userContextManager.setTopicMaxIterations(userId, iterations);
+        await createRalphTopicAndStart(chatId, userId, flowData.agentId, flowData.topicTask, iterations);
+      }
+    }
+  }
+  else if (data.startsWith('topic_close_')) {
+    // Handle topic close action
+    const topicId = data.replace('topic_close_', '');
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId) {
+      try {
+        const topic = topicManager.getTopic(agent.id, topicId);
+        const topicName = topic?.name || 'tópico';
+        await topicManager.closeTopic(agent.id, topicId, chatId);
+        await sendTelegramMessage(chatId, `🔴 Tópico "${topicName}" fechado.`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await sendTelegramMessage(chatId, `❌ Erro ao fechar tópico: ${errorMessage}`);
+      }
+    }
+  }
+  else if (data.startsWith('topic_reopen_')) {
+    // Handle topic reopen action
+    const topicId = data.replace('topic_reopen_', '');
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId) {
+      try {
+        const topic = topicManager.getTopic(agent.id, topicId);
+        const topicName = topic?.name || 'tópico';
+        await topicManager.reopenTopic(agent.id, topicId, chatId);
+        await sendTelegramMessage(chatId, `🟢 Tópico "${topicName}" reaberto.`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await sendTelegramMessage(chatId, `❌ Erro ao reabrir tópico: ${errorMessage}`);
+      }
+    }
+  }
+  else if (data.startsWith('topic_delete_')) {
+    // Handle topic delete action
+    const topicId = data.replace('topic_delete_', '');
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId) {
+      try {
+        const topic = topicManager.getTopic(agent.id, topicId);
+        const topicName = topic?.name || 'tópico';
+        await topicManager.deleteTopic(agent.id, topicId, chatId);
+        await sendTelegramMessage(chatId, `🗑️ Tópico "${topicName}" deletado.`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await sendTelegramMessage(chatId, `❌ Erro ao deletar tópico: ${errorMessage}`);
+      }
     }
   }
 }
