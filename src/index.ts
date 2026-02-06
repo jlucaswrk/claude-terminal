@@ -1120,7 +1120,6 @@ async function handleTelegramMessage(message: any): Promise<void> {
               userContextManager.setActiveAgent(userId, agent.id);
               // Fixed model - queue immediately
               userContextManager.clearContext(userId);
-              await sendTelegramMessage(chatId, `Processando com *${agent.modelMode}*...`);
               queueManager.enqueue({
                 agentId: agent.id,
                 prompt: text,
@@ -2994,7 +2993,6 @@ async function handleTelegramCallback(query: any): Promise<void> {
         // Set active agent for continuous conversation support before clearing context
         userContextManager.setActiveAgent(userId, agentId);
         userContextManager.clearContext(userId);
-        await sendTelegramMessage(chatId, `Processando com *${model}*...`);
 
         // Queue the prompt with number type replyTo for Telegram
         queueManager.enqueue({
