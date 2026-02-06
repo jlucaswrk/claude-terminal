@@ -76,6 +76,7 @@ describe('RalphLoopManager - Topic Support', () => {
     // Create a mock terminal
     mockTerminal = {
       send: mock(() => Promise.resolve({ text: 'Mock response', sessionId: 'session-123' })),
+      clearTopicSession: mock(() => {}),
     } as unknown as ClaudeTerminal;
 
     loopManager = new RalphLoopManager(semaphore, agentManager, persistence, mockTerminal);
@@ -347,6 +348,7 @@ describe('RalphLoopManager - Backward Compatibility', () => {
 
     mockTerminal = {
       send: mock(() => Promise.resolve({ text: 'Mock response', sessionId: 'session-123' })),
+      clearTopicSession: mock(() => {}),
     } as unknown as ClaudeTerminal;
 
     loopManager = new RalphLoopManager(semaphore, agentManager, persistence, mockTerminal);

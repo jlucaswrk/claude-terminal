@@ -1,3 +1,5 @@
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { join } from 'path';
 import { Semaphore } from './semaphore';
 import { AgentManager } from './agent-manager';
 import { PersistenceService } from './persistence';
@@ -326,6 +328,7 @@ export class RalphLoopManager {
         if (iterationResult.promiseType === 'blocked') {
           loop.status = 'blocked';
           this.persistLoop(loop);
+          this.writeBlockersMd(loop, `Agent signaled BLOCKED at iteration ${loop.currentIteration}`);
           this.agentManager.clearLoopReference(loop.agentId);
           this.updateAgentLoopState(
             loop.agentId,
@@ -373,6 +376,7 @@ export class RalphLoopManager {
       if (loop.currentIteration >= loop.maxIterations) {
         loop.status = 'blocked';
         this.persistLoop(loop);
+        this.writeBlockersMd(loop, `Maximum iterations reached (${loop.maxIterations}) without task completion`);
         this.agentManager.clearLoopReference(loop.agentId);
         this.updateAgentLoopState(
           loop.agentId,
@@ -539,7 +543,13 @@ export class RalphLoopManager {
     // --- Stopping criteria ---
     parts.push('## STOPPING CRITERIA');
     parts.push('When the task is **fully done**, include exactly: <promise>COMPLETE</promise>');
-    parts.push('When you **cannot make further progress** (missing info, permissions, external dependency), include exactly: <promise>BLOCKED</promise>');
+    parts.push('When you **cannot make further progress** (missing info, permissions, external dependency):');
+    parts.push('  1. First, write a `BLOCKERS.md` file in the current workspace with the following sections:');
+    parts.push('     - **Blocker**: What is blocking progress');
+    parts.push('     - **Attempts**: What you tried to resolve it');
+    parts.push('     - **Relevant Logs/Errors**: Any error messages or log output');
+    parts.push('     - **Next Human Step**: What the human needs to do to unblock');
+    parts.push('  2. Then include exactly: <promise>BLOCKED</promise>');
     parts.push('If neither applies, keep working — the next iteration will continue from where you left off.');
     parts.push('');
 
@@ -818,6 +828,74 @@ export class RalphLoopManager {
       return text;
     }
     return text.substring(0, maxLength - 3) + '...';
+  }
+
+  /**
+   * Write BLOCKERS.md to the agent's workspace as a safeguard.
+   * Called when the loop exits as blocked, in case the model forgot to create the file.
+   */
+  private writeBlockersMd(loop: RalphLoopState, reason: string): void {
+    const agent = this.agentManager.getAgent(loop.agentId);
+    const workspace = agent?.workspace;
+    if (!workspace) {
+      console.log(`[ralph] No workspace for agent ${loop.agentId}, skipping BLOCKERS.md`);
+      return;
+    }
+
+    const blockersPath = join(workspace, 'BLOCKERS.md');
+
+    // Don't overwrite if the model already created it during this iteration
+    if (existsSync(blockersPath)) {
+      console.log(`[ralph] BLOCKERS.md already exists at ${blockersPath}, skipping safeguard write`);
+      return;
+    }
+
+    // Build iteration summary
+    const iterationSummary = loop.iterations
+      .map(it => `- Iteration ${it.number}: ${it.action} (${it.duration}ms, promise: ${it.promiseType ?? 'none'})`)
+      .join('\n');
+
+    const lastResponse = loop.iterations.length > 0
+      ? loop.iterations[loop.iterations.length - 1].response
+      : '(no iterations executed)';
+    const truncatedResponse = lastResponse.length > 2000
+      ? lastResponse.substring(0, 2000) + '\n...(truncated)'
+      : lastResponse;
+
+    const content = [
+      '# BLOCKERS.md',
+      '',
+      `> Auto-generated safeguard by Ralph loop manager`,
+      '',
+      '## Blocker',
+      reason,
+      '',
+      '## Iteration Summary',
+      `Total iterations: ${loop.currentIteration}/${loop.maxIterations}`,
+      iterationSummary || '(none)',
+      '',
+      '## Last Iteration Response',
+      '```',
+      truncatedResponse,
+      '```',
+      '',
+      '## Next Human Step',
+      'Review the blocker above and the last iteration response, then either:',
+      '- Fix the blocking issue and restart the loop',
+      '- Provide additional context or permissions',
+      '- Adjust the task scope',
+      '',
+    ].join('\n');
+
+    try {
+      if (!existsSync(workspace)) {
+        mkdirSync(workspace, { recursive: true });
+      }
+      writeFileSync(blockersPath, content, 'utf-8');
+      console.log(`[ralph] Wrote safeguard BLOCKERS.md to ${blockersPath}`);
+    } catch (err) {
+      console.error(`[ralph] Failed to write BLOCKERS.md to ${blockersPath}:`, err);
+    }
   }
 
   /**
