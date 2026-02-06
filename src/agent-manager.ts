@@ -368,30 +368,6 @@ export class AgentManager {
   }
 
   /**
-   * Set the WhatsApp group ID for an agent
-   */
-  setGroupId(agentId: string, groupId: string): boolean {
-    const agent = this.agents.get(agentId);
-    if (!agent) return false;
-
-    agent.groupId = groupId;
-    this.persist();
-    return true;
-  }
-
-  /**
-   * Get an agent by its WhatsApp group ID
-   */
-  getAgentByGroupId(groupId: string): Agent | undefined {
-    for (const agent of this.agents.values()) {
-      if (agent.groupId === groupId) {
-        return agent;
-      }
-    }
-    return undefined;
-  }
-
-  /**
    * Set the Telegram chat ID for an agent
    * Pass undefined to unlink the agent from a Telegram group
    */
