@@ -1,9 +1,11 @@
 import { Semaphore } from './semaphore';
 import { AgentManager } from './agent-manager';
 import { ClaudeTerminal, type ClaudeResponse, type ToolUsage } from './terminal';
-import type { QueueTask, Output } from './types';
+import type { QueueTask, Output, ProgressCallbacks } from './types';
 import { PRIORITY_VALUES, DEFAULTS } from './types';
 import { executeCommand, formatBashResult } from './bash-executor';
+import { resolveWorkspace } from './workspace-resolver';
+import { TopicManager } from './topic-manager';
 
 /**
  * Tool-specific emojis for progress messages
@@ -21,9 +23,164 @@ const TOOL_EMOJI: Record<string, string> = {
 };
 
 /**
- * Type for Telegram send function
+ * Progress event tracked during SDK processing
  */
-export type SendTelegramFn = (chatId: number, text: string, threadId?: number) => Promise<void>;
+export interface ProgressEvent {
+  type: 'tool' | 'bash_output';
+  timestamp: number;
+  data: {
+    toolName?: string;
+    toolInput?: Record<string, unknown>;
+    bashCommand?: string;
+    bashOutput?: string;
+    bashExitCode?: number;
+  };
+}
+
+/**
+ * Local state for progress monitor (lives only during task processing)
+ */
+export interface ProgressState {
+  messageId?: number;
+  events: ProgressEvent[];
+  textBuffer: string;
+  startTime: number;
+}
+
+/**
+ * Telegram message character limit
+ */
+export const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+/**
+ * Tool icons for progress display
+ */
+const PROGRESS_TOOL_ICON: Record<string, string> = {
+  Bash: '🔧',
+  Read: '📖',
+  Write: '✍️',
+  Edit: '✏️',
+  Grep: '🔍',
+  Glob: '📂',
+  Task: '🤖',
+  WebFetch: '🌐',
+  WebSearch: '🔎',
+};
+
+/**
+ * Get icon for a tool name
+ */
+export function getToolIcon(toolName: string): string {
+  return PROGRESS_TOOL_ICON[toolName] || '🔨';
+}
+
+/**
+ * Escape special Markdown characters to prevent Telegram edit failures.
+ */
+export function escapeMarkdown(text: string): string {
+  return text
+    .replace(/\*/g, '\\*')
+    .replace(/_/g, '\\_')
+    .replace(/`/g, '\\`')
+    .replace(/\[/g, '\\[');
+}
+
+/**
+ * Format progress text for the live view message
+ */
+export function formatProgressText(state: ProgressState): string {
+  const elapsed = Math.round((Date.now() - state.startTime) / 1000);
+  let text = `🔄 Processando... (${elapsed}s)\n\n`;
+
+  for (const event of state.events) {
+    if (event.type === 'tool') {
+      const icon = getToolIcon(event.data.toolName!);
+      text += `${icon} ${event.data.toolName}`;
+
+      const input = event.data.toolInput;
+      if (event.data.toolName === 'Write' && input?.file_path) {
+        text += `: ${String(input.file_path).split('/').pop()}`;
+      } else if (event.data.toolName === 'Read' && input?.file_path) {
+        text += `: ${String(input.file_path).split('/').pop()}`;
+      } else if (event.data.toolName === 'Edit' && input?.file_path) {
+        text += `: ${String(input.file_path).split('/').pop()}`;
+      } else if (event.data.toolName === 'Bash' && input?.command) {
+        const cmd = String(input.command);
+        text += `: ${cmd.length > 40 ? cmd.substring(0, 40) + '...' : cmd}`;
+      } else if (event.data.toolName === 'Grep' && input?.pattern) {
+        text += `: ${String(input.pattern).substring(0, 30)}`;
+      }
+
+      text += '\n';
+    } else if (event.type === 'bash_output') {
+      const output = event.data.bashOutput || '';
+      const lines = output.split('\n').filter(l => l.trim());
+
+      if (lines.length > 0 && lines.length <= 10) {
+        const truncated = lines.map(l => l.length > 80 ? l.substring(0, 80) + '...' : l);
+        text += `  ${truncated.join('\n  ')}\n`;
+      } else if (lines.length > 10) {
+        const first5 = lines.slice(0, 5).map(l => l.length > 80 ? l.substring(0, 80) + '...' : l);
+        text += `  ${first5.join('\n  ')}\n`;
+        text += `  ... (${lines.length - 5} linhas omitidas)\n`;
+      }
+    }
+  }
+
+  if (state.textBuffer) {
+    text += '\n💬 Resposta:\n';
+    text += state.textBuffer.substring(0, 200);
+    if (state.textBuffer.length > 200) {
+      text += '...';
+    }
+  }
+
+  const escaped = escapeMarkdown(text);
+  if (escaped.length > TELEGRAM_MESSAGE_LIMIT) {
+    return escaped.substring(0, TELEGRAM_MESSAGE_LIMIT - 4) + '...';
+  }
+  return escaped;
+}
+
+/**
+ * Format the final message after processing completes
+ */
+export function formatFinalText(state: ProgressState, response: ClaudeResponse, agentName: string, agentEmoji: string): string {
+  const duration = Math.round((Date.now() - state.startTime) / 1000);
+
+  const toolCounts: Record<string, number> = {};
+  for (const event of state.events) {
+    if (event.type === 'tool' && event.data.toolName) {
+      toolCounts[event.data.toolName] = (toolCounts[event.data.toolName] || 0) + 1;
+    }
+  }
+
+  let header = `${agentEmoji} *${agentName}* (${duration}s)\n───\n`;
+
+  const toolEntries = Object.entries(toolCounts);
+  if (toolEntries.length > 0) {
+    const summary = toolEntries
+      .map(([tool, count]) => `${getToolIcon(tool)}${count}`)
+      .join(' ');
+    header += `${summary}\n\n`;
+  }
+
+  const full = header + escapeMarkdown(response.text);
+  if (full.length > TELEGRAM_MESSAGE_LIMIT) {
+    return full.substring(0, TELEGRAM_MESSAGE_LIMIT - 4) + '...';
+  }
+  return full;
+}
+
+/**
+ * Type for Telegram send function (returns message for progress tracking)
+ */
+export type SendTelegramFn = (chatId: number, text: string, threadId?: number) => Promise<{ message_id: number } | null>;
+
+/**
+ * Type for Telegram message edit function
+ */
+export type EditTelegramFn = (chatId: number | string, messageId: number, text: string) => Promise<boolean>;
 
 /**
  * Type for Telegram image send function
@@ -168,8 +325,10 @@ export class QueueManager {
   private readonly agentManager: AgentManager;
   private readonly terminal: ClaudeTerminal;
   private readonly sendTelegram: SendTelegramFn;
+  private readonly editTelegram?: EditTelegramFn;
   private readonly sendTelegramImage: SendTelegramImageFn;
   private readonly startTypingIndicator: StartTypingIndicatorFn;
+  private readonly topicManager?: TopicManager;
   private activeCount: number = 0;
 
   // Store last errors for retry functionality
@@ -184,7 +343,9 @@ export class QueueManager {
     terminal: ClaudeTerminal,
     sendTelegram: SendTelegramFn,
     sendTelegramImage: SendTelegramImageFn,
-    startTypingIndicator: StartTypingIndicatorFn
+    startTypingIndicator: StartTypingIndicatorFn,
+    editTelegram?: EditTelegramFn,
+    topicManager?: TopicManager
   ) {
     this.queue = new PriorityQueue();
     this.semaphore = semaphore;
@@ -193,6 +354,8 @@ export class QueueManager {
     this.sendTelegram = sendTelegram;
     this.sendTelegramImage = sendTelegramImage;
     this.startTypingIndicator = startTypingIndicator;
+    this.editTelegram = editTelegram;
+    this.topicManager = topicManager;
   }
 
   /**
@@ -314,7 +477,16 @@ export class QueueManager {
     // Progress tracking state
     let lastToolName = '';
     let lastToolInput: Record<string, unknown> | undefined;
+    let progressInterval: ReturnType<typeof setInterval> | null = null;
     let stopTyping: (() => void) | null = null;
+    const startTime = Date.now();
+
+    // Telegram progress monitor state
+    const progressState: ProgressState = {
+      events: [],
+      textBuffer: '',
+      startTime,
+    };
 
     try {
       // Get agent info for notification
@@ -336,8 +508,35 @@ export class QueueManager {
         `processando - ${truncatedPrompt}...`
       );
 
-      // Use typing indicator for Telegram
-      if (typeof replyTo === 'number') {
+      // For Telegram: send initial progress message and start live view
+      if (typeof replyTo === 'number' && this.editTelegram) {
+        const initMsg = await this.sendTelegram(replyTo, '🔄 Iniciando...', threadId);
+        if (initMsg) {
+          progressState.messageId = initMsg.message_id;
+        }
+
+        // Start typing indicator alongside progress
+        stopTyping = this.startTypingIndicator(replyTo, threadId);
+
+        // Start 1s progress update interval for Telegram live view
+        const chatId = replyTo;
+        let lastProgressText = '';
+        progressInterval = setInterval(async () => {
+          if (progressState.messageId) {
+            try {
+              const text = formatProgressText(progressState);
+              // Only edit if text actually changed (avoids Telegram "message not modified" error)
+              if (text !== lastProgressText) {
+                lastProgressText = text;
+                await this.editTelegram!(chatId, progressState.messageId, text);
+              }
+            } catch {
+              // Silently ignore edit failures
+            }
+          }
+        }, 1000);
+      } else if (typeof replyTo === 'number') {
+        // Fallback: typing indicator only (no editTelegram available)
         stopTyping = this.startTypingIndicator(replyTo, threadId);
       }
 
@@ -347,11 +546,55 @@ export class QueueManager {
         lastToolInput = toolInput;
       };
 
+      // Build ProgressCallbacks for Telegram live view
+      const callbacks: ProgressCallbacks = {
+        onToolUse: (toolName: string, toolInput: Record<string, unknown>) => {
+          progressState.events.push({
+            type: 'tool',
+            timestamp: Date.now(),
+            data: { toolName, toolInput },
+          });
+          if (progressState.events.length > 10) {
+            progressState.events = progressState.events.slice(-10);
+          }
+        },
+        onBashOutput: (command: string, output: string, exitCode: number) => {
+          progressState.events.push({
+            type: 'bash_output',
+            timestamp: Date.now(),
+            data: { bashCommand: command, bashOutput: output, bashExitCode: exitCode },
+          });
+          if (progressState.events.length > 10) {
+            progressState.events = progressState.events.slice(-10);
+          }
+        },
+        onTextChunk: (chunk: string) => {
+          progressState.textBuffer = chunk;
+        },
+      };
+
       // Generate topic session key if threadId is present (for topic isolation)
       const topicKey = threadId ? `${userId}_${agentId}_${threadId}` : undefined;
 
-      // Execute the prompt via ClaudeTerminal (with agentId, workspace, progress callback, images, and optional topicKey)
-      const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace, onProgress, images, topicKey);
+      // Resolve workspace through hierarchy (topic → agent → sandbox)
+      let resolvedWorkspace = agent.workspace;
+      if (threadId) {
+        const topic = this.topicManager?.getTopicByThreadId(agentId, threadId);
+        if (topic) {
+          const resolution = resolveWorkspace(agent, topic);
+          if (resolution.error === 'workspace_not_found') {
+            // Workspace configured but not found - notify and skip
+            console.log(`[queue] Workspace not found for topic ${topic.id}: ${topic.workspace}`);
+            // Still use agent workspace as fallback
+            resolvedWorkspace = agent.workspace;
+          } else {
+            resolvedWorkspace = resolution.workspace;
+          }
+        }
+      }
+
+      // Execute the prompt via ClaudeTerminal
+      const response = await this.terminal.send(prompt, model, userId, agentId, resolvedWorkspace, onProgress, images, topicKey, callbacks);
 
       // Send images first (if any) - these are screenshots captured from tool_result
       if (response.images.length > 0) {
@@ -365,12 +608,29 @@ export class QueueManager {
         }
       }
 
-      // Send the text response with agent header
+      // Send/edit the text response with agent header
       if (response.text) {
         const agentEmoji = agent.emoji || '🤖';
-        const header = `${agentEmoji} *${agent.name}*\n───\n`;
-        const formattedResponse = header + response.text;
-        await this.sendResponse(replyTo, userId, formattedResponse, threadId);
+
+        // For Telegram with progress monitor: edit the existing message with final text
+        if (progressState.messageId && this.editTelegram && typeof replyTo === 'number') {
+          const finalText = formatFinalText(progressState, response, agent.name, agentEmoji);
+          let edited = false;
+          try {
+            edited = await this.editTelegram(replyTo, progressState.messageId, finalText);
+          } catch (editErr) {
+            console.error('[progress] Failed to edit final message:', editErr);
+          }
+          if (!edited) {
+            // Fallback: send as new message
+            const fallbackText = formatFinalText(progressState, response, agent.name, agentEmoji);
+            await this.sendResponse(replyTo, userId, fallbackText, threadId);
+          }
+        } else {
+          // Fallback: send as new message
+          const header = `${agentEmoji} *${agent.name}*\n───\n`;
+          await this.sendResponse(replyTo, userId, header + response.text, threadId);
+        }
       }
 
       // Send created files (documents, spreadsheets, etc.)
@@ -394,7 +654,6 @@ export class QueueManager {
       }
 
       // Create output record
-      // Note: summary is left empty to let AgentManager generate it from response text
       const output: Output = {
         id: crypto.randomUUID(),
         summary: '',
@@ -452,6 +711,11 @@ export class QueueManager {
         error: error instanceof Error ? error : new Error(errorMessage),
       };
     } finally {
+      // Clear progress interval
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
+
       // Stop typing indicator
       if (stopTyping) {
         stopTyping();

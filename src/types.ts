@@ -43,6 +43,7 @@ export interface AgentTopic {
   emoji: string;                 // Visual identifier (🔄, 🌿, 💬, 📌)
   sessionId?: string;            // Claude session ID (isolated, only for non-general topics)
   loopId?: string;               // Ralph loop ID (only for type='ralph')
+  workspace?: string;            // Absolute path for topic workspace (optional, overrides agent workspace)
   status: TopicStatus;
   messageCount: number;          // Counter for messages sent to this topic
   createdAt: Date;
@@ -101,6 +102,7 @@ export interface RalphIteration {
   prompt: string;               // Prompt sent to Claude
   response: string;             // Claude's response
   completionPromiseFound: boolean;  // Whether completion was signaled
+  promiseType: 'complete' | 'blocked' | null;  // Type of promise found
   timestamp: Date;
   duration: number;             // milliseconds
 }
@@ -123,13 +125,35 @@ export interface RalphLoopState {
 }
 
 /**
+ * State for directory navigation in workspace selector
+ */
+export interface DirectoryNavigationState {
+  currentPath: string;
+  baseOptions: string[];
+  targetTopicId?: string;
+  targetAgentId?: string;
+  visibleDirectories: string[];
+  filter?: string;
+  awaitingInput?: 'filter' | 'custom_base_path';
+  creationContext?: {
+    flow: 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
+    flowData: {
+      agentId: string;
+      topicName?: string;
+      topicTask?: string;
+      topicMaxIterations?: number;
+    };
+  };
+}
+
+/**
  * Tracks conversational state per user for multi-step flows
  */
 export interface UserContext {
   userId: string;
   activeAgentId?: string;         // Persists across clearContext() for continuous conversations
-  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'ralph_loop' | 'image_action' | 'document_action' | 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
-  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt' | 'awaiting_topic_name' | 'awaiting_topic_task' | 'awaiting_topic_iterations';
+  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'ralph_loop' | 'image_action' | 'document_action' | 'topic_ralph' | 'topic_worktree' | 'topic_sessao' | 'workspace_not_found';
+  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt' | 'awaiting_topic_name' | 'awaiting_topic_task' | 'awaiting_topic_iterations' | 'awaiting_topic_workspace';
   flowData?: {
     agentName?: string;
     agentId?: string;
@@ -149,6 +173,13 @@ export interface UserContext {
     topicName?: string;              // Topic name for topic creation flows
     topicTask?: string;              // Task description for Ralph topic
     topicMaxIterations?: number;     // Max iterations for Ralph topic
+    topicWorkspace?: string;
+    pausedTaskId?: string;
+    pausedPrompt?: string;
+    pausedModel?: 'haiku' | 'sonnet' | 'opus';
+    pausedImages?: Array<{data: string; mimeType: string}>;
+    missingWorkspacePath?: string;
+    topicId?: string;
     [key: string]: unknown;
   };
   pendingPrompt?: {
@@ -166,6 +197,7 @@ export interface UserContext {
   };
   bashMode?: boolean;           // Global bash mode toggle
   lastBashWorkspace?: string;   // Last workspace used for bash prefix commands
+  directoryNavigationState?: DirectoryNavigationState;
 }
 
 /**
@@ -176,6 +208,7 @@ export interface UserPreferences {
   telegramUsername?: string;       // Telegram username (without @)
   telegramChatId?: number;         // Telegram chat ID for direct messages
   sandboxAutoCleanup?: boolean;    // Auto-cleanup sandbox directory on agent deletion
+  recentWorkspaces?: string[];
 }
 
 /**
@@ -186,6 +219,7 @@ export interface SerializedUserPreferences {
   telegramUsername?: string;
   telegramChatId?: number;
   sandboxAutoCleanup?: boolean;
+  recentWorkspaces?: string[];
 }
 
 /**
@@ -246,6 +280,7 @@ export interface SerializedAgentTopic {
   emoji: string;
   sessionId?: string;
   loopId?: string;
+  workspace?: string;
   status: TopicStatus;
   messageCount: number;         // Counter for messages sent to this topic
   createdAt: string;            // ISO date string
@@ -299,6 +334,7 @@ export interface SerializedRalphIteration {
   prompt: string;
   response: string;
   completionPromiseFound: boolean;
+  promiseType: 'complete' | 'blocked' | null;  // Type of promise found
   timestamp: string;            // ISO date string
   duration: number;
 }
@@ -406,6 +442,15 @@ export interface SerializedGroupOnboardingState {
     selectedAgentId?: string;
   };
   startedAt: string;              // ISO date string
+}
+
+/**
+ * Progress callbacks for real-time monitoring of SDK processing
+ */
+export interface ProgressCallbacks {
+  onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void;
+  onBashOutput?: (command: string, output: string, exitCode: number) => void;
+  onTextChunk?: (chunk: string) => void;
 }
 
 /**

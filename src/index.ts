@@ -86,6 +86,9 @@ import {
   sendCancelFeedback,
   sendTopicActionFeedbackGeneral,
   type TopicListItem,
+  sendWorkspaceNotFoundOptions,
+  sendTopicWorkspaceReconfig,
+  sendTopicWorkspaceQuestion,
 } from './telegram';
 import { GroupOnboardingManager } from './group-onboarding-manager';
 import { TelegramCommandHandler } from './telegram-command-handler';
@@ -141,12 +144,33 @@ const groupOnboardingManager = new GroupOnboardingManager();
 const terminal = new ClaudeTerminal();
 
 // Direct Telegram send functions for QueueManager
-async function sendTelegramDirectMessage(chatId: number, text: string, threadId?: number): Promise<void> {
-  await sendTelegramMessage(chatId, text, undefined, threadId);
+async function sendTelegramDirectMessage(chatId: number, text: string, threadId?: number): Promise<{ message_id: number } | null> {
+  const msg = await sendTelegramMessage(chatId, text, undefined, threadId);
+  return msg ? { message_id: msg.message_id } : null;
 }
 
 async function sendTelegramDirectImage(chatId: number, imageUrl: string, caption?: string, threadId?: number): Promise<void> {
   await sendTelegramPhoto(chatId, imageUrl, caption, threadId);
+}
+
+async function editTelegramDirectMessage(chatId: number | string, messageId: number, text: string): Promise<boolean> {
+  return await editTelegramMessage(chatId, messageId, text) ?? false;
+}
+
+/**
+ * Queue an introduction prompt so the agent presents itself in the group
+ */
+function sendAgentIntroduction(agent: Agent, chatId: number): void {
+  const workspaceInfo = agent.workspace ? `Seu workspace é: ${agent.workspace}` : 'Você não tem workspace definido';
+  const introPrompt = `Você acabou de ser vinculado a este grupo do Telegram. Apresente-se brevemente (2-3 frases). ${workspaceInfo}. Diga o que pode fazer e que o usuário pode enviar mensagens diretamente aqui.`;
+
+  queueManager.enqueue({
+    agentId: agent.id,
+    prompt: introPrompt,
+    model: agent.modelMode === 'selection' ? 'sonnet' : agent.modelMode as 'haiku' | 'sonnet' | 'opus',
+    userId: agent.userId,
+    replyTo: chatId,
+  });
 }
 
 // Queue manager
@@ -156,7 +180,9 @@ const queueManager = new QueueManager(
   terminal,
   sendTelegramDirectMessage,
   sendTelegramDirectImage,
-  startTypingIndicator
+  startTypingIndicator,
+  editTelegramDirectMessage,
+  topicManager
 );
 
 // Telegram command handler (stateless router)
@@ -541,10 +567,16 @@ async function handleTelegramMessage(message: any): Promise<void> {
   // Log message type
   const hasPhoto = !!message.photo;
   const hasDocument = !!message.document;
-  const msgType = hasPhoto ? '[photo]' : hasDocument ? '[document]' : text.slice(0, 50);
+  const hasVoice = !!message.voice || !!message.audio;
+  const msgType = hasPhoto ? '[photo]' : hasDocument ? '[document]' : hasVoice ? '[voice]' : text.slice(0, 50);
   const threadInfo = threadId ? ` [thread:${threadId}]` : '';
   console.log(`[telegram] ${from.username || from.id} (${chatType}${threadInfo}): ${msgType}`);
   console.log(`[telegram] DEBUG: chatId=${chatId}, chatType=${chatType}, threadId=${threadId}, from.username=${from.username}, from.id=${from.id}`);
+
+  // Ignore empty messages (system notifications like bot join/leave, topic creation, etc.)
+  if (!text && !hasPhoto && !hasDocument && !hasVoice && !caption) {
+    return;
+  }
 
   // =============================================================================
   // Group Onboarding (check BEFORE userPrefs - onboarding doesn't require prefs)
@@ -647,6 +679,12 @@ async function handleTelegramMessage(message: any): Promise<void> {
     // Note: is_forum is available in the chat object for supergroups
     const isForum = message.chat.is_forum === true;
 
+    // Check if user is in a flow (e.g. /criar awaiting name) - intercept non-command text
+    if (!text.startsWith('/') && userContextManager.isInFlow(userId)) {
+      await handleTelegramFlowInput(chatId, userId, text);
+      return;
+    }
+
     // Group message routing with topic support
     const route = telegramCommandHandler.routeGroupMessage(chatId, userId, text, from.id, threadId, isForum);
 
@@ -657,7 +695,7 @@ async function handleTelegramMessage(message: any): Promise<void> {
           await handleGroupCancelarCommand(chatId, userId, from.id);
           return;
         }
-        await handleTelegramCommand(chatId, userId, `${route.command} ${route.args}`.trim());
+        await handleTelegramCommand(chatId, userId, `${route.command} ${route.args}`.trim(), route.threadId);
         return;
 
       case 'prompt':
@@ -667,7 +705,6 @@ async function handleTelegramMessage(message: any): Promise<void> {
         const stopTyping = startTypingIndicator(chatId, route.threadId);
         try {
           // Queue the prompt directly with the specified model
-          await sendTelegramMessage(chatId, `Processando com *${route.model}*...`, undefined, route.threadId);
           queueManager.enqueue({
             agentId: route.agentId,
             prompt: route.text,
@@ -780,6 +817,34 @@ async function handleTelegramMessage(message: any): Promise<void> {
         );
         return;
 
+      case 'topic_workspace': {
+        const { chatId: wsChatId, userId: wsUserId, threadId: wsThreadId, agentId: wsAgentId, path } = route;
+        if (path) {
+          // Direct path provided: /workspace /some/path
+          const topic = wsThreadId ? topicManager.getTopicByThreadId(wsAgentId, wsThreadId) : undefined;
+          if (topic) {
+            topicManager.updateTopicWorkspace(wsAgentId, topic.id, path);
+            persistenceService.addRecentWorkspace(wsUserId, path);
+            await sendTelegramMessage(wsChatId, `✅ Workspace atualizado: \`${path}\``, undefined, wsThreadId);
+          } else {
+            await sendTelegramMessage(wsChatId, '❌ Tópico não encontrado.', undefined, wsThreadId);
+          }
+        } else {
+          // No path: show workspace selector
+          const topic = wsThreadId ? topicManager.getTopicByThreadId(wsAgentId, wsThreadId) : undefined;
+          if (topic) {
+            await sendTopicWorkspaceReconfig(wsChatId, topic.id, wsThreadId);
+          } else {
+            await sendTelegramMessage(wsChatId, '❌ Tópico não encontrado.', undefined, wsThreadId);
+          }
+        }
+        return;
+      }
+
+      case 'topic_workspace_general':
+        await sendTelegramMessage(route.chatId, '💡 O comando /workspace só funciona dentro de um tópico específico.\n\nAbra um tópico e use /workspace lá.');
+        return;
+
       case 'ignore':
         return;
     }
@@ -814,7 +879,6 @@ async function handleTelegramMessage(message: any): Promise<void> {
               userContextManager.setActiveAgent(userId, agent.id);
               // Fixed model - queue immediately
               userContextManager.clearContext(userId);
-              await sendTelegramMessage(chatId, `Processando com *${agent.modelMode}*...`);
               queueManager.enqueue({
                 agentId: agent.id,
                 prompt: text,
@@ -976,7 +1040,9 @@ async function handleTelegramRalphStart(
       );
     } finally {
       // Restore original callback even if execute() throws
-      ralphLoopManager.setProgressCallback(originalCallback);
+      if (originalCallback) {
+        ralphLoopManager.setProgressCallback(originalCallback);
+      }
     }
 
   } catch (error) {
@@ -1239,7 +1305,9 @@ async function handleTopicRalphResume(
         );
       }
     } finally {
-      ralphLoopManager.setProgressCallback(originalCallback);
+      if (originalCallback) {
+        ralphLoopManager.setProgressCallback(originalCallback);
+      }
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1608,7 +1676,9 @@ async function createRalphTopicAndStart(
       await processQueuedRalphMessages(chatId, threadId, loopId, agentId);
     } finally {
       // Restore original callback even if execute() throws
-      ralphLoopManager.setProgressCallback(originalCallback);
+      if (originalCallback) {
+        ralphLoopManager.setProgressCallback(originalCallback);
+      }
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1934,20 +2004,20 @@ async function handleGroupCancelarCommand(chatId: number, userId: string, telegr
 /**
  * Handle Telegram commands
  */
-async function handleTelegramCommand(chatId: number, userId: string, text: string): Promise<void> {
+async function handleTelegramCommand(chatId: number, userId: string, text: string, threadId?: number): Promise<void> {
   const parts = text.split(' ');
   const command = parts[0].toLowerCase();
   const args = parts.slice(1).join(' ').trim();
 
   switch (command) {
     case '/start':
-      await sendTelegramCommandList(chatId);
+      await sendTelegramCommandList(chatId, threadId);
       break;
 
     case '/criar':
     case '/new':
       userContextManager.startCreateAgentFlow(userId);
-      await sendTelegramAgentNamePrompt(chatId);
+      await sendTelegramAgentNamePrompt(chatId, threadId);
       break;
 
     case '/agentes':
@@ -1960,15 +2030,15 @@ async function handleTelegramCommand(chatId: number, userId: string, text: strin
           status: a.status,
           workspace: a.workspace,
         }));
-      await sendTelegramAgentsList(chatId, agents);
+      await sendTelegramAgentsList(chatId, agents, threadId);
       break;
 
     case '/status':
-      await handleTelegramStatus(chatId, userId);
+      await handleTelegramStatus(chatId, userId, threadId);
       break;
 
     case '/help':
-      await sendTelegramCommandList(chatId);
+      await sendTelegramCommandList(chatId, threadId);
       break;
 
     case '/link':
@@ -1976,7 +2046,7 @@ async function handleTelegramCommand(chatId: number, userId: string, text: strin
       break;
 
     default:
-      await sendTelegramMessage(chatId, 'Comando nao reconhecido. Use /help.');
+      await sendTelegramMessage(chatId, 'Comando nao reconhecido. Use /help.', undefined, threadId);
   }
 }
 
@@ -2275,6 +2345,9 @@ async function handleTelegramCallback(query: any): Promise<void> {
 
         // Also notify the group
         await sendGroupLinkedConfirmation(pendingGroupLink, agent.name, agent.emoji || '🤖');
+
+        // Send agent introduction
+        sendAgentIntroduction(agent, pendingGroupLink);
       } else {
         // Track this agent for /link command
         pendingAgentLink.set(userId, agent.id);
@@ -2363,12 +2436,20 @@ async function handleTelegramCallback(query: any): Promise<void> {
       const telegramChatId = agent.telegramChatId;
 
       // Leave the group first
+      let leftGroup = false;
       if (telegramChatId) {
-        await leaveTelegramGroup(telegramChatId);
+        leftGroup = await leaveTelegramGroup(telegramChatId);
+        if (!leftGroup) {
+          console.error(`[delete] Failed to leave group ${telegramChatId} for agent ${name}`);
+        }
       }
 
       agentManager.deleteAgent(agentId);
-      await sendTelegramMessage(chatId, `✅ Agente *${name}* e grupo deletados.`);
+      if (telegramChatId && !leftGroup) {
+        await sendTelegramMessage(chatId, `✅ Agente *${name}* deletado.\n\n⚠️ Não foi possível sair do grupo. Remova o bot manualmente.`);
+      } else {
+        await sendTelegramMessage(chatId, `✅ Agente *${name}* e grupo deletados.`);
+      }
     }
   }
   else if (data === 'canceldelete') {
@@ -2463,7 +2544,6 @@ async function handleTelegramCallback(query: any): Promise<void> {
         // Set active agent for continuous conversation support before clearing context
         userContextManager.setActiveAgent(userId, agentId);
         userContextManager.clearContext(userId);
-        await sendTelegramMessage(chatId, `Processando com *${model}*...`);
 
         // Queue the prompt with number type replyTo for Telegram
         queueManager.enqueue({
@@ -2883,6 +2963,9 @@ async function handleTelegramCallback(query: any): Promise<void> {
 
     // Complete onboarding
     groupOnboardingManager.completeOnboarding(chatId, from.id);
+
+    // Send agent introduction
+    sendAgentIntroduction(agent, chatId);
   }
   else if (data.startsWith('grp_emoji_')) {
     // User selected emoji in group onboarding flow
@@ -3012,6 +3095,9 @@ async function handleTelegramCallback(query: any): Promise<void> {
       // Complete onboarding
       groupOnboardingManager.completeOnboarding(chatId, from.id);
 
+      // Send agent introduction
+      sendAgentIntroduction(agent, chatId);
+
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
       await sendTelegramMessage(chatId, `❌ Erro ao criar agente: ${errorMessage}`);
@@ -3094,12 +3180,90 @@ async function handleTelegramCallback(query: any): Promise<void> {
       }
     }
   }
+  // =============================================================================
+  // Workspace Callbacks
+  // =============================================================================
+  // Workspace not found: use agent workspace
+  else if (data.startsWith('ws_notfound_agent_')) {
+    const topicId = data.replace('ws_notfound_agent_', '');
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+    if (agent) {
+      topicManager.updateTopicWorkspace(agent.id, topicId, undefined); // Clear topic workspace, fall back to agent
+      await sendTelegramMessage(chatId, '✅ Usando workspace do agente.');
+    }
+  }
+  // Workspace not found: use sandbox
+  else if (data.startsWith('ws_notfound_sandbox_')) {
+    const topicId = data.replace('ws_notfound_sandbox_', '');
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+    if (agent) {
+      topicManager.updateTopicWorkspace(agent.id, topicId, 'sandbox');
+      await sendTelegramMessage(chatId, '✅ Usando sandbox.');
+    }
+  }
+  // Workspace not found: reconfigure
+  else if (data.startsWith('ws_notfound_reconfig_')) {
+    const topicId = data.replace('ws_notfound_reconfig_', '');
+    await sendTopicWorkspaceReconfig(chatId, topicId);
+  }
+  // Workspace not found: cancel
+  else if (data.startsWith('ws_notfound_cancel_')) {
+    await sendTelegramMessage(chatId, '❌ Operação cancelada.');
+  }
+  // Workspace reconfig: path selected
+  else if (data.startsWith('ws_reconfig_')) {
+    const rest = data.replace('ws_reconfig_', '');
+    // Format: {topicId}_path_{path} or {topicId}_sandbox or {topicId}_custom
+    const firstUnderscore = rest.indexOf('_');
+    const topicId = rest.substring(0, firstUnderscore);
+    const action = rest.substring(firstUnderscore + 1);
+
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+    if (!agent) return;
+
+    if (action === 'sandbox') {
+      topicManager.updateTopicWorkspace(agent.id, topicId, 'sandbox');
+      await sendTelegramMessage(chatId, '✅ Workspace configurado: sandbox');
+    } else if (action === 'custom') {
+      await sendTelegramMessage(chatId, '✏️ Digite o caminho completo do workspace:');
+      // Store state for next message
+      userContextManager.setContext(userId, {
+        userId,
+        currentFlow: 'workspace_not_found',
+        flowData: { topicId, agentId: agent.id },
+      });
+    } else if (action.startsWith('path_')) {
+      const path = action.replace('path_', '');
+      topicManager.updateTopicWorkspace(agent.id, topicId, path);
+      persistenceService.addRecentWorkspace(userId, path);
+      await sendTelegramMessage(chatId, `✅ Workspace configurado: \`${path}\``);
+    }
+  }
+  // Topic workspace button from welcome message
+  else if (data.startsWith('topic_workspace:')) {
+    const topicId = data.replace('topic_workspace:', '');
+    await sendTopicWorkspaceReconfig(chatId, topicId);
+  }
+  // Topic creation: configure workspace
+  else if (data === 'topic_create_ws_yes') {
+    // User wants to configure workspace during topic creation
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+    if (agent) {
+      userContextManager.setAwaitingTopicWorkspace(userId);
+      await sendTopicWorkspaceReconfig(chatId, 'new');
+    }
+  }
+  else if (data === 'topic_create_ws_skip') {
+    // Skip workspace configuration - continue with topic creation
+    // The topic creation flow should continue from where it was
+    await sendTelegramMessage(chatId, '⏭️ Usando workspace do agente.');
+  }
 }
 
 /**
  * Handle Telegram status command
  */
-async function handleTelegramStatus(chatId: number, userId: string): Promise<void> {
+async function handleTelegramStatus(chatId: number, userId: string, threadId?: number): Promise<void> {
   const agents = agentManager.listAgents(userId);
 
   await sendTelegramStatusOverview(chatId, agents.map(a => ({
@@ -3107,7 +3271,7 @@ async function handleTelegramStatus(chatId: number, userId: string): Promise<voi
     emoji: a.emoji || '🤖',
     status: a.status,
     statusDetails: a.statusDetails,
-  })));
+  })), threadId);
 }
 
 /**
@@ -3221,6 +3385,9 @@ async function handleTelegramLinkCommand(chatId: number, userId: string): Promis
     }
 
     console.log(`Linked Telegram group ${chatId} to agent ${targetAgent.name} (${targetAgent.id})`);
+
+    // Send agent introduction
+    sendAgentIntroduction(targetAgent, chatId);
   } else {
     // Rollback: delete the agent if linking failed and it was just created
     const wasJustCreated = pendingAgentLink.get(userId) === targetAgent.id;

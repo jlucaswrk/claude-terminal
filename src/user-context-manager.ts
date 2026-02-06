@@ -5,7 +5,7 @@
  * configuring priorities, etc. All state is in-memory (not persisted).
  */
 
-import type { UserContext, ModelMode } from './types';
+import type { UserContext, ModelMode, DirectoryNavigationState } from './types';
 
 /**
  * Flow types supported by the context manager
@@ -1246,5 +1246,146 @@ export class UserContextManager {
     return context?.currentFlow === 'topic_ralph'
       || context?.currentFlow === 'topic_worktree'
       || context?.currentFlow === 'topic_sessao';
+  }
+
+  /**
+   * Transition topic creation flow to awaiting workspace choice
+   */
+  setAwaitingTopicWorkspace(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || !this.isInTopicFlow(userId)) {
+      throw new Error('Not in topic creation flow');
+    }
+    context.flowState = 'awaiting_topic_workspace';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if we're awaiting topic workspace choice
+   */
+  isAwaitingTopicWorkspace(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return this.isInTopicFlow(userId) && context?.flowState === 'awaiting_topic_workspace';
+  }
+
+  /**
+   * Set the topic workspace during creation
+   */
+  setTopicWorkspace(userId: string, workspace: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || !this.isInTopicFlow(userId)) {
+      throw new Error('Not in topic creation flow');
+    }
+    context.flowData = {
+      ...context.flowData,
+      topicWorkspace: workspace,
+    };
+    this.contexts.set(userId, context);
+  }
+
+  // ============================================
+  // Directory Navigation State Management
+  // ============================================
+
+  startDirectoryNavigation(
+    userId: string,
+    agentId: string,
+    topicId: string,
+    basePath: string,
+    baseOptions: string[] = []
+  ): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.directoryNavigationState = {
+      currentPath: basePath,
+      baseOptions,
+      targetTopicId: topicId,
+      targetAgentId: agentId,
+      visibleDirectories: [],
+    };
+    this.contexts.set(userId, context);
+  }
+
+  startDirectoryNavigationWithCreation(
+    userId: string,
+    options: {
+      targetAgentId: string;
+      creationContext: {
+        flow: 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
+        flowData: {
+          agentId: string;
+          topicName?: string;
+          topicTask?: string;
+          topicMaxIterations?: number;
+        };
+      };
+    }
+  ): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.directoryNavigationState = {
+      currentPath: '',
+      baseOptions: [],
+      targetAgentId: options.targetAgentId,
+      visibleDirectories: [],
+      creationContext: options.creationContext,
+    };
+    this.contexts.set(userId, context);
+  }
+
+  getDirectoryNavigationState(userId: string): DirectoryNavigationState | undefined {
+    return this.contexts.get(userId)?.directoryNavigationState;
+  }
+
+  updateDirectoryPath(userId: string, newPath: string): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.currentPath = newPath;
+      context.directoryNavigationState.filter = undefined;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  updateVisibleDirectories(userId: string, directories: string[]): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.visibleDirectories = directories;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  setDirectoryFilter(userId: string, filter: string): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.filter = filter;
+      context.directoryNavigationState.awaitingInput = undefined;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  clearDirectoryFilter(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.filter = undefined;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  setAwaitingDirectoryInput(userId: string, type: 'filter' | 'custom_base_path'): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.awaitingInput = type;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  clearDirectoryNavigation(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context) {
+      delete context.directoryNavigationState;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  hasDirectoryNavigation(userId: string): boolean {
+    return this.contexts.get(userId)?.directoryNavigationState !== undefined;
   }
 }

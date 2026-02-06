@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { getMimeType, getMediaType } from './storage';
 import { TitleExtractor } from './title-extractor';
 import { basename } from 'path';
+import type { ProgressCallbacks } from './types';
 
 export type Model = 'haiku' | 'sonnet' | 'opus';
 
@@ -120,7 +121,8 @@ export class ClaudeTerminal {
     workspace?: string,
     onProgress?: ProgressCallback,
     images?: ImageInput[],
-    topicKey?: string  // Optional: use this as session key instead of userId_agentId
+    topicKey?: string,  // Optional: use this as session key instead of userId_agentId
+    callbacks?: ProgressCallbacks
   ): Promise<ClaudeResponse> {
     // If topicKey provided, use it; otherwise fall back to agent-level session
     const sessionKey = topicKey || getSessionKey(userId, agentId);
@@ -236,6 +238,11 @@ export class ClaudeTerminal {
               onProgress(block.name, toolInput);
             }
 
+            // Granular progress callback
+            if (callbacks?.onToolUse) {
+              callbacks.onToolUse(block.name, toolInput);
+            }
+
             // Special handling for Write tool to track created files
             if (block.name === 'Write' && block.input?.file_path) {
               const filePath = block.input.file_path as string;
@@ -246,12 +253,29 @@ export class ClaudeTerminal {
             }
           }
 
-          // Check for tool_result with image (screenshots)
-          if (block.type === 'tool_result' && Array.isArray(block.content)) {
-            for (const item of block.content) {
-              if (item.type === 'image' && item.source?.type === 'base64') {
-                // Screenshots detected but no upload service available
-                console.log(`[image] Screenshot detected (no upload service)`);
+          // Check for tool_result (bash outputs and images)
+          if (block.type === 'tool_result') {
+            // Bash output callback: match tool_result to its tool_use
+            if (callbacks?.onBashOutput && block.tool_use_id) {
+              const toolUse = content.find((b: any) => b.type === 'tool_use' && b.id === block.tool_use_id);
+              if (toolUse?.name === 'Bash') {
+                const command = (toolUse.input?.command as string) || '';
+                const output = typeof block.content === 'string'
+                  ? block.content
+                  : Array.isArray(block.content)
+                    ? block.content.filter((i: any) => i.type === 'text').map((i: any) => i.text).join('')
+                    : '';
+                const exitCode = block.is_error ? 1 : 0;
+                callbacks.onBashOutput(command, output, exitCode);
+              }
+            }
+
+            // Screenshot capture
+            if (Array.isArray(block.content)) {
+              for (const item of block.content) {
+                if (item.type === 'image' && item.source?.type === 'base64') {
+                  console.log(`[image] Screenshot detected (no upload service)`);
+                }
               }
             }
           }
@@ -261,6 +285,12 @@ export class ClaudeTerminal {
       // Get the final result
       if (event.type === 'result' && eventAny.result) {
         response = eventAny.result as string;
+
+        // Text chunk callback (fires with the final text)
+        if (callbacks?.onTextChunk) {
+          callbacks.onTextChunk(response);
+        }
+
         // Also try to get session_id from result
         if ((event as any).session_id) {
           newSessionId = (event as any).session_id;

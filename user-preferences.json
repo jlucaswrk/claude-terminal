@@ -12,8 +12,11 @@
   },
   {
     "userId": "+5581999999999",
-    "mode": "dojo",
-    "telegramUsername": "lucas",
-    "onboardingComplete": true
+    "telegramUsername": "lucas"
+  },
+  {
+    "userId": "telegram:jlucaswrk",
+    "telegramUsername": "jlucaswrk",
+    "telegramChatId": 6187428254
   }
 ]

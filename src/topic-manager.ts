@@ -43,6 +43,7 @@ export interface CreateTopicOptions {
   emoji?: string;
   sessionId?: string;
   loopId?: string;
+  workspace?: string;
   iconColor?: number;
   skipTelegramCreation?: boolean;
 }
@@ -162,6 +163,7 @@ export class TopicManager {
       emoji,
       sessionId,
       loopId,
+      workspace,
       iconColor,
       skipTelegramCreation = false,
     } = options;
@@ -217,6 +219,7 @@ export class TopicManager {
       emoji: emoji ?? getTopicEmojiForType(type),
       sessionId,
       loopId,
+      workspace,
       status: 'active',
       messageCount: 0,
       createdAt: now,
@@ -478,6 +481,23 @@ export class TopicManager {
 
     this.updateTopic(agentId, updatedTopic);
     console.log(`[topic-manager] Cleared loopId for topic ${topicId}`);
+  }
+
+  /**
+   * Update topic workspace
+   */
+  updateTopicWorkspace(agentId: string, topicId: string, workspace: string | undefined): void {
+    const topic = this.getTopic(agentId, topicId);
+    if (!topic) return;
+
+    const updatedTopic: AgentTopic = {
+      ...topic,
+      workspace,
+      lastActivity: new Date(),
+    };
+
+    this.updateTopic(agentId, updatedTopic);
+    console.log(`[topic-manager] Updated workspace for topic ${topicId}: ${workspace || '(cleared)'}`);
   }
 
   /**
