@@ -646,3 +646,288 @@ describe('Message Extraction', () => {
     expect(result.status).toBe('help_shown');
   });
 });
+
+// =============================================================================
+// Service Message Filter Tests
+// =============================================================================
+
+describe('isServiceMessage', () => {
+  let isServiceMessage: (message: any) => string | null;
+
+  beforeAll(async () => {
+    const mod = await import('../index');
+    isServiceMessage = mod.isServiceMessage;
+  });
+
+  it('should return null for normal text messages', () => {
+    const message = {
+      message_id: 1,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      text: 'Hello world',
+    };
+    expect(isServiceMessage(message)).toBeNull();
+  });
+
+  it('should return null for photo messages', () => {
+    const message = {
+      message_id: 2,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      photo: [{ file_id: 'abc', width: 100, height: 100 }],
+    };
+    expect(isServiceMessage(message)).toBeNull();
+  });
+
+  it('should return null for document messages', () => {
+    const message = {
+      message_id: 3,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      document: { file_id: 'abc', file_name: 'test.txt' },
+    };
+    expect(isServiceMessage(message)).toBeNull();
+  });
+
+  it('should detect forum_topic_created', () => {
+    const message = {
+      message_id: 10,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      forum_topic_created: { name: 'New Topic', icon_color: 7322096 },
+    };
+    expect(isServiceMessage(message)).toBe('forum_topic_created');
+  });
+
+  it('should detect forum_topic_edited', () => {
+    const message = {
+      message_id: 11,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      forum_topic_edited: { name: 'Renamed Topic' },
+    };
+    expect(isServiceMessage(message)).toBe('forum_topic_edited');
+  });
+
+  it('should detect forum_topic_closed', () => {
+    const message = {
+      message_id: 12,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      forum_topic_closed: {},
+    };
+    expect(isServiceMessage(message)).toBe('forum_topic_closed');
+  });
+
+  it('should detect forum_topic_reopened', () => {
+    const message = {
+      message_id: 13,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      forum_topic_reopened: {},
+    };
+    expect(isServiceMessage(message)).toBe('forum_topic_reopened');
+  });
+
+  it('should detect new_chat_members', () => {
+    const message = {
+      message_id: 14,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      new_chat_members: [{ id: 789, first_name: 'New User' }],
+    };
+    expect(isServiceMessage(message)).toBe('new_chat_members');
+  });
+
+  it('should detect left_chat_member', () => {
+    const message = {
+      message_id: 15,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      left_chat_member: { id: 789, first_name: 'Left User' },
+    };
+    expect(isServiceMessage(message)).toBe('left_chat_member');
+  });
+
+  it('should detect new_chat_title', () => {
+    const message = {
+      message_id: 16,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      new_chat_title: 'Updated Group Name',
+    };
+    expect(isServiceMessage(message)).toBe('new_chat_title');
+  });
+
+  it('should detect new_chat_photo', () => {
+    const message = {
+      message_id: 17,
+      chat: { id: 123, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      new_chat_photo: [{ file_id: 'photo123', width: 640, height: 640 }],
+    };
+    expect(isServiceMessage(message)).toBe('new_chat_photo');
+  });
+});
+
+describe('handleTelegramMessage - service message filtering', () => {
+  let handleTelegramMessage: (message: any) => Promise<void>;
+  let consoleLogs: string[];
+  const originalLog = console.log;
+
+  beforeAll(async () => {
+    const mod = await import('../index');
+    handleTelegramMessage = mod.handleTelegramMessage;
+  });
+
+  beforeEach(() => {
+    consoleLogs = [];
+    console.log = (...args: any[]) => {
+      consoleLogs.push(args.map(String).join(' '));
+    };
+  });
+
+  afterEach(() => {
+    console.log = originalLog;
+  });
+
+  it('should silently ignore forum_topic_edited and log it', async () => {
+    const message = {
+      message_id: 100,
+      chat: { id: -1001234567890, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      forum_topic_edited: { name: 'Renamed Topic' },
+    };
+
+    await handleTelegramMessage(message);
+
+    // Should have logged the service message
+    const serviceLog = consoleLogs.find(l => l.includes('Ignoring service message'));
+    expect(serviceLog).toBeDefined();
+    expect(serviceLog).toContain('forum_topic_edited');
+  });
+
+  it('should silently ignore forum_topic_created and log it', async () => {
+    const message = {
+      message_id: 101,
+      chat: { id: -1001234567890, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      forum_topic_created: { name: 'New Topic', icon_color: 7322096 },
+    };
+
+    await handleTelegramMessage(message);
+
+    const serviceLog = consoleLogs.find(l => l.includes('Ignoring service message'));
+    expect(serviceLog).toBeDefined();
+    expect(serviceLog).toContain('forum_topic_created');
+  });
+
+  it('should silently ignore new_chat_members and log it', async () => {
+    const message = {
+      message_id: 102,
+      chat: { id: -1001234567890, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      new_chat_members: [{ id: 789, first_name: 'New User' }],
+    };
+
+    await handleTelegramMessage(message);
+
+    const serviceLog = consoleLogs.find(l => l.includes('Ignoring service message'));
+    expect(serviceLog).toBeDefined();
+    expect(serviceLog).toContain('new_chat_members');
+  });
+
+  it('should silently ignore forum_topic_closed and log it', async () => {
+    const message = {
+      message_id: 103,
+      chat: { id: -1001234567890, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      forum_topic_closed: {},
+    };
+
+    await handleTelegramMessage(message);
+
+    const serviceLog = consoleLogs.find(l => l.includes('Ignoring service message'));
+    expect(serviceLog).toBeDefined();
+    expect(serviceLog).toContain('forum_topic_closed');
+  });
+
+  it('should silently ignore forum_topic_reopened and log it', async () => {
+    const message = {
+      message_id: 104,
+      chat: { id: -1001234567890, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      forum_topic_reopened: {},
+    };
+
+    await handleTelegramMessage(message);
+
+    const serviceLog = consoleLogs.find(l => l.includes('Ignoring service message'));
+    expect(serviceLog).toBeDefined();
+    expect(serviceLog).toContain('forum_topic_reopened');
+  });
+
+  it('should silently ignore left_chat_member and log it', async () => {
+    const message = {
+      message_id: 105,
+      chat: { id: -1001234567890, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      left_chat_member: { id: 789, first_name: 'Left User' },
+    };
+
+    await handleTelegramMessage(message);
+
+    const serviceLog = consoleLogs.find(l => l.includes('Ignoring service message'));
+    expect(serviceLog).toBeDefined();
+    expect(serviceLog).toContain('left_chat_member');
+  });
+
+  it('should silently ignore new_chat_title and log it', async () => {
+    const message = {
+      message_id: 106,
+      chat: { id: -1001234567890, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      new_chat_title: 'Updated Group Name',
+    };
+
+    await handleTelegramMessage(message);
+
+    const serviceLog = consoleLogs.find(l => l.includes('Ignoring service message'));
+    expect(serviceLog).toBeDefined();
+    expect(serviceLog).toContain('new_chat_title');
+  });
+
+  it('should silently ignore new_chat_photo and log it', async () => {
+    const message = {
+      message_id: 107,
+      chat: { id: -1001234567890, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      new_chat_photo: [{ file_id: 'photo123', width: 640, height: 640 }],
+    };
+
+    await handleTelegramMessage(message);
+
+    const serviceLog = consoleLogs.find(l => l.includes('Ignoring service message'));
+    expect(serviceLog).toBeDefined();
+    expect(serviceLog).toContain('new_chat_photo');
+  });
+
+  it('should not filter normal text messages', async () => {
+    const message = {
+      message_id: 200,
+      chat: { id: -1001234567890, type: 'supergroup' },
+      from: { id: 456, username: 'testuser' },
+      text: 'Hello, this is a real message',
+    };
+
+    await handleTelegramMessage(message);
+
+    // Should NOT have logged a service message ignore
+    const serviceLog = consoleLogs.find(l => l.includes('Ignoring service message'));
+    expect(serviceLog).toBeUndefined();
+
+    // Should have normal message processing log
+    const normalLog = consoleLogs.find(l => l.includes('testuser'));
+    expect(normalLog).toBeDefined();
+  });
+});

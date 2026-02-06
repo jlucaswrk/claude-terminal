@@ -748,9 +748,45 @@ async function handleBotRemovedFromGroup(chatId: number): Promise<void> {
 }
 
 /**
+ * Telegram service message field names that should be silently ignored.
+ * These are system-generated messages (topic edits, member changes, etc.)
+ * that don't contain user content and would cause errors if processed.
+ */
+const TELEGRAM_SERVICE_MESSAGE_FIELDS = [
+  'forum_topic_created',
+  'forum_topic_edited',
+  'forum_topic_closed',
+  'forum_topic_reopened',
+  'new_chat_members',
+  'left_chat_member',
+  'new_chat_title',
+  'new_chat_photo',
+] as const;
+
+/**
+ * Detect Telegram service messages that should be ignored.
+ * Returns the service message type if detected, or null for normal messages.
+ */
+function isServiceMessage(message: any): string | null {
+  for (const field of TELEGRAM_SERVICE_MESSAGE_FIELDS) {
+    if (message[field] !== undefined) {
+      return field;
+    }
+  }
+  return null;
+}
+
+/**
  * Handle Telegram message
  */
 async function handleTelegramMessage(message: any): Promise<void> {
+  // Filter out service messages (topic edits, member changes, etc.)
+  const serviceType = isServiceMessage(message);
+  if (serviceType) {
+    console.log(`[telegram] Ignoring service message: ${serviceType} (chat=${message.chat?.id})`);
+    return;
+  }
+
   const chatId = message.chat.id;
   const text = message.text || '';
   const caption = message.caption || '';
@@ -6851,6 +6887,7 @@ export {
   groupOnboardingManager,
   handleTelegramCallback,
   handleTelegramMessage,
+  isServiceMessage,
 };
 
 // =============================================================================
