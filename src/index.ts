@@ -1883,10 +1883,10 @@ async function showWorkspaceSelector(
   threadId: number | undefined,
   userId: string,
   agentId: string,
-  topicId: string
+  topicId?: string
 ): Promise<void> {
   const agent = agentManager.getAgent(agentId);
-  const topic = topicManager.getTopic(agentId, topicId);
+  const topic = topicId ? topicManager.getTopic(agentId, topicId) : undefined;
 
   // Get current workspace info
   const currentWorkspace = topic?.workspace || agent?.workspace || '(sandbox padrão)';
@@ -1895,9 +1895,14 @@ async function showWorkspaceSelector(
   // Get recent workspaces
   const recents = persistenceService.getRecentWorkspaces(userId).slice(0, 3);
 
-  // Initialize navigation state
+  // Initialize navigation state (preserve creation context if already set)
   const baseOptions = recents.slice();
-  userContextManager.startDirectoryNavigation(userId, agentId, topicId, '', baseOptions);
+  const existingNav = userContextManager.getDirectoryNavigationState(userId);
+  if (existingNav?.creationContext) {
+    existingNav.baseOptions = baseOptions;
+  } else {
+    userContextManager.startDirectoryNavigation(userId, agentId, topicId || '', '', baseOptions);
+  }
 
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
 
@@ -2020,88 +2025,6 @@ async function showWorkspaceDirectoryBrowser(
   }
 
   await sendTelegramButtons(chatId, header, rows, threadId);
-}
-
-/**
- * Show workspace selector during topic creation (uses topic_ws_ prefixed callbacks).
- * Separate from showWorkspaceSelector to avoid coupling with workspace_not_found flow.
- */
-async function showTopicCreateWorkspaceSelector(chatId: number, userId?: string): Promise<void> {
-  const home = process.env.HOME || '/home/user';
-
-  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-
-  // Show recent workspaces if userId provided
-  if (userId) {
-    const recents = persistenceService.getRecentWorkspaces(userId).slice(0, 3);
-    for (let i = 0; i < recents.length; i++) {
-      const shortPath = recents[i].length > 30
-        ? '...' + recents[i].slice(-27)
-        : recents[i];
-      rows.push([
-        { text: `📂 ${shortPath}`, callback_data: `topic_wsnav_rec_${i}` },
-      ]);
-    }
-    // Store recents on context for index lookup
-    const context = userContextManager.getContext(userId);
-    if (context?.flowData) {
-      context.flowData._recentWorkspaces = recents;
-      userContextManager.updateContext(userId, context);
-    }
-  }
-
-  rows.push([
-    { text: '🏠 Home', callback_data: `topic_wsbase_${home}` },
-    { text: '📂 Desktop', callback_data: `topic_wsbase_${home}/Desktop` },
-  ]);
-  rows.push([
-    { text: '📄 Documents', callback_data: `topic_wsbase_${home}/Documents` },
-    { text: '🧪 Sandbox', callback_data: 'topic_wsnav_sandbox' },
-  ]);
-  rows.push([
-    { text: '✏️ Customizado', callback_data: 'topic_wsnav_custom' },
-  ]);
-
-  await sendTelegramButtons(chatId, '📁 *Selecione o workspace para este tópico:*', rows);
-}
-
-/**
- * Show directory browser during topic creation (uses topic_wsbase_/topic_wsnav_ callbacks).
- */
-async function showTopicCreateDirectoryBrowser(
-  chatId: number,
-  basePath: string
-): Promise<void> {
-  const listing = listDirectories(basePath, { limit: 12 });
-
-  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-
-  rows.push([
-    { text: '✅ Selecionar esta pasta', callback_data: `topic_wsnav_path_${basePath}` },
-  ]);
-
-  for (let i = 0; i < listing.directories.length; i += 2) {
-    const row: Array<{ text: string; callback_data: string }> = [
-      { text: `📁 ${listing.directories[i]}`, callback_data: `topic_wsbase_${join(basePath, listing.directories[i])}` },
-    ];
-    if (listing.directories[i + 1]) {
-      row.push({ text: `📁 ${listing.directories[i + 1]}`, callback_data: `topic_wsbase_${join(basePath, listing.directories[i + 1])}` });
-    }
-    rows.push(row);
-  }
-
-  if (listing.parentPath) {
-    rows.push([
-      { text: '⬆️ Voltar', callback_data: `topic_wsbase_${listing.parentPath}` },
-    ]);
-  }
-
-  let header = `📁 *${basePath}*`;
-  if (listing.truncated) {
-    header += `\n_(Mostrando 12 de ${listing.totalFound} pastas)_`;
-  }
-
-  await sendTelegramButtons(chatId, header, rows);
 }
 
 /**
@@ -2234,7 +2157,7 @@ async function createRalphTopicAndStart(
     await sendTopicCreatedInGeneral(chatId, topicName, 'ralph', topic.telegramTopicId);
 
     // Send welcome message in the new topic with task
-    await sendTopicWelcome(chatId, topic.telegramTopicId, topicName, 'ralph', task);
+    await sendTopicWelcome(chatId, topic.telegramTopicId, topicName, 'ralph', task, topic.id);
 
     // Clear the flow
     userContextManager.clearContext(userId);
@@ -3896,7 +3819,26 @@ async function handleTelegramCallback(query: any): Promise<void> {
   else if (data === 'topic_create_ws_yes') {
     // User wants to configure workspace during topic creation
     if (userContextManager.isAwaitingTopicWorkspace(userId)) {
-      await showTopicCreateWorkspaceSelector(chatId, userId);
+      const context = userContextManager.getContext(userId);
+      const agentId = context?.flowData?.agentId as string;
+
+      if (!agentId) return;
+
+      // Start navigation with creation context (preserves flow data for finishTopicCreation)
+      userContextManager.startDirectoryNavigationWithCreation(userId, {
+        targetAgentId: agentId,
+        creationContext: {
+          flow: context.currentFlow as 'topic_ralph' | 'topic_worktree' | 'topic_sessao',
+          flowData: {
+            agentId,
+            topicName: context.flowData?.topicName as string | undefined,
+            topicTask: context.flowData?.topicTask as string | undefined,
+            topicMaxIterations: context.flowData?.topicMaxIterations as number | undefined,
+          },
+        },
+      });
+
+      await showWorkspaceSelector(chatId, undefined, userId, agentId, undefined);
     }
   }
   else if (data === 'topic_create_ws_skip') {
@@ -3904,79 +3846,6 @@ async function handleTelegramCallback(query: any): Promise<void> {
     if (userContextManager.isAwaitingTopicWorkspace(userId)) {
       try {
         await finishTopicCreation(chatId, userId);
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        await sendTelegramMessage(chatId, `❌ Erro ao criar tópico: ${errorMessage}`);
-        userContextManager.clearContext(userId);
-      }
-    }
-  }
-  else if (data.startsWith('topic_wsbase_')) {
-    // Directory browsing during topic creation
-    const basePath = data.replace('topic_wsbase_', '');
-    if (userContextManager.isAwaitingTopicWorkspace(userId)) {
-      await showTopicCreateDirectoryBrowser(chatId, basePath);
-    }
-  }
-  else if (data.startsWith('topic_wsnav_')) {
-    // Workspace selection during topic creation
-    const action = data.replace('topic_wsnav_', '');
-    if (userContextManager.isAwaitingTopicWorkspace(userId)) {
-      try {
-        if (action.startsWith('rec_')) {
-          // Recent workspace selection by index
-          const idx = parseInt(action.replace('rec_', ''), 10);
-          const context = userContextManager.getContext(userId);
-          const recents = (context?.flowData?._recentWorkspaces as string[] | undefined)
-            || persistenceService.getRecentWorkspaces(userId).slice(0, 3);
-          const selectedPath = recents[idx];
-          if (selectedPath && existsSync(selectedPath)) {
-            userContextManager.setTopicWorkspace(userId, selectedPath);
-            persistenceService.addRecentWorkspace(userId, selectedPath);
-            await finishTopicCreation(chatId, userId);
-          } else {
-            await sendTelegramMessage(chatId,
-              `❌ Caminho não encontrado: \`${selectedPath || '(inválido)'}\`\nSelecione outra opção.`
-            );
-            await showTopicCreateWorkspaceSelector(chatId, userId);
-          }
-        } else if (action === 'sandbox') {
-          const context = userContextManager.getContext(userId);
-          const agentId = context?.flowData?.agentId as string;
-          if (!agentId) {
-            await sendTelegramMessage(chatId, '❌ Erro: agente não encontrado. Tente novamente.');
-            userContextManager.clearContext(userId);
-            return;
-          }
-          const sandboxPath = getAgentSandboxPath(agentId);
-          userContextManager.setTopicWorkspace(userId, sandboxPath);
-          await finishTopicCreation(chatId, userId);
-        } else if (action === 'custom') {
-          await sendTelegramMessage(chatId,
-            '📁 Envie o caminho absoluto do workspace:\n\n' +
-            'Exemplo: `/Users/lucas/projeto-x`'
-          );
-        } else if (action.startsWith('path_')) {
-          const selectedPath = action.substring(5);
-          let isDirectory = false;
-          try {
-            isDirectory = statSync(selectedPath).isDirectory();
-          } catch {
-            // path does not exist
-          }
-
-          if (!isDirectory) {
-            await sendTelegramMessage(chatId,
-              `❌ Caminho não encontrado: \`${selectedPath}\`\n\nEnvie um caminho válido ou use os botões abaixo.`
-            );
-            await showTopicCreateWorkspaceSelector(chatId);
-            return;
-          }
-
-          userContextManager.setTopicWorkspace(userId, selectedPath);
-          persistenceService.addRecentWorkspace(userId, selectedPath);
-          await finishTopicCreation(chatId, userId);
-        }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         await sendTelegramMessage(chatId, `❌ Erro ao criar tópico: ${errorMessage}`);
@@ -4272,11 +4141,31 @@ async function handleTelegramCallback(query: any): Promise<void> {
       }
     }
     else if (action === 'sandbox') {
-      // Select sandbox
+      const sandboxPath = getAgentSandboxPath(agent.id);
+
+      // Topic creation flow: restore flowData and finish creation
+      if (navState?.creationContext) {
+        const { flow, flowData } = navState.creationContext;
+        userContextManager.setContext(userId, {
+          userId,
+          currentFlow: flow,
+          flowState: 'awaiting_topic_workspace',
+          flowData: {
+            ...flowData,
+            topicWorkspace: sandboxPath,
+          },
+        });
+
+        persistenceService.addRecentWorkspace(userId, sandboxPath);
+        userContextManager.clearDirectoryNavigation(userId);
+        await finishTopicCreation(chatId, userId);
+        return;
+      }
+
+      // Existing topic workspace update flow
       const topicId = navState?.targetTopicId || (context?.flowData?.topicId as string);
       if (!topicId) return;
 
-      const sandboxPath = getAgentSandboxPath(agent.id);
       topicManager.updateTopicWorkspace(agent.id, topicId, sandboxPath);
       persistenceService.addRecentWorkspace(userId, sandboxPath);
       const threadId = getThreadId();
@@ -4354,8 +4243,6 @@ async function handleTelegramCallback(query: any): Promise<void> {
     else if (action === 'select') {
       // Select current directory as workspace
       if (!navState) return;
-      const topicId = navState.targetTopicId || (context?.flowData?.topicId as string);
-      if (!topicId) return;
 
       const selectedPath = navState.currentPath;
 
@@ -4375,6 +4262,29 @@ async function handleTelegramCallback(query: any): Promise<void> {
         );
         return;
       }
+
+      // Topic creation flow: restore flowData and finish creation
+      if (navState.creationContext) {
+        const { flow, flowData } = navState.creationContext;
+        userContextManager.setContext(userId, {
+          userId,
+          currentFlow: flow,
+          flowState: 'awaiting_topic_workspace',
+          flowData: {
+            ...flowData,
+            topicWorkspace: selectedPath,
+          },
+        });
+
+        persistenceService.addRecentWorkspace(userId, selectedPath);
+        userContextManager.clearDirectoryNavigation(userId);
+        await finishTopicCreation(chatId, userId);
+        return;
+      }
+
+      // Existing topic workspace update flow
+      const topicId = navState.targetTopicId || (context?.flowData?.topicId as string);
+      if (!topicId) return;
 
       topicManager.updateTopicWorkspace(agent.id, topicId, selectedPath);
       persistenceService.addRecentWorkspace(userId, selectedPath);
@@ -4421,6 +4331,23 @@ async function handleTelegramCallback(query: any): Promise<void> {
       await showWorkspaceDirectoryBrowser(chatId, getThreadId(), userId);
     }
     else if (action === 'cancel') {
+      // Topic creation flow: restore previous flowState and show workspace question again
+      if (navState?.creationContext) {
+        const { flow, flowData } = navState.creationContext;
+        userContextManager.setContext(userId, {
+          userId,
+          currentFlow: flow,
+          flowState: 'awaiting_topic_workspace',
+          flowData,
+        });
+
+        userContextManager.clearDirectoryNavigation(userId);
+
+        await sendTelegramMessage(chatId, '❌ Seleção cancelada. Use os botões para escolher workspace ou pular.');
+        await sendTopicWorkspaceQuestion(chatId);
+        return;
+      }
+
       // Cancel navigation
       userContextManager.clearDirectoryNavigation(userId);
 

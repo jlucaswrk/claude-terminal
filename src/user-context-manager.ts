@@ -1374,6 +1374,35 @@ export class UserContextManager {
   }
 
   /**
+   * Start directory navigation with creation context (for topic creation flows using wsnav)
+   */
+  startDirectoryNavigationWithCreation(
+    userId: string,
+    options: {
+      targetAgentId: string;
+      creationContext: {
+        flow: 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
+        flowData: {
+          agentId: string;
+          topicName?: string;
+          topicTask?: string;
+          topicMaxIterations?: number;
+        };
+      };
+    }
+  ): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.directoryNavigationState = {
+      currentPath: '',
+      baseOptions: [],
+      targetAgentId: options.targetAgentId,
+      visibleDirectories: [],
+      creationContext: options.creationContext,
+    };
+    this.contexts.set(userId, context);
+  }
+
+  /**
    * Get the current directory navigation state
    */
   getDirectoryNavigationState(userId: string): DirectoryNavigationState | undefined {

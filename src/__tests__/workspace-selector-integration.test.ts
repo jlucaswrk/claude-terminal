@@ -1180,7 +1180,120 @@ describe('Workspace Selector Integration - wsnav: callbacks', () => {
   });
 
   // ================================================================
-  // 13. Directory browser UI details
+  // 13. Topic creation flow via wsnav (creationContext)
+  // ================================================================
+  describe('Topic creation flow via wsnav (creationContext)', () => {
+    test('creation context is preserved through navigation and available on select', async () => {
+      // Start navigation with creation context
+      userContextManager.startDirectoryNavigationWithCreation(userId, {
+        targetAgentId: testAgentId,
+        creationContext: {
+          flow: 'topic_worktree',
+          flowData: {
+            agentId: testAgentId,
+            topicName: 'Feature X',
+          },
+        },
+      });
+
+      // Simulate navigating to agent workspace
+      userContextManager.updateDirectoryPath(userId, TEST_BROWSE_DIR);
+      await simulateShowWorkspaceDirectoryBrowser(
+        chatId,
+        undefined,
+        userId,
+        userContextManager,
+        mockSendTelegramButtons,
+        mockSendTelegramMessage,
+      );
+
+      // Verify creation context is still present after navigation
+      const navState = userContextManager.getDirectoryNavigationState(userId);
+      expect(navState).toBeDefined();
+      expect(navState!.creationContext).toBeDefined();
+      expect(navState!.creationContext!.flow).toBe('topic_worktree');
+      expect(navState!.creationContext!.flowData.topicName).toBe('Feature X');
+      expect(navState!.currentPath).toBe(TEST_BROWSE_DIR);
+    });
+
+    test('sandbox selection with creation context restores flowData and clears nav', () => {
+      userContextManager.startDirectoryNavigationWithCreation(userId, {
+        targetAgentId: testAgentId,
+        creationContext: {
+          flow: 'topic_ralph',
+          flowData: {
+            agentId: testAgentId,
+            topicTask: 'Build auth',
+            topicMaxIterations: 5,
+          },
+        },
+      });
+
+      // Simulate what wsnav:sandbox handler does for creation context
+      const navState = userContextManager.getDirectoryNavigationState(userId)!;
+      const { flow, flowData } = navState.creationContext!;
+
+      userContextManager.setContext(userId, {
+        userId,
+        currentFlow: flow,
+        flowState: 'awaiting_topic_workspace',
+        flowData: {
+          ...flowData,
+          topicWorkspace: '/tmp/sandbox-test',
+        },
+      });
+      userContextManager.clearDirectoryNavigation(userId);
+
+      // Verify flow data was restored correctly
+      const context = userContextManager.getContext(userId);
+      expect(context?.currentFlow).toBe('topic_ralph');
+      expect(context?.flowState).toBe('awaiting_topic_workspace');
+      expect(context?.flowData?.topicTask).toBe('Build auth');
+      expect(context?.flowData?.topicMaxIterations).toBe(5);
+      expect(context?.flowData?.topicWorkspace).toBe('/tmp/sandbox-test');
+
+      // Nav state should be cleared
+      expect(userContextManager.hasDirectoryNavigation(userId)).toBe(false);
+    });
+
+    test('cancel with creation context restores flow and clears nav', () => {
+      userContextManager.startDirectoryNavigationWithCreation(userId, {
+        targetAgentId: testAgentId,
+        creationContext: {
+          flow: 'topic_worktree',
+          flowData: {
+            agentId: testAgentId,
+            topicName: 'Feature X',
+          },
+        },
+      });
+
+      // Simulate what wsnav:cancel handler does for creation context
+      const navState = userContextManager.getDirectoryNavigationState(userId)!;
+      const { flow, flowData } = navState.creationContext!;
+
+      userContextManager.setContext(userId, {
+        userId,
+        currentFlow: flow,
+        flowState: 'awaiting_topic_workspace',
+        flowData,
+      });
+      userContextManager.clearDirectoryNavigation(userId);
+
+      // Verify flow was restored
+      const context = userContextManager.getContext(userId);
+      expect(context?.currentFlow).toBe('topic_worktree');
+      expect(context?.flowState).toBe('awaiting_topic_workspace');
+      expect(context?.flowData?.agentId).toBe(testAgentId);
+      expect(context?.flowData?.topicName).toBe('Feature X');
+
+      // Nav state should be cleared
+      expect(userContextManager.hasDirectoryNavigation(userId)).toBe(false);
+    });
+  });
+
+  // ================================================================
+  // 14. Directory browser UI details
   // ================================================================
   describe('Directory browser UI', () => {
     test('browser shows "Subir" button when not at root', async () => {

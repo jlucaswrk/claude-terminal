@@ -161,4 +161,80 @@ describe('Workspace Selector - Callback Data Format', () => {
     const cb = 'topic_workspace:550e8400-e29b-41d4-a716-446655440000';
     expect(Buffer.byteLength(cb, 'utf-8')).toBeLessThan(64);
   });
+
+  test('wsnav callbacks during creation are under 64 bytes', () => {
+    const callbacks = [
+      'wsnav:agent',
+      'wsnav:sandbox',
+      'wsnav:rec:0',
+      'wsnav:custom',
+      'wsnav:select',
+      'wsnav:cancel',
+    ];
+
+    for (const cb of callbacks) {
+      expect(cb.length).toBeLessThan(64);
+    }
+  });
+});
+
+describe('Workspace Selector - Creation Context Navigation', () => {
+  let manager: UserContextManager;
+
+  beforeEach(() => {
+    manager = new UserContextManager();
+  });
+
+  test('startDirectoryNavigationWithCreation stores creation context', () => {
+    manager.startDirectoryNavigationWithCreation('user-1', {
+      targetAgentId: 'agent-1',
+      creationContext: {
+        flow: 'topic_worktree',
+        flowData: {
+          agentId: 'agent-1',
+          topicName: 'Feature X',
+        },
+      },
+    });
+
+    const state = manager.getDirectoryNavigationState('user-1');
+    expect(state).toBeDefined();
+    expect(state!.currentPath).toBe('');
+    expect(state!.targetAgentId).toBe('agent-1');
+    expect(state!.creationContext).toBeDefined();
+    expect(state!.creationContext!.flow).toBe('topic_worktree');
+    expect(state!.creationContext!.flowData.agentId).toBe('agent-1');
+    expect(state!.creationContext!.flowData.topicName).toBe('Feature X');
+  });
+
+  test('startDirectoryNavigationWithCreation preserves existing context', () => {
+    manager.setActiveAgent('user-1', 'agent-99');
+    manager.startDirectoryNavigationWithCreation('user-1', {
+      targetAgentId: 'agent-1',
+      creationContext: {
+        flow: 'topic_ralph',
+        flowData: {
+          agentId: 'agent-1',
+          topicTask: 'Build auth',
+          topicMaxIterations: 5,
+        },
+      },
+    });
+
+    expect(manager.getActiveAgent('user-1')).toBe('agent-99');
+    expect(manager.getDirectoryNavigationState('user-1')?.creationContext?.flow).toBe('topic_ralph');
+  });
+
+  test('clearDirectoryNavigation removes creation context', () => {
+    manager.startDirectoryNavigationWithCreation('user-1', {
+      targetAgentId: 'agent-1',
+      creationContext: {
+        flow: 'topic_sessao',
+        flowData: { agentId: 'agent-1' },
+      },
+    });
+
+    manager.clearDirectoryNavigation('user-1');
+    expect(manager.getDirectoryNavigationState('user-1')).toBeUndefined();
+  });
 });

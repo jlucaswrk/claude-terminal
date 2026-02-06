@@ -142,6 +142,15 @@ export interface DirectoryNavigationState {
   visibleDirectories: string[];     // Snapshot of visible directories (for index mapping)
   filter?: string;                  // Active filter (optional)
   awaitingInput?: 'filter' | 'custom_base_path'; // Awaiting user text input
+  creationContext?: {               // Context for topic creation flow (wsnav reuse)
+    flow: 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
+    flowData: {
+      agentId: string;
+      topicName?: string;
+      topicTask?: string;
+      topicMaxIterations?: number;
+    };
+  };
 }
 
 /**

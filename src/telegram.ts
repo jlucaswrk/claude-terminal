@@ -2289,13 +2289,18 @@ export async function sendTopicWelcome(
 
   if (topicType === 'ralph' && task) {
     const truncatedTask = task.length > 200 ? task.slice(0, 197) + '...' : task;
-    await sendTelegramMessage(chatId,
-      `${emoji} *${topicName}*\n\n` +
+    const text = `${emoji} *${topicName}*\n\n` +
       `*Tarefa:* ${truncatedTask}\n\n` +
-      `_Loop Ralph iniciando..._`,
-      undefined,
-      threadId
-    );
+      `_Loop Ralph iniciando..._`;
+
+    if (topicId) {
+      const buttons = [[
+        { text: '⚙️ Workspace', callback_data: `topic_workspace:${topicId}` },
+      ]];
+      await sendTelegramButtons(chatId, text, buttons, threadId);
+    } else {
+      await sendTelegramMessage(chatId, text, undefined, threadId);
+    }
   } else {
     const description = topicType === 'worktree'
       ? 'Tópico isolado para experimentos e features.'

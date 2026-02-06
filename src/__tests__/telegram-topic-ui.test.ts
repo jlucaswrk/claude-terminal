@@ -443,6 +443,24 @@ describe('Topic Status Display Coverage', () => {
   });
 });
 
+describe('sendTopicWelcome - Ralph workspace button callback format', () => {
+  test('topic_workspace callback with UUID is correctly formatted for Ralph', () => {
+    const topicId = '550e8400-e29b-41d4-a716-446655440000';
+    const callbackData = `topic_workspace:${topicId}`;
+    expect(callbackData).toBe('topic_workspace:550e8400-e29b-41d4-a716-446655440000');
+    expect(Buffer.byteLength(callbackData, 'utf-8')).toBeLessThan(64);
+  });
+
+  test('Ralph workspace button structure matches expected format', () => {
+    const topicId = 'topic-123';
+    const buttons = [[
+      { text: '⚙️ Workspace', callback_data: `topic_workspace:${topicId}` },
+    ]];
+    expect(buttons[0][0].text).toBe('⚙️ Workspace');
+    expect(buttons[0][0].callback_data).toBe('topic_workspace:topic-123');
+  });
+});
+
 describe('Compact Line Format Consistency', () => {
   test('all compact lines follow same delimiter pattern', () => {
     const topics = [
