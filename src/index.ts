@@ -2,56 +2,6 @@ import { Hono } from 'hono';
 import { serve } from 'bun';
 import { ClaudeTerminal, detectOldSessions, migrateOldSessions, type Model } from './terminal';
 import {
-  sendWhatsApp,
-  sendWhatsAppImage,
-  sendWhatsAppMedia,
-  sendModelSelector,
-  sendCommandsList,
-  sendAgentsList,
-  sendAgentSelector,
-  sendModelSelectorList,
-  sendContinueWithLastChoice,
-  sendAgentMenu,
-  sendHistoryList,
-  sendErrorWithActions,
-  sendConfigureLimitMenu,
-  sendConfigurePriorityMenu,
-  sendConfirmation,
-  sendMigrationOptions,
-  sendButtons,
-  sendAgentSelectionForReset,
-  sendAgentSelectionForDelete,
-  sendOutputActions,
-  sendEmojiSelector,
-  sendWorkspaceSelector,
-  sendAgentTypeSelector,
-  sendBashModeStatus,
-  sendTranscriptionError,
-  sendModeSelector,
-  sendRalphIterationsSelector,
-  sendRalphConfigFlow,
-  sendLoopProgress,
-  sendLoopComplete,
-  sendLoopBlocked,
-  sendLoopError,
-  sendLoopControls,
-  sendRejectPrompt,
-  sendUnlinkedGroupMessage,
-  createWhatsAppGroup,
-  deleteWhatsAppGroup,
-  sendDeleteGroupChoice,
-  sendAgentModeSelector,
-  sendModelModeSelector,
-  // Onboarding UI
-  sendUserModeSelector,
-  sendTelegramUsernamePrompt,
-  sendDojoActivated,
-  sendRoninActivated,
-  sendRoninResponse,
-  sendRoninRejection,
-} from './whatsapp';
-import { roninAgent, RONIN_SYSTEM_PROMPT } from './ronin-agent';
-import {
   isTelegramConfigured,
   getTelegramBot,
   getBotInfo,
@@ -145,7 +95,6 @@ import {
   type TopicListItem,
 } from './telegram';
 import { GroupOnboardingManager } from './group-onboarding-manager';
-import { MessageRouter } from './message-router';
 import { TelegramCommandHandler } from './telegram-command-handler';
 import { topicManager } from './topic-manager';
 import { transcribeAudio } from './transcription';
@@ -156,10 +105,8 @@ import { UserContextManager } from './user-context-manager';
 import { Semaphore } from './semaphore';
 import { RalphLoopManager } from './ralph-loop-manager';
 import { DEFAULTS, PRIORITY_VALUES } from './types';
-import type { Agent, AgentType, ModelMode, UserMode, UserPreferences } from './types';
+import type { Agent, AgentType, ModelMode, UserPreferences } from './types';
 import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
-import { uploadToKapso, downloadFromKapso } from './storage';
-import { TelegramTokenManager } from './telegram-tokens';
 
 // =============================================================================
 // Configuration
@@ -167,8 +114,12 @@ import { TelegramTokenManager } from './telegram-tokens';
 
 const config = {
   port: parseInt(process.env.PORT || '3000'),
-  kapsoWebhookSecret: process.env.KAPSO_WEBHOOK_SECRET!,
-  userPhone: process.env.USER_PHONE_NUMBER!,
+  allowedUsernames: new Set(
+    (process.env.ALLOWED_TELEGRAM_USERNAMES || '')
+      .split(',')
+      .map(u => u.trim().toLowerCase())
+      .filter(Boolean)
+  ),
 };
 
 // =============================================================================
@@ -191,45 +142,6 @@ const groupOnboardingManager = new GroupOnboardingManager();
 // Claude terminal
 const terminal = new ClaudeTerminal();
 
-// Wrapper functions that detect telegram: prefix and route accordingly
-async function sendMessage(to: string, text: string): Promise<void> {
-  if (to.startsWith('telegram:')) {
-    const chatId = parseInt(to.replace('telegram:', ''), 10);
-    await sendTelegramMessage(chatId, text);
-  } else {
-    await sendWhatsApp(to, text);
-  }
-}
-
-async function sendImage(to: string, imageUrl: string): Promise<void> {
-  if (to.startsWith('telegram:')) {
-    const chatId = parseInt(to.replace('telegram:', ''), 10);
-    await sendTelegramPhoto(chatId, imageUrl);
-  } else {
-    await sendWhatsAppImage(to, imageUrl);
-  }
-}
-
-async function sendErrorWithActionsWrapper(to: string, agentName: string, error: string): Promise<void> {
-  if (to.startsWith('telegram:')) {
-    const chatId = parseInt(to.replace('telegram:', ''), 10);
-    await sendTelegramMessage(chatId, `❌ *${agentName}*: ${error}`);
-  } else {
-    await sendErrorWithActions(to, agentName, error);
-  }
-}
-
-async function sendMedia(to: string, mediaId: string, mediaType: string, filename: string, caption?: string): Promise<void> {
-  if (to.startsWith('telegram:')) {
-    const chatId = parseInt(to.replace('telegram:', ''), 10);
-    // For Telegram, we'd need to convert the mediaId to actual media
-    // For now, just send a text message with the filename
-    await sendTelegramMessage(chatId, `📎 *${filename}*${caption ? `\n${caption}` : ''}`);
-  } else {
-    await sendWhatsAppMedia(to, mediaId, mediaType as 'image' | 'video' | 'audio' | 'document', filename, caption);
-  }
-}
-
 // Direct Telegram send functions for QueueManager
 async function sendTelegramDirectMessage(chatId: number, text: string, threadId?: number): Promise<void> {
   await sendTelegramMessage(chatId, text, undefined, threadId);
@@ -239,15 +151,11 @@ async function sendTelegramDirectImage(chatId: number, imageUrl: string, caption
   await sendTelegramPhoto(chatId, imageUrl, caption, threadId);
 }
 
-// Queue manager (with image, file, error recovery, and Telegram support)
+// Queue manager
 const queueManager = new QueueManager(
   semaphore,
   agentManager,
   terminal,
-  sendMessage,
-  sendImage,
-  sendErrorWithActionsWrapper,
-  sendMedia,
   sendTelegramDirectMessage,
   sendTelegramDirectImage,
   startTypingIndicator
@@ -259,25 +167,8 @@ const telegramCommandHandler = new TelegramCommandHandler(agentManager, groupOnb
 // Ralph loop manager (for autonomous Ralph mode execution)
 const ralphLoopManager = new RalphLoopManager(semaphore, agentManager, persistenceService, terminal);
 
-// Set up Ralph loop progress callback
-ralphLoopManager.setProgressCallback(async (loopId, iteration, maxIterations, action) => {
-  const loop = ralphLoopManager.getLoop(loopId);
-  if (loop) {
-    const agent = agentManager.getAgent(loop.agentId);
-    if (agent) {
-      await sendLoopProgress(loop.userId, agent.name, iteration, maxIterations, action, loop.currentModel);
-    }
-  }
-});
-
 // User context manager (in-memory, not persisted)
 const userContextManager = new UserContextManager();
-
-// Message router for groups/main number routing
-const messageRouter = new MessageRouter(agentManager, config.userPhone);
-
-// Telegram token manager for Dojo onboarding
-const telegramTokenManager = new TelegramTokenManager();
 
 // Track pending agent creation for /link command (userId -> agentId)
 const pendingAgentLink = new Map<string, string>();
@@ -295,40 +186,6 @@ const STATUS_EMOJI: Record<string, string> = {
 const pendingAgentSelection = new Map<string, string>();
 
 // Note: lastErrors is now managed by QueueManager for proper error recovery (Flow 11)
-
-// =============================================================================
-// User Mode Helpers (Ronin/Dojo)
-// =============================================================================
-
-/**
- * Get user mode (ronin or dojo)
- */
-function getUserMode(userId: string): UserMode {
-  const prefs = persistenceService.loadUserPreferences(userId);
-  return prefs?.mode || 'ronin'; // Default to ronin
-}
-
-/**
- * Check if user needs onboarding
- * Backwards compatible: users with existing agents skip onboarding
- */
-function needsOnboarding(userId: string): boolean {
-  const prefs = persistenceService.loadUserPreferences(userId);
-  if (prefs?.onboardingComplete) return false;
-
-  // Backwards compatibility: existing users with agents don't need onboarding
-  const existingAgents = agentManager.listAgents(userId);
-  if (existingAgents.length > 0) return false;
-
-  return true;
-}
-
-/**
- * Check if user is in Dojo mode
- */
-function isDojoMode(userId: string): boolean {
-  return getUserMode(userId) === 'dojo';
-}
 
 // =============================================================================
 // Startup
