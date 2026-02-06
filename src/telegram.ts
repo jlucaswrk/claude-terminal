@@ -1894,6 +1894,67 @@ export async function sendTelegramProcessingError(
 }
 
 /**
+ * Send workspace not found options with 4 action buttons
+ * Used when a topic's configured workspace path doesn't exist
+ */
+export async function sendWorkspaceNotFoundOptions(
+  chatId: number,
+  threadId: number | undefined,
+  topicId: string,
+  missingPath: string
+): Promise<void> {
+  const text =
+    `⚠️ *Workspace não encontrado*\n\n` +
+    `O caminho configurado para este tópico não existe:\n` +
+    `\`${missingPath}\`\n\n` +
+    `Escolha uma opção:`;
+
+  await sendTelegramButtons(chatId, text, [
+    [
+      { text: '🏠 Usar workspace do agente', callback_data: `ws_notfound_agent_${topicId}` },
+    ],
+    [
+      { text: '🧪 Usar sandbox', callback_data: `ws_notfound_sandbox_${topicId}` },
+    ],
+    [
+      { text: '⚙️ Reconfigurar workspace', callback_data: `ws_notfound_reconfig_${topicId}` },
+    ],
+    [
+      { text: '❌ Cancelar', callback_data: `ws_notfound_cancel_${topicId}` },
+    ],
+  ], threadId);
+}
+
+/**
+ * Send workspace selector for topic reconfiguration (workspace_not_found flow).
+ * Shows common directories + custom option with ws_reconfig_ prefix callbacks.
+ */
+export async function sendTopicWorkspaceReconfig(
+  chatId: number,
+  topicId: string,
+  threadId?: number
+): Promise<void> {
+  const home = process.env.HOME || '/home/user';
+  await sendTelegramButtons(chatId,
+    '📁 *Selecione o workspace para este tópico:*',
+    [
+      [
+        { text: '🏠 Home', callback_data: `ws_reconfig_${topicId}_path_${home}` },
+        { text: '📂 Desktop', callback_data: `ws_reconfig_${topicId}_path_${home}/Desktop` },
+      ],
+      [
+        { text: '📄 Documents', callback_data: `ws_reconfig_${topicId}_path_${home}/Documents` },
+        { text: '🧪 Sandbox', callback_data: `ws_reconfig_${topicId}_sandbox` },
+      ],
+      [
+        { text: '✏️ Customizado', callback_data: `ws_reconfig_${topicId}_custom` },
+      ],
+    ],
+    threadId
+  );
+}
+
+/**
  * Delete a message (useful for removing queue position messages after processing)
  */
 export async function deleteTelegramMessage(

@@ -233,6 +233,22 @@ export type SendTelegramImageFn = (chatId: number, imageUrl: string, caption?: s
 export type StartTypingIndicatorFn = (chatId: number, threadId?: number) => () => void;
 
 /**
+ * Callback for workspace not found - allows pausing task and showing options
+ */
+export type OnWorkspaceNotFoundFn = (params: {
+  chatId: number;
+  threadId: number | undefined;
+  topicId: string;
+  missingPath: string;
+  taskId: string;
+  prompt: string;
+  model: 'haiku' | 'sonnet' | 'opus';
+  images?: Array<{data: string; mimeType: string}>;
+  agentId: string;
+  userId: string;
+}) => Promise<void>;
+
+/**
  * Platform detection result
  */
 export type Platform = 'telegram' | 'whatsapp_group' | 'whatsapp_user';
@@ -393,6 +409,7 @@ export class QueueManager {
   private readonly sendTelegramImage?: SendTelegramImageFn;
   private readonly startTypingIndicator?: StartTypingIndicatorFn;
   private readonly topicManager?: TopicManager;
+  private readonly onWorkspaceNotFound?: OnWorkspaceNotFoundFn;
   private activeCount: number = 0;
 
   // Store last errors for retry functionality
@@ -413,7 +430,8 @@ export class QueueManager {
     editTelegram?: EditTelegramFn,
     sendTelegramImage?: SendTelegramImageFn,
     startTypingIndicator?: StartTypingIndicatorFn,
-    topicManager?: TopicManager
+    topicManager?: TopicManager,
+    onWorkspaceNotFound?: OnWorkspaceNotFoundFn
   ) {
     this.queue = new PriorityQueue();
     this.semaphore = semaphore;
@@ -428,6 +446,7 @@ export class QueueManager {
     this.sendTelegramImage = sendTelegramImage;
     this.startTypingIndicator = startTypingIndicator;
     this.topicManager = topicManager;
+    this.onWorkspaceNotFound = onWorkspaceNotFound;
   }
 
   /**
@@ -693,13 +712,42 @@ export class QueueManager {
       // Handle workspace not found error (Flow 4)
       if (resolution.error === 'workspace_not_found') {
         const missingPath = topic?.workspace || '(desconhecido)';
+
+        // If on Telegram with callback handler and topic exists, pause and show options
+        if (platform === 'telegram' && this.onWorkspaceNotFound && topic && typeof replyTo === 'number') {
+          await this.onWorkspaceNotFound({
+            chatId: replyTo,
+            threadId,
+            topicId: topic.id,
+            missingPath,
+            taskId: task.id,
+            prompt,
+            model,
+            images,
+            agentId,
+            userId,
+          });
+
+          // Update agent status to idle (awaiting user choice)
+          this.agentManager.updateAgentStatus(agentId, 'idle', 'aguardando escolha de workspace');
+
+          // Clean up active task tracking
+          this.activeTasks.delete(task.id);
+
+          return {
+            taskId: task.id,
+            agentId,
+            success: false,
+          };
+        }
+
+        // Fallback for WhatsApp or when no callback handler: use agent workspace
         const fallbackMsg = agent.workspace
           ? `⚠️ Workspace do tópico não encontrado: \`${missingPath}\`\n\n` +
             `Usando workspace do agente: \`${agent.workspace}\``
           : `⚠️ Workspace do tópico não encontrado: \`${missingPath}\`\n\n` +
             `Usando workspace padrão (sandbox).`;
         await this.sendResponse(replyTo, userId, fallbackMsg, threadId);
-        // Fall through to agent workspace or undefined
       }
 
       const resolvedWorkspace = resolution.error ? agent.workspace : resolution.workspace;

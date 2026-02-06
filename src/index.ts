@@ -142,6 +142,8 @@ import {
   sendResetFeedback,
   sendCancelFeedback,
   sendTopicActionFeedbackGeneral,
+  sendWorkspaceNotFoundOptions,
+  sendTopicWorkspaceReconfig,
   type TopicListItem,
 } from './telegram';
 import { GroupOnboardingManager } from './group-onboarding-manager';
@@ -258,7 +260,34 @@ const queueManager = new QueueManager(
   editTelegramDirect,
   sendTelegramDirectImage,
   startTypingIndicator,
-  topicManager
+  topicManager,
+  async (params) => {
+    // Store paused task data in UserContext
+    userContextManager.setContext(params.userId, {
+      userId: params.userId,
+      activeAgentId: params.agentId,
+      currentFlow: 'workspace_not_found',
+      flowState: 'awaiting_workspace_choice',
+      flowData: {
+        agentId: params.agentId,
+        pausedTaskId: params.taskId,
+        pausedPrompt: params.prompt,
+        pausedModel: params.model,
+        pausedImages: params.images,
+        missingWorkspacePath: params.missingPath,
+        topicId: params.topicId,
+        telegramChatId: params.chatId,
+      },
+    });
+
+    // Send interactive buttons to the user
+    await sendWorkspaceNotFoundOptions(
+      params.chatId,
+      params.threadId,
+      params.topicId,
+      params.missingPath
+    );
+  }
 );
 
 // Telegram command handler (stateless router)
@@ -1802,6 +1831,25 @@ async function handleTopicWorkspace(
       undefined,
       threadId
     );
+
+    // Check if there's a paused task waiting for workspace reconfiguration
+    const wsContext = userContextManager.getContext(userId);
+    if (wsContext?.currentFlow === 'workspace_not_found' && wsContext.flowData?.topicId === topic.id) {
+      const { pausedPrompt, pausedModel, pausedImages } = wsContext.flowData;
+      if (pausedPrompt && pausedModel) {
+        await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, threadId);
+        queueManager.enqueue({
+          agentId,
+          prompt: pausedPrompt as string,
+          model: pausedModel as 'haiku' | 'sonnet' | 'opus',
+          userId,
+          replyTo: chatId,
+          threadId,
+          images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
+        });
+      }
+      userContextManager.clearContext(userId);
+    }
   } else {
     // No argument: show current workspace and usage instructions
     const currentWorkspace = topic.workspace || agent.workspace || '(sandbox padrão)';
@@ -3536,6 +3584,218 @@ async function handleTelegramCallback(query: any): Promise<void> {
       undefined,
       resolvedThreadId
     );
+  }
+  // Workspace not found flow callbacks (Flow 4 - paused task)
+  else if (data.startsWith('ws_notfound_agent_')) {
+    // Use agent workspace for this topic and resume paused task
+    const topicId = data.replace('ws_notfound_agent_', '');
+    const context = userContextManager.getContext(userId);
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId && context?.currentFlow === 'workspace_not_found' && context.flowData) {
+      const topic = topicManager.getTopic(agent.id, topicId);
+      const resolvedThreadId = topic?.telegramTopicId;
+
+      // Clear topic workspace so it inherits from agent
+      topicManager.updateTopicWorkspace(agent.id, topicId, undefined);
+      const agentWorkspace = agent.workspace || '(sandbox padrão)';
+      await sendTelegramMessage(chatId,
+        `✅ Usando workspace do agente: \`${agentWorkspace}\``,
+        undefined,
+        resolvedThreadId
+      );
+
+      // Resume paused task
+      const { pausedPrompt, pausedModel, pausedImages } = context.flowData;
+      if (pausedPrompt && pausedModel) {
+        await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, resolvedThreadId);
+        queueManager.enqueue({
+          agentId: agent.id,
+          prompt: pausedPrompt as string,
+          model: pausedModel as 'haiku' | 'sonnet' | 'opus',
+          userId,
+          replyTo: chatId,
+          threadId: resolvedThreadId,
+          images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
+        });
+      }
+
+      userContextManager.clearContext(userId);
+    }
+  }
+  else if (data.startsWith('ws_notfound_sandbox_')) {
+    // Use sandbox (clear topic workspace) and resume paused task
+    const topicId = data.replace('ws_notfound_sandbox_', '');
+    const context = userContextManager.getContext(userId);
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId && context?.currentFlow === 'workspace_not_found' && context.flowData) {
+      const topic = topicManager.getTopic(agent.id, topicId);
+      const resolvedThreadId = topic?.telegramTopicId;
+
+      // Set topic workspace to agent-specific sandbox path
+      const sandboxPath = getAgentSandboxPath(agent.id);
+      topicManager.updateTopicWorkspace(agent.id, topicId, sandboxPath);
+      await sendTelegramMessage(chatId,
+        `✅ Usando sandbox\n📁 \`${sandboxPath}\``,
+        undefined,
+        resolvedThreadId
+      );
+
+      // Resume paused task
+      const { pausedPrompt, pausedModel, pausedImages } = context.flowData;
+      if (pausedPrompt && pausedModel) {
+        await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, resolvedThreadId);
+        queueManager.enqueue({
+          agentId: agent.id,
+          prompt: pausedPrompt as string,
+          model: pausedModel as 'haiku' | 'sonnet' | 'opus',
+          userId,
+          replyTo: chatId,
+          threadId: resolvedThreadId,
+          images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
+        });
+      }
+
+      userContextManager.clearContext(userId);
+    }
+  }
+  else if (data.startsWith('ws_notfound_reconfig_')) {
+    // Show workspace selector UI (keep paused task in context)
+    const topicId = data.replace('ws_notfound_reconfig_', '');
+    const context = userContextManager.getContext(userId);
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId && context?.currentFlow === 'workspace_not_found' && context.flowData) {
+      const topic = topicManager.getTopic(agent.id, topicId);
+      const resolvedThreadId = topic?.telegramTopicId;
+
+      await sendTopicWorkspaceReconfig(chatId, topicId, resolvedThreadId);
+    }
+  }
+  else if (data.startsWith('ws_notfound_cancel_')) {
+    // Cancel paused task
+    const topicId = data.replace('ws_notfound_cancel_', '');
+    const context = userContextManager.getContext(userId);
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId && context?.currentFlow === 'workspace_not_found') {
+      const topic = topicManager.getTopic(agent.id, topicId);
+      const resolvedThreadId = topic?.telegramTopicId;
+
+      await sendTelegramMessage(chatId,
+        '❌ Tarefa cancelada. O prompt não foi processado.',
+        undefined,
+        resolvedThreadId
+      );
+
+      userContextManager.clearContext(userId);
+    }
+  }
+  else if (data.startsWith('ws_reconfig_')) {
+    // Handle workspace reconfiguration selection (from ws_notfound_reconfig_ selector)
+    const payload = data.replace('ws_reconfig_', '');
+    const context = userContextManager.getContext(userId);
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId && context?.currentFlow === 'workspace_not_found' && context.flowData) {
+      // Parse topicId and action from payload: <topicId>_path_<path>, <topicId>_sandbox, <topicId>_custom
+      const sandboxSuffix = '_sandbox';
+      const customSuffix = '_custom';
+      const pathMarker = '_path_';
+
+      if (payload.endsWith(sandboxSuffix)) {
+        const topicId = payload.slice(0, -sandboxSuffix.length);
+        const topic = topicManager.getTopic(agent.id, topicId);
+        const resolvedThreadId = topic?.telegramTopicId;
+        const sandboxPath = getAgentSandboxPath(agent.id);
+
+        topicManager.updateTopicWorkspace(agent.id, topicId, sandboxPath);
+        await sendTelegramMessage(chatId,
+          `✅ Workspace atualizado\n📁 \`${sandboxPath}\``,
+          undefined,
+          resolvedThreadId
+        );
+
+        // Resume paused task
+        const { pausedPrompt, pausedModel, pausedImages } = context.flowData;
+        if (pausedPrompt && pausedModel) {
+          await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, resolvedThreadId);
+          queueManager.enqueue({
+            agentId: agent.id,
+            prompt: pausedPrompt as string,
+            model: pausedModel as 'haiku' | 'sonnet' | 'opus',
+            userId,
+            replyTo: chatId,
+            threadId: resolvedThreadId,
+            images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
+          });
+        }
+        userContextManager.clearContext(userId);
+
+      } else if (payload.endsWith(customSuffix)) {
+        const topicId = payload.slice(0, -customSuffix.length);
+        const topic = topicManager.getTopic(agent.id, topicId);
+        const resolvedThreadId = topic?.telegramTopicId;
+
+        await sendTelegramMessage(chatId,
+          '📁 Envie o novo caminho com /workspace:\n\n' +
+          'Exemplo: `/workspace /Users/lucas/projeto-x`',
+          undefined,
+          resolvedThreadId
+        );
+
+      } else if (payload.includes(pathMarker)) {
+        const markerIdx = payload.indexOf(pathMarker);
+        const topicId = payload.substring(0, markerIdx);
+        const selectedPath = payload.substring(markerIdx + pathMarker.length);
+        const topic = topicManager.getTopic(agent.id, topicId);
+        const resolvedThreadId = topic?.telegramTopicId;
+
+        // Validate path exists
+        let isDirectory = false;
+        try {
+          isDirectory = statSync(selectedPath).isDirectory();
+        } catch {
+          // path does not exist
+        }
+
+        if (!isDirectory) {
+          await sendTelegramMessage(chatId,
+            `❌ Caminho não encontrado: \`${selectedPath}\`\n\n` +
+            'Envie o caminho correto com /workspace:\n' +
+            'Exemplo: `/workspace /Users/lucas/projeto-x`',
+            undefined,
+            resolvedThreadId
+          );
+          return;
+        }
+
+        topicManager.updateTopicWorkspace(agent.id, topicId, selectedPath);
+        persistenceService.addRecentWorkspace(userId, selectedPath);
+        await sendTelegramMessage(chatId,
+          `✅ Workspace atualizado\n📁 \`${selectedPath}\``,
+          undefined,
+          resolvedThreadId
+        );
+
+        // Resume paused task
+        const { pausedPrompt, pausedModel, pausedImages } = context.flowData;
+        if (pausedPrompt && pausedModel) {
+          await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, resolvedThreadId);
+          queueManager.enqueue({
+            agentId: agent.id,
+            prompt: pausedPrompt as string,
+            model: pausedModel as 'haiku' | 'sonnet' | 'opus',
+            userId,
+            replyTo: chatId,
+            threadId: resolvedThreadId,
+            images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
+          });
+        }
+        userContextManager.clearContext(userId);
+      }
+    }
   }
 }
 
