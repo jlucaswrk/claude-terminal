@@ -1946,6 +1946,77 @@ async function showWorkspaceDirectoryBrowser(
 }
 
 /**
+ * Show workspace selector during topic creation (uses topic_ws_ prefixed callbacks).
+ * Separate from showWorkspaceSelector to avoid coupling with workspace_not_found flow.
+ */
+async function showTopicCreateWorkspaceSelector(chatId: number): Promise<void> {
+  const home = process.env.HOME || '/home/user';
+
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+  rows.push([
+    { text: '🏠 Home', callback_data: `topic_wsbase_${home}` },
+    { text: '📂 Desktop', callback_data: `topic_wsbase_${home}/Desktop` },
+  ]);
+  rows.push([
+    { text: '📄 Documents', callback_data: `topic_wsbase_${home}/Documents` },
+    { text: '🧪 Sandbox', callback_data: 'topic_wsnav_sandbox' },
+  ]);
+  rows.push([
+    { text: '✏️ Customizado', callback_data: 'topic_wsnav_custom' },
+  ]);
+
+  await sendTelegramButtons(chatId, '📁 *Selecione o workspace para este tópico:*', rows);
+}
+
+/**
+ * Show directory browser during topic creation (uses topic_wsbase_/topic_wsnav_ callbacks).
+ */
+async function showTopicCreateDirectoryBrowser(
+  chatId: number,
+  basePath: string
+): Promise<void> {
+  let subdirs: string[] = [];
+  try {
+    subdirs = readdirSync(basePath)
+      .filter(name => !name.startsWith('.'))
+      .filter(name => {
+        try { return statSync(join(basePath, name)).isDirectory(); }
+        catch { return false; }
+      })
+      .sort()
+      .slice(0, 6);
+  } catch {
+    // directory not readable
+  }
+
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+  rows.push([
+    { text: '✅ Selecionar esta pasta', callback_data: `topic_wsnav_path_${basePath}` },
+  ]);
+
+  for (let i = 0; i < subdirs.length; i += 2) {
+    const row: Array<{ text: string; callback_data: string }> = [
+      { text: `📁 ${subdirs[i]}`, callback_data: `topic_wsbase_${join(basePath, subdirs[i])}` },
+    ];
+    if (subdirs[i + 1]) {
+      row.push({ text: `📁 ${subdirs[i + 1]}`, callback_data: `topic_wsbase_${join(basePath, subdirs[i + 1])}` });
+    }
+    rows.push(row);
+  }
+
+  const parentPath = dirname(basePath);
+  if (parentPath !== basePath) {
+    rows.push([
+      { text: '⬆️ Voltar', callback_data: `topic_wsbase_${parentPath}` },
+    ]);
+  }
+
+  await sendTelegramButtons(chatId, `📁 *${basePath}*`, rows);
+}
+
+/**
  * Validate topic name
  */
 function validateTopicName(name: string): string | null {
@@ -3679,18 +3750,75 @@ async function handleTelegramCallback(query: any): Promise<void> {
   else if (data === 'topic_create_ws_yes') {
     // User wants to configure workspace during topic creation
     if (userContextManager.isAwaitingTopicWorkspace(userId)) {
-      const context = userContextManager.getContext(userId);
-      const agentId = context?.flowData?.agentId as string | undefined;
-      if (agentId) {
-        // Use 'pending_topic' as topicId placeholder - topic doesn't exist yet
-        await showWorkspaceSelector(chatId, undefined, agentId, 'pending_topic');
-      }
+      await showTopicCreateWorkspaceSelector(chatId);
     }
   }
   else if (data === 'topic_create_ws_skip') {
     // User wants to skip workspace config - create topic with inherited workspace
     if (userContextManager.isAwaitingTopicWorkspace(userId)) {
-      await finishTopicCreation(chatId, userId);
+      try {
+        await finishTopicCreation(chatId, userId);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await sendTelegramMessage(chatId, `❌ Erro ao criar tópico: ${errorMessage}`);
+        userContextManager.clearContext(userId);
+      }
+    }
+  }
+  else if (data.startsWith('topic_wsbase_')) {
+    // Directory browsing during topic creation
+    const basePath = data.replace('topic_wsbase_', '');
+    if (userContextManager.isAwaitingTopicWorkspace(userId)) {
+      await showTopicCreateDirectoryBrowser(chatId, basePath);
+    }
+  }
+  else if (data.startsWith('topic_wsnav_')) {
+    // Workspace selection during topic creation
+    const action = data.replace('topic_wsnav_', '');
+    if (userContextManager.isAwaitingTopicWorkspace(userId)) {
+      try {
+        if (action === 'sandbox') {
+          const context = userContextManager.getContext(userId);
+          const agentId = context?.flowData?.agentId as string;
+          if (!agentId) {
+            await sendTelegramMessage(chatId, '❌ Erro: agente não encontrado. Tente novamente.');
+            userContextManager.clearContext(userId);
+            return;
+          }
+          const sandboxPath = getAgentSandboxPath(agentId);
+          userContextManager.setTopicWorkspace(userId, sandboxPath);
+          await finishTopicCreation(chatId, userId);
+        } else if (action === 'custom') {
+          await sendTelegramMessage(chatId,
+            '📁 Envie o caminho absoluto do workspace:\n\n' +
+            'Exemplo: `/Users/lucas/projeto-x`'
+          );
+        } else if (action.startsWith('path_')) {
+          const selectedPath = action.substring(5);
+          let isDirectory = false;
+          try {
+            isDirectory = statSync(selectedPath).isDirectory();
+          } catch {
+            // path does not exist
+          }
+
+          if (!isDirectory) {
+            await sendTelegramMessage(chatId,
+              `❌ Caminho não encontrado: \`${selectedPath}\`\n\nEnvie um caminho válido ou use os botões abaixo.`
+            );
+            await showTopicCreateWorkspaceSelector(chatId);
+            return;
+          }
+
+          userContextManager.setTopicWorkspace(userId, selectedPath);
+          persistenceService.addRecentWorkspace(userId, selectedPath);
+          await finishTopicCreation(chatId, userId);
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await sendTelegramMessage(chatId, `❌ Erro ao criar tópico: ${errorMessage}`);
+        userContextManager.clearContext(userId);
+      }
     }
   }
   // Workspace management callbacks
