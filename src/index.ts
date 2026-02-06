@@ -2708,8 +2708,9 @@ async function handleTelegramFlowInput(chatId: number, userId: string, text: str
 
     if (!isDirectory) {
       await sendTelegramMessage(chatId,
-        `❌ Caminho não encontrado: \`${path}\`\n\nEnvie um caminho válido ou use os botões acima.`
+        `❌ Caminho não encontrado: \`${path}\`\n\nEnvie um caminho válido ou use os botões abaixo.`
       );
+      await sendTopicWorkspaceQuestion(chatId);
       return;
     }
 

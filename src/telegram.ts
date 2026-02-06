@@ -2249,7 +2249,7 @@ export async function sendTopicWorkspaceQuestion(chatId: number): Promise<void> 
     [
       [
         { text: '✅ Sim', callback_data: 'topic_create_ws_yes' },
-        { text: '⏭️ Pular', callback_data: 'topic_create_ws_skip' },
+        { text: '⏭️ Pular (usar workspace do agente)', callback_data: 'topic_create_ws_skip' },
       ],
     ]
   );
