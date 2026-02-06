@@ -18,22 +18,35 @@ import { existsSync, mkdirSync, rmSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 // Configuration
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-
 // Lazy initialization - bot is only created when needed
 let bot: TelegramBot | null = null;
+let botTokenInUse: string | undefined;
+
+type TestTelegramBot = any;
 
 /**
  * Get or create the Telegram bot instance
  */
 export function getTelegramBot(): TelegramBot | null {
-  if (!TELEGRAM_BOT_TOKEN) {
+  // In tests, allow injecting a mock bot to avoid real network calls.
+  if (process.env.NODE_ENV === 'test') {
+    const injected = (globalThis as any).__TEST_TELEGRAM_BOT__ as TestTelegramBot | undefined;
+    if (injected) return injected as TelegramBot;
+  }
+
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token) {
     console.warn('TELEGRAM_BOT_TOKEN not set - Telegram features disabled');
+    bot = null;
+    botTokenInUse = undefined;
     return null;
   }
 
-  if (!bot) {
-    bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
+  // If token changes between calls (common in tests), recreate bot
+  if (!bot || botTokenInUse !== token) {
+    bot = new TelegramBot(token, { polling: false });
+    botTokenInUse = token;
   }
 
   return bot;
@@ -43,7 +56,8 @@ export function getTelegramBot(): TelegramBot | null {
  * Check if Telegram is configured
  */
 export function isTelegramConfigured(): boolean {
-  return !!TELEGRAM_BOT_TOKEN;
+  if (process.env.NODE_ENV === 'test' && (globalThis as any).__TEST_TELEGRAM_BOT__) return true;
+  return !!process.env.TELEGRAM_BOT_TOKEN;
 }
 
 /**

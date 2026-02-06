@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'bun:test';
-import { extractMessage } from '../index';
+import { describe, it, expect, beforeAll } from 'bun:test';
+
+let extractMessage: (payload: unknown) => any;
+
+beforeAll(async () => {
+  // Import index with a unique specifier to avoid cross-test module cache interference
+  const mod = await import('../index?extract-message-groups');
+  extractMessage = mod.extractMessage;
+});
 
 describe('extractMessage with groups', () => {
   it('should extract groupId from group message', () => {

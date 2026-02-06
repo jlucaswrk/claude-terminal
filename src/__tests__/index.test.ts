@@ -8,6 +8,8 @@ process.env.KAPSO_WEBHOOK_SECRET = 'test-secret';
 process.env.USER_PHONE_NUMBER = '+5581999999999';
 process.env.KAPSO_API_KEY = 'test-api-key';
 process.env.KAPSO_PHONE_NUMBER_ID = 'test-phone-id';
+// Safety: ensure tests never hit the real Telegram API.
+process.env.TELEGRAM_BOT_TOKEN = '';
 
 // Track WhatsApp API calls
 const whatsappCalls: Array<{ to: string; body: any }> = [];
@@ -122,7 +124,7 @@ describe('Webhook Integration Tests', () => {
 
   beforeAll(async () => {
     // Dynamically import AFTER env vars are set
-    const mod = await import('../index');
+    const mod = await import('../index?index-test');
     app = mod.app;
     agentManager = mod.agentManager;
     userContextManager = mod.userContextManager;
@@ -582,7 +584,7 @@ describe('Message Extraction', () => {
   let agentManager: any;
 
   beforeAll(async () => {
-    const mod = await import('../index');
+    const mod = await import('../index?index-test');
     app = mod.app;
     agentManager = mod.agentManager;
   });
@@ -655,7 +657,7 @@ describe('isServiceMessage', () => {
   let isServiceMessage: (message: any) => string | null;
 
   beforeAll(async () => {
-    const mod = await import('../index');
+    const mod = await import('../index?index-test');
     isServiceMessage = mod.isServiceMessage;
   });
 
@@ -776,7 +778,7 @@ describe('handleTelegramMessage - service message filtering', () => {
   const originalLog = console.log;
 
   beforeAll(async () => {
-    const mod = await import('../index');
+    const mod = await import('../index?index-test');
     handleTelegramMessage = mod.handleTelegramMessage;
   });
 

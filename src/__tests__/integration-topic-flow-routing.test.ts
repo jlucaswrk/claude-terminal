@@ -8,7 +8,7 @@
  * - Normal messages when not in flow: routed as prompts
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock, beforeAll } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, afterAll, mock, beforeAll } from 'bun:test';
 import { existsSync, mkdirSync, rmSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 
@@ -23,6 +23,34 @@ process.env.TELEGRAM_BOT_TOKEN = 'test-bot-token-integration';
 
 // Track all Telegram API calls for assertions
 const telegramCalls: Array<{ method: string; args: any[] }> = [];
+
+// Provide a global injected bot so the telegram wrapper never hits the network,
+// even if node-telegram-bot-api has already been imported/cached by other tests.
+(globalThis as any).__TEST_TELEGRAM_BOT__ = {
+  sendMessage: async (chatId: number, text: string, options?: any) => {
+    telegramCalls.push({ method: 'sendMessage', args: [chatId, text, options] });
+    return { message_id: Math.floor(Math.random() * 10000) + 1, chat: { id: chatId } };
+  },
+  getChat: async (chatId: number) => {
+    telegramCalls.push({ method: 'getChat', args: [chatId] });
+    return {
+      id: chatId,
+      type: 'supergroup',
+      title: 'Test Group',
+      is_forum: true,
+    };
+  },
+  sendChatAction: async () => true,
+  editMessageText: async () => true,
+  answerCallbackQuery: async () => true,
+  _request: async (method: string, params: any) => {
+    telegramCalls.push({ method: `_request:${method}`, args: [params] });
+    if (method === 'createForumTopic') {
+      return { message_thread_id: Math.floor(Math.random() * 10000) + 100 };
+    }
+    return {};
+  },
+};
 
 // Mock node-telegram-bot-api BEFORE any imports that use it
 mock.module('node-telegram-bot-api', () => {
@@ -110,7 +138,7 @@ const {
   userContextManager,
   persistenceService,
   topicManager,
-} = await import('../index');
+} = await import('../index?integration-topic-flow-routing');
 
 const CHAT_ID = -1001234599999;
 const TELEGRAM_USER_ID = 9999;
@@ -225,6 +253,10 @@ describe('Integration: Topic Flow via handleTelegramMessage', () => {
   afterEach(() => {
     userContextManager.clearContext(USER_ID);
     telegramCalls.length = 0;
+  });
+
+  afterAll(() => {
+    delete (globalThis as any).__TEST_TELEGRAM_BOT__;
   });
 
   test('/worktree full flow: command → name → workspace → topic created', async () => {

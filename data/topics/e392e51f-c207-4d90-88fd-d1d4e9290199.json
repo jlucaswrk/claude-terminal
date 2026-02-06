@@ -1,0 +1,18 @@
+{
+  "agentId": "e392e51f-c207-4d90-88fd-d1d4e9290199",
+  "topics": [
+    {
+      "id": "b1c8a1cd-f174-4998-818f-7c51e80b3732",
+      "agentId": "e392e51f-c207-4d90-88fd-d1d4e9290199",
+      "telegramTopicId": 4757,
+      "type": "worktree",
+      "name": "feature-auth",
+      "emoji": "🌿",
+      "workspace": "/tmp/test-integration-topic-flow-workspace/subproject",
+      "status": "active",
+      "messageCount": 0,
+      "createdAt": "2026-02-06T10:34:18.263Z",
+      "lastActivity": "2026-02-06T10:34:18.263Z"
+    }
+  ]
+}

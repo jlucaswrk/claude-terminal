@@ -24,6 +24,7 @@ const originalEnv = process.env.TELEGRAM_BOT_TOKEN;
 
 beforeEach(() => {
   process.env.TELEGRAM_BOT_TOKEN = 'test-token';
+  (globalThis as any).__TEST_TELEGRAM_BOT__ = mockBot;
   mockBot.sendChatAction.mockClear();
   mockBot.sendMessage.mockClear();
   mockBot.deleteMessage.mockClear();
@@ -31,6 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.env.TELEGRAM_BOT_TOKEN = originalEnv;
+  delete (globalThis as any).__TEST_TELEGRAM_BOT__;
 });
 
 describe('Typing Indicator', () => {

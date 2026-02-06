@@ -9,6 +9,10 @@ import {
   deleteTelegramMessage,
 } from '../telegram';
 
+// Ensure the full test suite never attempts real Telegram API calls.
+// Other integration tests may set TELEGRAM_BOT_TOKEN; we force-disable it here.
+process.env.TELEGRAM_BOT_TOKEN = '';
+
 describe('Telegram Module', () => {
   describe('isTelegramConfigured', () => {
     test('returns boolean based on TELEGRAM_BOT_TOKEN', () => {

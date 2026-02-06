@@ -20,6 +20,9 @@
     "userId": "tg_integrationtester",
     "mode": "dojo",
     "telegramUsername": "integrationtester",
-    "onboardingComplete": true
+    "onboardingComplete": true,
+    "recentWorkspaces": [
+      "/tmp/test-integration-topic-flow-workspace/subproject"
+    ]
   }
 ]
