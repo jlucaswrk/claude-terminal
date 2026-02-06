@@ -838,7 +838,6 @@ async function handleTelegramMessage(message: any): Promise<void> {
         );
         // Show agents list
         const agents = agentManager.listAgents(userId)
-          .filter(a => a.name !== 'Ronin')
           .map(a => ({
             id: a.id,
             name: a.name,
@@ -852,7 +851,7 @@ async function handleTelegramMessage(message: any): Promise<void> {
       case 'unknown_user':
         await sendTelegramMessage(chatId,
           'Usuario nao encontrado.\n\n' +
-          'Configure o Dojo primeiro pelo WhatsApp.'
+          'Cadastro nao localizado.'
         );
         return;
     }
@@ -1954,7 +1953,6 @@ async function handleTelegramCommand(chatId: number, userId: string, text: strin
     case '/agentes':
     case '/list':
       const agents = agentManager.listAgents(userId)
-        .filter(a => a.name !== 'Ronin') // Exclude Ronin from Telegram list
         .map(a => ({
           id: a.id,
           name: a.name,
@@ -2787,7 +2785,7 @@ async function handleTelegramCallback(query: any): Promise<void> {
 
     // Get user's unlinked agents
     const agents = agentManager.listAgents(userId)
-      .filter(a => a.name !== 'Ronin' && !a.telegramChatId);
+      .filter(a => !a.telegramChatId);
 
     // Case C: No available agents - show message + [criar um] button
     if (agents.length === 0) {
@@ -3102,7 +3100,7 @@ async function handleTelegramCallback(query: any): Promise<void> {
  * Handle Telegram status command
  */
 async function handleTelegramStatus(chatId: number, userId: string): Promise<void> {
-  const agents = agentManager.listAgents(userId).filter(a => a.name !== 'Ronin');
+  const agents = agentManager.listAgents(userId);
 
   await sendTelegramStatusOverview(chatId, agents.map(a => ({
     name: a.name,
@@ -3173,7 +3171,7 @@ async function handleTelegramLinkCommand(chatId: number, userId: string): Promis
 
   // Find user's most recently created agent without a telegram chat ID
   const agents = agentManager.listAgents(userId)
-    .filter(a => a.name !== 'Ronin' && !a.telegramChatId)
+    .filter(a => !a.telegramChatId)
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   // Also check if there's a pending agent link for this user

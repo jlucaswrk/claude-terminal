@@ -1,6 +1,6 @@
 // src/telegram.ts
 /**
- * Telegram Bot API integration for Dojo mode
+ * Telegram Bot API integration
  *
  * Handles:
  * - Bot initialization
@@ -225,30 +225,8 @@ export async function setTelegramWebhook(url: string): Promise<boolean> {
 }
 
 // ============================================
-// UI Components for Dojo Mode
+// UI Components
 // ============================================
-
-/**
- * Send mode selector (for onboarding via Telegram)
- */
-export async function sendTelegramModeSelector(chatId: number): Promise<void> {
-  await sendTelegramButtons(chatId,
-    '*Como voce quer organizar seus agentes?*\n\n' +
-    '*Modo Dojo* (recomendado)\n' +
-    'Agentes organizados no Telegram.\n' +
-    'Cada agente em seu proprio territorio.\n' +
-    'WhatsApp so para consultas rapidas.\n\n' +
-    '*Modo Ronin*\n' +
-    'Voce e seus agentes, tudo no WhatsApp.\n' +
-    'Simples, direto, sem estrutura.',
-    [
-      [
-        { text: 'Dojo (recomendado)', callback_data: 'mode_dojo' },
-        { text: 'Ronin', callback_data: 'mode_ronin' },
-      ],
-    ]
-  );
-}
 
 /**
  * Send agent creation flow - name input
@@ -414,24 +392,11 @@ export async function sendTelegramAgentConfirmation(
 }
 
 /**
- * Send dojo activated message
- */
-export async function sendTelegramDojoActivated(chatId: number, whatsAppRoninInfo: string): Promise<void> {
-  await sendTelegramMessage(chatId,
-    '*Dojo ativado!*\n\n' +
-    '*WhatsApp*: consultas rapidas (read-only)\n' +
-    '*Telegram*: seus agentes organizados\n\n' +
-    'Use /criar para criar seu primeiro agente.\n\n' +
-    `_${whatsAppRoninInfo}_`
-  );
-}
-
-/**
  * Send command list
  */
 export async function sendTelegramCommandList(chatId: number): Promise<void> {
   await sendTelegramMessage(chatId,
-    '*Comandos do Dojo*\n\n' +
+    '*Comandos*\n\n' +
     '/criar - Criar novo agente\n' +
     '/agentes - Listar agentes\n' +
     '/status - Status de todos\n' +

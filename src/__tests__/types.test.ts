@@ -177,20 +177,7 @@ describe('AgentTopicsFile interface', () => {
   });
 });
 
-describe('Agent with groupId and modelMode', () => {
-  it('should have optional groupId field', () => {
-    // Type assertion to verify groupId is a valid key of Agent
-    const groupIdKey: keyof Agent = 'groupId';
-    expect(groupIdKey).toBe('groupId');
-
-    // Test value assignment
-    const agent: Pick<Agent, 'id' | 'groupId'> = {
-      id: 'test-id',
-      groupId: '120363123456789012@g.us',
-    };
-    expect(agent.groupId).toBe('120363123456789012@g.us');
-  });
-
+describe('Agent with modelMode', () => {
   it('should have modelMode field with default selection', () => {
     // Type assertion to verify modelMode is a valid key of Agent
     const modelModeKey: keyof Agent = 'modelMode';

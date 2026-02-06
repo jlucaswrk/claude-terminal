@@ -57,9 +57,7 @@ describe('Integration: 4-Step Group Agent Creation Flow', () => {
     // Save user preferences
     persistenceService.saveUserPreferences({
       userId,
-      mode: 'dojo',
       telegramUsername,
-      onboardingComplete: true,
     });
 
     // Reset mocks
@@ -582,9 +580,7 @@ describe('Integration: Telegram Callback Flow', () => {
     // Save user preferences for test user
     persistenceService.saveUserPreferences({
       userId,
-      mode: 'dojo',
       telegramUsername,
-      onboardingComplete: true,
     });
 
     // Clear tracking arrays

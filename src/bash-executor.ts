@@ -171,7 +171,7 @@ export async function executeCommand(
 }
 
 /**
- * Format bash result for WhatsApp message
+ * Format bash result for message
  */
 export function formatBashResult(result: BashResult): string {
   // Blocked command
@@ -184,7 +184,7 @@ export function formatBashResult(result: BashResult): string {
     ? `${(result.duration / 1000).toFixed(1)}s`
     : `${result.duration}ms`;
 
-  // Truncate output for WhatsApp if needed
+  // Truncate output if needed
   let output = result.output;
   let displayTruncated = result.truncated;
   const extraLines = output.split('\n').length - (DEFAULTS.BASH_TRUNCATE_AT / 50); // rough estimate
