@@ -1583,8 +1583,6 @@ async function processQueuedRalphMessages(
 
   // Process each queued message in FIFO order
   for (const message of queuedMessages) {
-    await sendTelegramMessage(chatId, `📤 Processando mensagem enfileirada...`, undefined, threadId);
-
     // Queue the message through the normal pipeline
     queueManager.enqueue({
       agentId,
