@@ -5,7 +5,7 @@
  * configuring priorities, etc. All state is in-memory (not persisted).
  */
 
-import type { UserContext } from './types';
+import type { UserContext, ModelMode, UserMode } from './types';
 
 /**
  * Flow types supported by the context manager
@@ -42,10 +42,72 @@ export class UserContextManager {
   }
 
   /**
+   * Update the context for a user (alias for setContext, clearer intent)
+   */
+  updateContext(userId: string, context: UserContext): void {
+    this.contexts.set(userId, context);
+  }
+
+  /**
    * Clear the context for a user (after flow completion)
+   * Preserves activeAgentId and pendingPrompt for continuous conversations
    */
   clearContext(userId: string): void {
-    this.contexts.delete(userId);
+    const context = this.contexts.get(userId);
+    if (context) {
+      const { activeAgentId, pendingPrompt } = context;
+      // Only preserve if there's something to preserve
+      if (activeAgentId || pendingPrompt) {
+        this.contexts.set(userId, { userId, activeAgentId, pendingPrompt });
+      } else {
+        this.contexts.delete(userId);
+      }
+    }
+  }
+
+  // ============================================
+  // Active Agent Management (for continuous conversations)
+  // ============================================
+
+  /**
+   * Set the active agent for a user
+   * Used to route subsequent messages without re-prompting for agent selection
+   */
+  setActiveAgent(userId: string, agentId: string): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.activeAgentId = agentId;
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the active agent for a user
+   */
+  getActiveAgent(userId: string): string | undefined {
+    return this.contexts.get(userId)?.activeAgentId;
+  }
+
+  /**
+   * Clear the active agent for a user
+   * Called on explicit user action (switching agents, logout, etc.)
+   */
+  clearActiveAgent(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context) {
+      delete context.activeAgentId;
+      // Clean up if nothing left
+      if (!context.currentFlow && !context.pendingPrompt && !context.lastChoice && !context.bashMode) {
+        this.contexts.delete(userId);
+      } else {
+        this.contexts.set(userId, context);
+      }
+    }
+  }
+
+  /**
+   * Check if user has an active agent
+   */
+  hasActiveAgent(userId: string): boolean {
+    return this.contexts.get(userId)?.activeAgentId !== undefined;
   }
 
   // ============================================
@@ -83,15 +145,19 @@ export class UserContextManager {
 
   // ============================================
   // Create Agent Flow
-  // States: awaiting_name → awaiting_emoji → awaiting_workspace_choice → (awaiting_workspace) → awaiting_confirmation
+  // States: awaiting_name → awaiting_type → awaiting_emoji → awaiting_mode → awaiting_workspace_choice → (awaiting_workspace) → awaiting_model_mode → awaiting_confirmation
   // ============================================
 
   /**
    * Start the create agent flow
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startCreateAgentFlow(userId: string): void {
+    const existingContext = this.contexts.get(userId);
     this.contexts.set(userId, {
       userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
       currentFlow: 'create_agent',
       flowState: 'awaiting_name',
       flowData: {},
@@ -118,7 +184,7 @@ export class UserContextManager {
 
   /**
    * Set the agent emoji in the create flow
-   * Advances state to awaiting_workspace_choice
+   * Advances state to awaiting_mode
    */
   setAgentEmoji(userId: string, emoji: string): void {
     const context = this.contexts.get(userId);
@@ -130,7 +196,7 @@ export class UserContextManager {
       ...context.flowData,
       emoji,
     };
-    context.flowState = 'awaiting_workspace_choice';
+    context.flowState = 'awaiting_mode';
     this.contexts.set(userId, context);
   }
 
@@ -149,7 +215,7 @@ export class UserContextManager {
 
   /**
    * Set the workspace in the create flow
-   * Advances state to awaiting_confirmation
+   * Advances state to awaiting_model_mode
    */
   setAgentWorkspace(userId: string, workspace: string | null): void {
     const context = this.contexts.get(userId);
@@ -161,14 +227,21 @@ export class UserContextManager {
       ...context.flowData,
       workspace: workspace ?? undefined,
     };
-    context.flowState = 'awaiting_confirmation';
+    context.flowState = 'awaiting_model_mode';
     this.contexts.set(userId, context);
   }
 
   /**
    * Get the data collected during create agent flow
    */
-  getCreateAgentData(userId: string): { agentName?: string; agentType?: 'claude' | 'bash'; emoji?: string; workspace?: string } | undefined {
+  getCreateAgentData(userId: string): {
+    agentName?: string;
+    agentType?: 'claude' | 'bash';
+    emoji?: string;
+    agentMode?: 'conversational' | 'ralph';
+    workspace?: string;
+    modelMode?: ModelMode;
+  } | undefined {
     const context = this.contexts.get(userId);
     if (!context || context.currentFlow !== 'create_agent') {
       return undefined;
@@ -177,7 +250,9 @@ export class UserContextManager {
       agentName: context.flowData?.agentName as string | undefined,
       agentType: context.flowData?.agentType as 'claude' | 'bash' | undefined,
       emoji: context.flowData?.emoji as string | undefined,
+      agentMode: context.flowData?.agentMode as 'conversational' | 'ralph' | undefined,
       workspace: context.flowData?.workspace as string | undefined,
+      modelMode: context.flowData?.modelMode as ModelMode | undefined,
     };
   }
 
@@ -214,6 +289,58 @@ export class UserContextManager {
   }
 
   /**
+   * Set agent mode (conversational/ralph) in create flow
+   * Advances state to awaiting_workspace_choice
+   */
+  setAgentMode(userId: string, mode: 'conversational' | 'ralph'): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'create_agent') {
+      throw new Error('Not in create agent flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      agentMode: mode,
+    };
+    context.flowState = 'awaiting_workspace_choice';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if awaiting agent mode selection
+   */
+  isAwaitingAgentMode(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'create_agent' && context?.flowState === 'awaiting_mode';
+  }
+
+  /**
+   * Set model mode in create flow
+   * Advances state to awaiting_confirmation
+   */
+  setAgentModelMode(userId: string, modelMode: ModelMode): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'create_agent') {
+      throw new Error('Not in create agent flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      modelMode,
+    };
+    context.flowState = 'awaiting_confirmation';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if awaiting model mode selection
+   */
+  isAwaitingModelMode(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'create_agent' && context?.flowState === 'awaiting_model_mode';
+  }
+
+  /**
    * Check if we're awaiting confirmation in create flow
    */
   isAwaitingCreateConfirmation(userId: string): boolean {
@@ -228,10 +355,14 @@ export class UserContextManager {
 
   /**
    * Start the edit emoji flow
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startEditEmojiFlow(userId: string, agentId: string): void {
+    const existingContext = this.contexts.get(userId);
     this.contexts.set(userId, {
       userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
       currentFlow: 'edit_emoji',
       flowState: 'awaiting_emoji_text',
       flowData: { agentId },
@@ -260,6 +391,48 @@ export class UserContextManager {
   }
 
   // ============================================
+  // Edit Agent Name Flow
+  // States: awaiting_name
+  // ============================================
+
+  /**
+   * Start the edit agent name flow
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
+   */
+  startEditNameFlow(userId: string, agentId: string): void {
+    const existingContext = this.contexts.get(userId);
+    this.contexts.set(userId, {
+      userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
+      currentFlow: 'edit_name',
+      flowState: 'awaiting_name',
+      flowData: { agentId },
+    });
+  }
+
+  /**
+   * Get the data for edit name flow
+   */
+  getEditNameData(userId: string): { agentId?: string } | undefined {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'edit_name') {
+      return undefined;
+    }
+    return {
+      agentId: context.flowData?.agentId as string | undefined,
+    };
+  }
+
+  /**
+   * Check if we're awaiting name input for edit
+   */
+  isAwaitingEditName(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'edit_name' && context?.flowState === 'awaiting_name';
+  }
+
+  // ============================================
   // Configure Priority Flow
   // States: awaiting_selection (if no agentId) → awaiting_priority
   // ============================================
@@ -267,12 +440,16 @@ export class UserContextManager {
   /**
    * Start the configure priority flow
    * If agentId is provided, skips agent selection step
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startConfigurePriorityFlow(userId: string, agentId?: string): void {
+    const existingContext = this.contexts.get(userId);
     if (agentId) {
       // Pre-selected agent - go directly to priority selection
       this.contexts.set(userId, {
         userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
         currentFlow: 'configure_priority',
         flowState: 'awaiting_selection', // We'll use this state for priority selection too
         flowData: { agentId },
@@ -281,6 +458,8 @@ export class UserContextManager {
       // Need to select agent first
       this.contexts.set(userId, {
         userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
         currentFlow: 'configure_priority',
         flowState: 'awaiting_selection',
         flowData: {},
@@ -343,10 +522,14 @@ export class UserContextManager {
 
   /**
    * Start the configure limit flow
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startConfigureLimitFlow(userId: string): void {
+    const existingContext = this.contexts.get(userId);
     this.contexts.set(userId, {
       userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
       currentFlow: 'configure_limit',
       flowState: 'awaiting_selection',
       flowData: {},
@@ -367,10 +550,14 @@ export class UserContextManager {
 
   /**
    * Start the delete agent flow
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   startDeleteAgentFlow(userId: string, agentId: string): void {
+    const existingContext = this.contexts.get(userId);
     this.contexts.set(userId, {
       userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
       currentFlow: 'delete_agent',
       flowState: 'awaiting_confirmation',
       flowData: { agentId },
@@ -501,14 +688,15 @@ export class UserContextManager {
   /**
    * Complete a flow and clear the context
    * Use after successful flow completion
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
    */
   completeFlow(userId: string): void {
     const context = this.contexts.get(userId);
     if (context) {
-      // Keep pending prompt if it exists
-      const pendingPrompt = context.pendingPrompt;
-      if (pendingPrompt) {
-        this.contexts.set(userId, { userId, pendingPrompt });
+      const { activeAgentId, pendingPrompt } = context;
+      // Preserve activeAgentId and pendingPrompt if they exist
+      if (activeAgentId || pendingPrompt) {
+        this.contexts.set(userId, { userId, activeAgentId, pendingPrompt });
       } else {
         this.contexts.delete(userId);
       }
@@ -643,5 +831,485 @@ export class UserContextManager {
       delete (context as any).failedTranscription;
       this.contexts.set(userId, context);
     }
+  }
+
+  // ============================================
+  // Configure Ralph Flow
+  // States: awaiting_ralph_task → awaiting_ralph_max_iterations → awaiting_confirmation
+  // ============================================
+
+  /**
+   * Start the configure Ralph flow
+   * Begins collecting Ralph loop configuration (task, max iterations)
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
+   */
+  startConfigureRalphFlow(userId: string, agentId: string): void {
+    const existingContext = this.contexts.get(userId);
+    this.contexts.set(userId, {
+      userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
+      currentFlow: 'configure_ralph',
+      flowState: 'awaiting_ralph_task',
+      flowData: { agentId },
+    });
+  }
+
+  /**
+   * Set the Ralph task in the configure flow
+   * Advances state to awaiting_ralph_max_iterations
+   */
+  setRalphTask(userId: string, task: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'configure_ralph') {
+      throw new Error('Not in configure Ralph flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      ralphTask: task,
+    };
+    context.flowState = 'awaiting_ralph_max_iterations';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Set the Ralph max iterations in the configure flow
+   * Advances state to awaiting_confirmation
+   */
+  setRalphMaxIterations(userId: string, maxIterations: number): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'configure_ralph') {
+      throw new Error('Not in configure Ralph flow');
+    }
+
+    if (maxIterations < 1 || maxIterations > 100) {
+      throw new Error('Max iterations must be between 1 and 100');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      ralphMaxIterations: maxIterations,
+    };
+    context.flowState = 'awaiting_confirmation';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the data collected during configure Ralph flow
+   */
+  getRalphConfigData(userId: string): {
+    agentId?: string;
+    ralphTask?: string;
+    ralphMaxIterations?: number;
+    ralphModel?: 'haiku' | 'sonnet' | 'opus';
+  } | undefined {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'configure_ralph') {
+      return undefined;
+    }
+    return {
+      agentId: context.flowData?.agentId as string | undefined,
+      ralphTask: context.flowData?.ralphTask as string | undefined,
+      ralphMaxIterations: context.flowData?.ralphMaxIterations as number | undefined,
+      ralphModel: context.flowData?.ralphModel as 'haiku' | 'sonnet' | 'opus' | undefined,
+    };
+  }
+
+  /**
+   * Check if we're in configure Ralph flow
+   */
+  isInConfigureRalphFlow(userId: string): boolean {
+    return this.contexts.get(userId)?.currentFlow === 'configure_ralph';
+  }
+
+  /**
+   * Check if we're awaiting Ralph task input
+   */
+  isAwaitingRalphTask(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'configure_ralph' && context?.flowState === 'awaiting_ralph_task';
+  }
+
+  /**
+   * Check if we're awaiting Ralph max iterations input
+   */
+  isAwaitingRalphMaxIterations(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'configure_ralph' && context?.flowState === 'awaiting_ralph_max_iterations';
+  }
+
+  /**
+   * Check if we're awaiting Ralph configuration confirmation
+   */
+  isAwaitingRalphConfirmation(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'configure_ralph' && context?.flowState === 'awaiting_confirmation';
+  }
+
+  /**
+   * Set Ralph model selection in configure flow
+   */
+  setRalphModel(userId: string, model: 'haiku' | 'sonnet' | 'opus'): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'configure_ralph') {
+      throw new Error('Not in configure Ralph flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      ralphModel: model,
+    };
+    this.contexts.set(userId, context);
+  }
+
+  // ============================================
+  // Onboarding Flow
+  // States: awaiting_mode_selection → (awaiting_telegram_username for dojo) → complete
+  // ============================================
+
+  /**
+   * Start the onboarding flow for mode selection
+   * Preserves activeAgentId and pendingPrompt for continuous conversation support
+   */
+  startOnboardingFlow(userId: string): void {
+    const existingContext = this.contexts.get(userId);
+    this.contexts.set(userId, {
+      userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
+      currentFlow: 'onboarding',
+      flowState: 'awaiting_mode_selection',
+      flowData: {},
+    });
+  }
+
+  /**
+   * Start prompt flow for Telegram - stores agentId and waits for text
+   * Also sets activeAgentId for continuous conversation support
+   */
+  startPromptFlow(userId: string, agentId: string): void {
+    const existingContext = this.contexts.get(userId) ?? { userId };
+    this.contexts.set(userId, {
+      ...existingContext,
+      userId,
+      activeAgentId: agentId,
+      flowData: { agentId },
+    });
+  }
+
+  /**
+   * Check if user has a pending prompt flow (waiting for text)
+   */
+  hasPendingPromptFlow(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return !!context?.flowData?.agentId && !context?.pendingPrompt;
+  }
+
+  /**
+   * Get the pending agent ID for prompt flow
+   */
+  getPendingAgentId(userId: string): string | undefined {
+    const context = this.contexts.get(userId);
+    return context?.flowData?.agentId as string | undefined;
+  }
+
+  /**
+   * Check if user is awaiting mode selection
+   */
+  isAwaitingModeSelection(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'onboarding' && context?.flowState === 'awaiting_mode_selection';
+  }
+
+  /**
+   * Set the user mode (ronin or dojo)
+   */
+  setUserMode(userId: string, mode: UserMode): void {
+    const context = this.contexts.get(userId);
+    if (!context) return;
+
+    context.flowData = { ...context.flowData, userMode: mode };
+
+    if (mode === 'dojo') {
+      context.flowState = 'awaiting_telegram_username';
+    } else {
+      // Ronin mode - complete onboarding
+      this.contexts.delete(userId);
+    }
+  }
+
+  /**
+   * Check if user is awaiting telegram username
+   */
+  isAwaitingTelegramUsername(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'onboarding' && context?.flowState === 'awaiting_telegram_username';
+  }
+
+  /**
+   * Set telegram username (completes dojo onboarding)
+   */
+  setTelegramUsername(userId: string, username: string): void {
+    const context = this.contexts.get(userId);
+    if (!context) return;
+
+    context.flowData = { ...context.flowData, telegramUsername: username };
+    // Flow data is preserved for the caller to use, then they clear context
+  }
+
+  // ============================================
+  // Topic Creation Flows
+  // States for topic_ralph: awaiting_topic_task → awaiting_topic_iterations → complete
+  // States for topic_worktree/topic_sessao: awaiting_topic_name → complete
+  // ============================================
+
+  /**
+   * Start the Ralph topic creation flow
+   * @param userId - User ID
+   * @param agentId - Agent ID
+   * @param telegramChatId - Telegram chat ID for the flow
+   * @param task - Optional task if provided inline with command
+   */
+  startTopicRalphFlow(userId: string, agentId: string, telegramChatId: number, task?: string): void {
+    const existingContext = this.contexts.get(userId);
+    this.contexts.set(userId, {
+      userId,
+      activeAgentId: existingContext?.activeAgentId,
+      pendingPrompt: existingContext?.pendingPrompt,
+      currentFlow: 'topic_ralph',
+      flowState: task ? 'awaiting_topic_iterations' : 'awaiting_topic_task',
+      flowData: {
+        agentId,
+        telegramChatId,
+        topicTask: task,
+      },
+    });
+  }
+
+  /**
+   * Check if user is in a topic Ralph flow
+   */
+  isInTopicRalphFlow(userId: string): boolean {
+    return this.contexts.get(userId)?.currentFlow === 'topic_ralph';
+  }
+
+  /**
+   * Check if we're awaiting topic task input
+   */
+  isAwaitingTopicTask(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'topic_ralph' && context?.flowState === 'awaiting_topic_task';
+  }
+
+  /**
+   * Set the topic task description
+   */
+  setTopicTask(userId: string, task: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'topic_ralph') {
+      throw new Error('Not in topic Ralph flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      topicTask: task,
+    };
+    context.flowState = 'awaiting_topic_iterations';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if we're awaiting topic max iterations
+   */
+  isAwaitingTopicIterations(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'topic_ralph' && context?.flowState === 'awaiting_topic_iterations';
+  }
+
+  /**
+   * Set the topic max iterations
+   */
+  setTopicMaxIterations(userId: string, maxIterations: number): void {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'topic_ralph') {
+      throw new Error('Not in topic Ralph flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      topicMaxIterations: maxIterations,
+    };
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the topic Ralph flow data
+   */
+  getTopicRalphData(userId: string): {
+    agentId?: string;
+    telegramChatId?: number;
+    topicTask?: string;
+    topicMaxIterations?: number;
+  } | undefined {
+    const context = this.contexts.get(userId);
+    if (!context || context.currentFlow !== 'topic_ralph') {
+      return undefined;
+    }
+    return {
+      agentId: context.flowData?.agentId as string | undefined,
+      telegramChatId: context.flowData?.telegramChatId as number | undefined,
+      topicTask: context.flowData?.topicTask as string | undefined,
+      topicMaxIterations: context.flowData?.topicMaxIterations as number | undefined,
+    };
+  }
+
+  /**
+   * Start the worktree topic creation flow
+   * @param userId - User ID
+   * @param agentId - Agent ID
+   * @param telegramChatId - Telegram chat ID for the flow
+   * @param name - Optional name if provided inline with command
+   */
+  startTopicWorktreeFlow(userId: string, agentId: string, telegramChatId: number, name?: string): void {
+    const existingContext = this.contexts.get(userId);
+
+    // If name is provided, flow completes immediately (no state needed)
+    if (name) {
+      this.contexts.set(userId, {
+        userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
+        currentFlow: 'topic_worktree',
+        flowState: undefined,
+        flowData: {
+          agentId,
+          telegramChatId,
+          topicName: name,
+        },
+      });
+    } else {
+      this.contexts.set(userId, {
+        userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
+        currentFlow: 'topic_worktree',
+        flowState: 'awaiting_topic_name',
+        flowData: {
+          agentId,
+          telegramChatId,
+        },
+      });
+    }
+  }
+
+  /**
+   * Check if user is in a topic worktree flow
+   */
+  isInTopicWorktreeFlow(userId: string): boolean {
+    return this.contexts.get(userId)?.currentFlow === 'topic_worktree';
+  }
+
+  /**
+   * Start the session topic creation flow
+   * @param userId - User ID
+   * @param agentId - Agent ID
+   * @param telegramChatId - Telegram chat ID for the flow
+   * @param name - Optional name if provided inline with command
+   */
+  startTopicSessaoFlow(userId: string, agentId: string, telegramChatId: number, name?: string): void {
+    const existingContext = this.contexts.get(userId);
+
+    // If name is provided, flow completes immediately (no state needed)
+    if (name) {
+      this.contexts.set(userId, {
+        userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
+        currentFlow: 'topic_sessao',
+        flowState: undefined,
+        flowData: {
+          agentId,
+          telegramChatId,
+          topicName: name,
+        },
+      });
+    } else {
+      this.contexts.set(userId, {
+        userId,
+        activeAgentId: existingContext?.activeAgentId,
+        pendingPrompt: existingContext?.pendingPrompt,
+        currentFlow: 'topic_sessao',
+        flowState: 'awaiting_topic_name',
+        flowData: {
+          agentId,
+          telegramChatId,
+        },
+      });
+    }
+  }
+
+  /**
+   * Check if user is in a topic session flow
+   */
+  isInTopicSessaoFlow(userId: string): boolean {
+    return this.contexts.get(userId)?.currentFlow === 'topic_sessao';
+  }
+
+  /**
+   * Check if we're awaiting topic name input (for worktree or sessao)
+   */
+  isAwaitingTopicName(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return (context?.currentFlow === 'topic_worktree' || context?.currentFlow === 'topic_sessao')
+      && context?.flowState === 'awaiting_topic_name';
+  }
+
+  /**
+   * Set the topic name
+   */
+  setTopicName(userId: string, name: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || (context.currentFlow !== 'topic_worktree' && context.currentFlow !== 'topic_sessao')) {
+      throw new Error('Not in topic creation flow');
+    }
+
+    context.flowData = {
+      ...context.flowData,
+      topicName: name,
+    };
+    context.flowState = undefined; // Flow complete, ready to create
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the topic creation flow data (for worktree or sessao)
+   */
+  getTopicCreationData(userId: string): {
+    agentId?: string;
+    telegramChatId?: number;
+    topicName?: string;
+    flowType?: 'topic_worktree' | 'topic_sessao';
+  } | undefined {
+    const context = this.contexts.get(userId);
+    if (!context || (context.currentFlow !== 'topic_worktree' && context.currentFlow !== 'topic_sessao')) {
+      return undefined;
+    }
+    return {
+      agentId: context.flowData?.agentId as string | undefined,
+      telegramChatId: context.flowData?.telegramChatId as number | undefined,
+      topicName: context.flowData?.topicName as string | undefined,
+      flowType: context.currentFlow,
+    };
+  }
+
+  /**
+   * Check if user is in any topic creation flow
+   */
+  isInTopicFlow(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return context?.currentFlow === 'topic_ralph'
+      || context?.currentFlow === 'topic_worktree'
+      || context?.currentFlow === 'topic_sessao';
   }
 }

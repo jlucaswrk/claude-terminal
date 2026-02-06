@@ -10,6 +10,8 @@ const STATUS_EMOJI: Record<Agent['status'], string> = {
   idle: '⚪',
   processing: '🔵',
   error: '🔴',
+  'ralph-loop': '🔄',
+  'ralph-paused': '⏸️',
 };
 
 // Output status emojis
@@ -25,6 +27,21 @@ const PRIORITY_LABEL: Record<Agent['priority'], string> = {
   medium: 'Média',
   low: 'Baixa',
 };
+
+/**
+ * Determine if a recipient is a group or individual
+ * Group IDs end with @g.us (e.g., 120363123456789012@g.us)
+ */
+function isGroupId(recipient: string): boolean {
+  return recipient.endsWith('@g.us');
+}
+
+/**
+ * Get recipient type for WhatsApp API
+ */
+function getRecipientType(recipient: string): 'group' | 'individual' {
+  return isGroupId(recipient) ? 'group' : 'individual';
+}
 
 /**
  * Formats a timestamp as relative time (e.g., "agora", "2min", "1h", "3d")
@@ -68,7 +85,7 @@ export async function sendWhatsAppImage(to: string, mediaId: string, caption?: s
       },
       body: JSON.stringify({
         messaging_product: 'whatsapp',
-        recipient_type: 'individual',
+        recipient_type: getRecipientType(to),
         to,
         type: 'image',
         image: {
@@ -95,7 +112,7 @@ export async function sendWhatsAppDocument(to: string, mediaId: string, filename
       },
       body: JSON.stringify({
         messaging_product: 'whatsapp',
-        recipient_type: 'individual',
+        recipient_type: getRecipientType(to),
         to,
         type: 'document',
         document: {
@@ -121,7 +138,7 @@ export async function sendWhatsAppMedia(
 ): Promise<void> {
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: mediaType,
   };
@@ -185,7 +202,7 @@ export async function sendCommandsList(to: string): Promise<void> {
       },
       body: JSON.stringify({
         messaging_product: 'whatsapp',
-        recipient_type: 'individual',
+        recipient_type: getRecipientType(to),
         to,
         type: 'interactive',
         interactive: {
@@ -236,7 +253,7 @@ export async function sendCommandsList(to: string): Promise<void> {
 export async function sendModelSelector(to: string, messageId?: string): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -310,7 +327,7 @@ export async function sendContinueWithLastChoice(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -373,7 +390,7 @@ export async function sendAgentSelector(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -439,7 +456,7 @@ export async function sendModelSelectorList(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -491,7 +508,7 @@ async function sendChunk(to: string, text: string): Promise<void> {
       },
       body: JSON.stringify({
         messaging_product: 'whatsapp',
-        recipient_type: 'individual',
+        recipient_type: getRecipientType(to),
         to,
         type: 'text',
         text: { body: text },
@@ -545,6 +562,12 @@ function truncate(text: string, maxLength: number): string {
 /**
  * Sends an interactive list of agents with management options
  */
+// Ralph loop status emoji
+const RALPH_STATUS_EMOJI: Record<string, string> = {
+  'ralph-loop': '🔄',
+  'ralph-paused': '⏸️',
+};
+
 export async function sendAgentsList(
   to: string,
   agents: Agent[],
@@ -557,10 +580,15 @@ export async function sendAgentsList(
   const maxAgents = Math.min(agents.length, 7);
   const agentRows = agents.slice(0, maxAgents).map((agent) => {
     const agentEmoji = agent.emoji || (agent.type === 'bash' ? '🖥️' : '🤖');
-    const statusEmoji = STATUS_EMOJI[agent.status];
+    const statusEmoji = RALPH_STATUS_EMOJI[agent.status] || STATUS_EMOJI[agent.status] || '⚪';
     const time = formatTimestamp(agent.lastActivity);
-    // Show last action (statusDetails) instead of title
-    const lastAction = agent.statusDetails || 'Aguardando prompt';
+
+    // Show Ralph loop status if in Ralph mode
+    let lastAction = agent.statusDetails || 'Aguardando prompt';
+    if (agent.status === 'ralph-loop' || agent.status === 'ralph-paused') {
+      const loopStatus = agent.status === 'ralph-loop' ? 'Loop ativo' : 'Loop pausado';
+      lastAction = `${loopStatus} - ${lastAction}`;
+    }
 
     return {
       id: `agent_${agent.id}`,
@@ -613,7 +641,7 @@ export async function sendAgentsList(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -659,63 +687,102 @@ export async function sendAgentMenu(
   agent: Agent,
   messageId?: string
 ): Promise<void> {
-  const statusEmoji = STATUS_EMOJI[agent.status];
+  const statusEmoji = STATUS_EMOJI[agent.status] || '⚪';
   const agentEmoji = agent.emoji || '🤖';
   const time = formatTimestamp(agent.lastActivity);
   const lastAction = agent.statusDetails || 'Aguardando prompt';
 
+  // Check if agent is in Ralph mode
+  const isInRalphLoop = agent.status === 'ralph-loop' || agent.status === 'ralph-paused';
+  const modeLabel = agent.mode === 'ralph' ? '🔄 Ralph' : '💬 Conversacional';
+
+  // Build menu rows based on agent state
+  const rows: Array<{ id: string; title: string; description: string }> = [];
+
+  if (isInRalphLoop) {
+    // Ralph loop is active - show loop controls
+    if (agent.status === 'ralph-loop') {
+      rows.push({
+        id: `agentmenu_pause_loop_${agent.id}`,
+        title: '⏸️ Pausar Loop',
+        description: 'Pausar execução do loop',
+      });
+    } else if (agent.status === 'ralph-paused') {
+      rows.push({
+        id: `agentmenu_resume_loop_${agent.id}`,
+        title: '▶️ Retomar Loop',
+        description: 'Continuar execução do loop',
+      });
+    }
+    rows.push({
+      id: `agentmenu_cancel_loop_${agent.id}`,
+      title: '⏹️ Cancelar Loop',
+      description: 'Parar loop permanentemente',
+    });
+  } else {
+    // Normal state - show prompt option
+    rows.push({
+      id: `agentmenu_prompt_${agent.id}`,
+      title: '💬 Enviar prompt',
+      description: 'Enviar nova mensagem para este agente',
+    });
+  }
+
+  // Common actions
+  rows.push(
+    {
+      id: `agentmenu_mode_${agent.id}`,
+      title: '🔧 Alterar modo',
+      description: `Atual: ${modeLabel}`,
+    },
+    {
+      id: `agentmenu_history_${agent.id}`,
+      title: '📋 Ver histórico',
+      description: `Últimas ${agent.outputs.length} interações`,
+    },
+    {
+      id: `agentmenu_emoji_${agent.id}`,
+      title: '🎨 Alterar emoji',
+      description: `Atual: ${agentEmoji}`,
+    },
+    {
+      id: `agentmenu_priority_${agent.id}`,
+      title: '⚙️ Configurar prioridade',
+      description: `Atual: ${PRIORITY_LABEL[agent.priority]}`,
+    },
+    {
+      id: `agentmenu_reset_${agent.id}`,
+      title: '🔄 Resetar agente',
+      description: 'Limpar contexto da conversa',
+    },
+    {
+      id: `agentmenu_delete_${agent.id}`,
+      title: '🗑️ Deletar agente',
+      description: 'Remover permanentemente',
+    },
+    {
+      id: 'agentmenu_back',
+      title: '⬅️ Voltar',
+      description: 'Voltar para lista de agentes',
+    }
+  );
+
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
       type: 'list',
       body: {
-        text: `${agentEmoji} *${agent.name}*\n${statusEmoji} ${lastAction}\nStatus: ${agent.status} - ${time}\nPrioridade: ${PRIORITY_LABEL[agent.priority]}`,
+        text: `${agentEmoji} *${agent.name}*\n${statusEmoji} ${lastAction}\nStatus: ${agent.status} - ${time}\nModo: ${modeLabel}\nPrioridade: ${PRIORITY_LABEL[agent.priority]}`,
       },
       action: {
         button: 'Ações',
         sections: [
           {
             title: 'Ações do Agente',
-            rows: [
-              {
-                id: `agentmenu_prompt_${agent.id}`,
-                title: '💬 Enviar prompt',
-                description: 'Enviar nova mensagem para este agente',
-              },
-              {
-                id: `agentmenu_history_${agent.id}`,
-                title: '📋 Ver histórico',
-                description: `Últimas ${agent.outputs.length} interações`,
-              },
-              {
-                id: `agentmenu_emoji_${agent.id}`,
-                title: '🎨 Alterar emoji',
-                description: `Atual: ${agentEmoji}`,
-              },
-              {
-                id: `agentmenu_priority_${agent.id}`,
-                title: '⚙️ Configurar prioridade',
-                description: `Atual: ${PRIORITY_LABEL[agent.priority]}`,
-              },
-              {
-                id: `agentmenu_reset_${agent.id}`,
-                title: '🔄 Resetar agente',
-                description: 'Limpar contexto da conversa',
-              },
-              {
-                id: `agentmenu_delete_${agent.id}`,
-                title: '🗑️ Deletar agente',
-                description: 'Remover permanentemente',
-              },
-              {
-                id: 'agentmenu_back',
-                title: '⬅️ Voltar',
-                description: 'Voltar para lista de agentes',
-              },
-            ],
+            rows,
           },
         ],
       },
@@ -769,7 +836,7 @@ export async function sendHistoryList(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -831,7 +898,7 @@ export async function sendErrorWithActions(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -917,7 +984,7 @@ export async function sendConfigureLimitMenu(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -981,7 +1048,7 @@ export async function sendConfigurePriorityMenu(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1033,7 +1100,7 @@ export async function sendConfirmation(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1080,7 +1147,7 @@ export async function sendConfirmation(
 export async function sendMigrationOptions(to: string): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1144,7 +1211,7 @@ export async function sendButtons(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1216,7 +1283,7 @@ export async function sendAgentSelectionForReset(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1288,7 +1355,7 @@ export async function sendAgentSelectionForDelete(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1357,7 +1424,7 @@ export async function sendEmojiSelector(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1417,7 +1484,7 @@ export async function sendWorkspaceSelector(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1473,7 +1540,7 @@ export async function sendOutputActions(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1552,7 +1619,7 @@ export async function sendAgentTypeSelector(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1605,7 +1672,7 @@ export async function sendTranscriptionError(
 ): Promise<void> {
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1659,7 +1726,7 @@ export async function sendBashModeStatus(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    recipient_type: 'individual',
+    recipient_type: getRecipientType(to),
     to,
     type: 'interactive',
     interactive: {
@@ -1700,4 +1767,839 @@ export async function sendBashModeStatus(
   if (!response.ok) {
     console.error('WhatsApp send error:', await response.text());
   }
+}
+
+// =============================================================================
+// Ralph Mode UI Functions
+// =============================================================================
+
+/**
+ * Sends mode selector buttons for an agent (Conversational vs Ralph Loop)
+ */
+export async function sendModeSelector(
+  to: string,
+  agentName: string,
+  messageId?: string
+): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: getRecipientType(to),
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: `🔧 Modo de execução para *${agentName}*:\n\n• *Conversacional*: Responde a cada prompt individualmente\n• *Ralph Loop*: Executa tarefas autonomamente em loop`,
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: `mode_conversational_${Date.now()}`,
+              title: 'Conversacional',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: `mode_ralph_${Date.now()}`,
+              title: 'Ralph Loop',
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends max iterations selector for Ralph configuration
+ */
+export async function sendRalphIterationsSelector(
+  to: string,
+  messageId?: string
+): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: getRecipientType(to),
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: '🔄 *Configurar Ralph Loop*\n\nQuantas iterações no máximo?\n\n_O agente pode terminar antes se completar a tarefa._',
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: 'ralph_iterations_20',
+              title: '20',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'ralph_iterations_50',
+              title: '50',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'ralph_iterations_100',
+              title: '100',
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends the complete Ralph configuration flow:
+ * Shows the task being configured plus the 20/50/100 iteration buttons
+ */
+export async function sendRalphConfigFlow(
+  to: string,
+  task: string,
+  messageId?: string
+): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: getRecipientType(to),
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: `🔄 *Configurar Ralph Loop*\n\n📝 *Tarefa:*\n${truncate(task, 300)}\n\nQuantas iterações no máximo?\n\n_O agente pode terminar antes se completar a tarefa._`,
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: 'ralph_iterations_20',
+              title: '20',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'ralph_iterations_50',
+              title: '50',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'ralph_iterations_100',
+              title: '100',
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends Ralph loop progress notification
+ */
+export async function sendLoopProgress(
+  to: string,
+  agentName: string,
+  iteration: number,
+  maxIterations: number,
+  action: string,
+  model: 'haiku' | 'sonnet' | 'opus'
+): Promise<void> {
+  const progress = Math.round((iteration / maxIterations) * 100);
+  const progressBar = generateProgressBar(progress);
+
+  const text = `🔄 *${agentName}* - Ralph Loop\n\n` +
+    `${progressBar} ${progress}% ${iteration}/${maxIterations}\n\n` +
+    `${truncate(action, 200)}`;
+
+  await sendWhatsApp(to, text);
+}
+
+/**
+ * Sends Ralph loop completion notification with summary
+ */
+export async function sendLoopComplete(
+  to: string,
+  agentName: string,
+  iterationsUsed: number,
+  maxIterations: number,
+  summary: string,
+  messageId?: string
+): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: getRecipientType(to),
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: `✅ *${agentName}* - Loop Completo!\n\n` +
+          `Iterações: ${iterationsUsed}/${maxIterations}\n\n` +
+          `*Resumo:*\n${truncate(summary, 500)}`,
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: `ralph_details_${Date.now()}`,
+              title: 'Ver detalhes',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: `ralph_restart_${Date.now()}`,
+              title: 'Reiniciar',
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends Ralph loop blocked/needs input notification
+ * Note: Blocked loops cannot be resumed - they must be restarted or cancelled
+ */
+export async function sendLoopBlocked(
+  to: string,
+  agentName: string,
+  iteration: number,
+  maxIterations: number,
+  reason: string,
+  messageId?: string
+): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: getRecipientType(to),
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: `⚠️ *${agentName}* - Loop Bloqueado\n\n` +
+          `Iteração: ${iteration}/${maxIterations}\n\n` +
+          `*Motivo:*\n${truncate(reason, 300)}\n\n` +
+          `O loop atingiu o limite sem completar a tarefa.`,
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: `ralph_restart_${Date.now()}`,
+              title: 'Reconfigurar',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: `ralph_dismiss_${Date.now()}`,
+              title: 'OK',
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends Ralph loop error notification
+ */
+export async function sendLoopError(
+  to: string,
+  agentName: string,
+  iteration: number,
+  maxIterations: number,
+  error: string,
+  messageId?: string
+): Promise<void> {
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: getRecipientType(to),
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: `❌ *${agentName}* - Erro no Loop\n\n` +
+          `Iteração: ${iteration}/${maxIterations}\n\n` +
+          `*Erro:*\n${truncate(error, 300)}`,
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: `ralph_retry_${Date.now()}`,
+              title: 'Tentar novamente',
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: `ralph_cancel_${Date.now()}`,
+              title: 'Cancelar',
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Sends Ralph loop pause/resume controls
+ */
+export async function sendLoopControls(
+  to: string,
+  agentName: string,
+  iteration: number,
+  maxIterations: number,
+  isPaused: boolean,
+  messageId?: string
+): Promise<void> {
+  const status = isPaused ? '⏸️ Pausado' : '▶️ Executando';
+  const action = isPaused ? 'Retomar' : 'Pausar';
+  const actionId = isPaused ? 'ralph_resume' : 'ralph_pause';
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    recipient_type: getRecipientType(to),
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: {
+        text: `🔄 *${agentName}* - Ralph Loop\n\n` +
+          `Status: ${status}\n` +
+          `Iteração: ${iteration}/${maxIterations}`,
+      },
+      action: {
+        buttons: [
+          {
+            type: 'reply',
+            reply: {
+              id: `${actionId}_${Date.now()}`,
+              title: action,
+            },
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: `ralph_cancel_${Date.now()}`,
+              title: 'Cancelar',
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  if (messageId) {
+    body.context = { message_id: messageId };
+  }
+
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Generates a text-based progress bar
+ */
+function generateProgressBar(percent: number): string {
+  const filled = Math.round(percent / 10);
+  const empty = 10 - filled;
+  return '▓'.repeat(filled) + '░'.repeat(empty) + ` ${percent}%`;
+}
+
+// =============================================================================
+// WhatsApp Groups API Functions
+// =============================================================================
+
+/**
+ * Create a new WhatsApp group and add the user as participant
+ * Uses the WhatsApp Groups API (available since October 2025)
+ *
+ * @param name - Group name (will be prefixed with emoji)
+ * @param description - Group description with workspace and type info
+ * @param userPhone - Phone number to add as participant
+ * @returns Group ID (format: 120363...@g.us)
+ */
+export async function createWhatsAppGroup(
+  name: string,
+  description: string,
+  userPhone: string
+): Promise<string> {
+  // Create the group
+  const createResponse = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/groups`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subject: name,
+        description,
+      }),
+    }
+  );
+
+  if (!createResponse.ok) {
+    const error = await createResponse.text();
+    console.error('WhatsApp group creation error:', error);
+    throw new Error(`Failed to create WhatsApp group: ${error}`);
+  }
+
+  const { id: groupId } = (await createResponse.json()) as { id: string };
+
+  // Add user to the group
+  const addResponse = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/groups/${groupId}/participants`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        participants: [userPhone.replace('+', '')],
+      }),
+    }
+  );
+
+  if (!addResponse.ok) {
+    console.error('Failed to add participant to group:', await addResponse.text());
+    // Group was created, return ID anyway - user can be added manually
+  }
+
+  return groupId;
+}
+
+/**
+ * Delete a WhatsApp group
+ *
+ * @param groupId - Group ID to delete
+ */
+export async function deleteWhatsAppGroup(groupId: string): Promise<void> {
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/groups/${groupId}`,
+    {
+      method: 'DELETE',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+      },
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    console.error('WhatsApp group deletion error:', error);
+    throw new Error(`Failed to delete WhatsApp group: ${error}`);
+  }
+}
+
+// =============================================================================
+// Groups Flow UI Functions
+// =============================================================================
+
+/**
+ * Send agent mode selector (Conversational vs Ralph)
+ */
+export async function sendAgentModeSelector(to: string): Promise<void> {
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: getRecipientType(to),
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: {
+            text: `*Tipo do agente (imutável)*
+
+💬 *Conversacional*
+Responde a cada mensagem individualmente.
+Você envia prompt → agente responde → aguarda.
+
+🔄 *Ralph Loop*
+Executa tarefas autonomamente em loop.
+Você define a tarefa → agente trabalha sozinho
+até completar ou atingir limite de iterações.`,
+          },
+          action: {
+            buttons: [
+              { type: 'reply', reply: { id: 'mode_conversational', title: '💬 Conversacional' } },
+              { type: 'reply', reply: { id: 'mode_ralph', title: '🔄 Ralph Loop' } },
+            ],
+          },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Send model mode selector
+ */
+export async function sendModelModeSelector(to: string): Promise<void> {
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: getRecipientType(to),
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'list',
+          body: {
+            text: `*Modo de modelo*
+
+Como o agente deve escolher o modelo Claude?
+
+🔄 *Seleção* (padrão)
+Pergunta qual modelo usar a cada prompt.
+
+⚡ *Modelo fixo*
+Executa direto com o modelo escolhido.
+
+💡 Use !haiku, !sonnet ou !opus no início
+da mensagem para usar outro modelo pontualmente.`,
+          },
+          action: {
+            button: 'Escolher modo',
+            sections: [
+              {
+                title: 'Modo de modelo',
+                rows: [
+                  { id: 'model_mode_selection', title: '🔄 Seleção', description: 'Pergunta sempre' },
+                  { id: 'model_mode_haiku', title: '⚡ Haiku fixo', description: 'Rápido e barato' },
+                  { id: 'model_mode_sonnet', title: '🎭 Sonnet fixo', description: 'Equilibrado' },
+                  { id: 'model_mode_opus', title: '🎼 Opus fixo', description: 'Mais capaz' },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Send delete group choice
+ */
+export async function sendDeleteGroupChoice(to: string, agentName: string): Promise<void> {
+  const response = await fetch(
+    `https://api.kapso.ai/meta/whatsapp/v20.0/${KAPSO_PHONE_NUMBER_ID}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'X-API-Key': KAPSO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: getRecipientType(to),
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: {
+            text: `⚠️ *Deletar agente "${agentName}"?*
+
+O que fazer com o grupo?`,
+          },
+          action: {
+            buttons: [
+              { type: 'reply', reply: { id: 'delete_with_group', title: '🗑️ Deletar grupo' } },
+              { type: 'reply', reply: { id: 'delete_keep_group', title: '📁 Manter grupo' } },
+              { type: 'reply', reply: { id: 'delete_cancel', title: '❌ Cancelar' } },
+            ],
+          },
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    console.error('WhatsApp send error:', await response.text());
+  }
+}
+
+/**
+ * Send message rejecting prompt on main number
+ */
+export async function sendRejectPrompt(to: string): Promise<void> {
+  await sendWhatsApp(to, `⚠️ *Prompts não são aceitos aqui.*
+
+Use o grupo do agente para conversar.
+Digite / para ver seus agentes.`);
+}
+
+/**
+ * Send message for unlinked group
+ */
+export async function sendUnlinkedGroupMessage(to: string): Promise<void> {
+  await sendWhatsApp(to, `⚠️ *Grupo não vinculado a nenhum agente.*
+
+Este grupo não está associado a nenhum agente Claude.`);
+}
+
+// =============================================================================
+// Onboarding UI Functions (Ronin/Dojo Mode Selection)
+// =============================================================================
+
+/**
+ * Send mode selector for onboarding (Ronin vs Dojo)
+ */
+export async function sendUserModeSelector(to: string): Promise<void> {
+  await sendButtons(to,
+    `*Como voce quer organizar seus agentes?*
+
+*Modo Dojo* (recomendado)
+Agentes organizados no Telegram.
+Cada agente em seu proprio territorio.
+WhatsApp so para consultas rapidas.
+
+*Modo Ronin*
+Voce e seus agentes, tudo no WhatsApp.
+Simples, direto, sem estrutura.`,
+    [
+      { id: 'usermode_dojo', title: 'Dojo' },
+      { id: 'usermode_ronin', title: 'Ronin' },
+    ]
+  );
+}
+
+/**
+ * Send telegram username prompt
+ */
+export async function sendTelegramUsernamePrompt(to: string): Promise<void> {
+  await sendWhatsApp(to,
+    `*Configurar Dojo*
+
+Qual seu username do Telegram? (sem @)
+
+Exemplo: se voce e @lucas, digite apenas: lucas`
+  );
+}
+
+/**
+ * Send dojo activation confirmation
+ */
+export async function sendDojoActivated(to: string, telegramBotUsername: string): Promise<void> {
+  await sendWhatsApp(to,
+    `*Dojo ativado!*
+
+*WhatsApp*: consultas rapidas com o Ronin
+*Telegram*: seus agentes organizados
+
+Abra o Telegram e inicie conversa com @${telegramBotUsername}
+
+_Dica: O Ronin aqui e read-only e responde curto._`
+  );
+}
+
+/**
+ * Send ronin mode confirmation
+ */
+export async function sendRoninActivated(to: string): Promise<void> {
+  await sendWhatsApp(to,
+    `*Modo Ronin ativado!*
+
+Todos os seus agentes ficam aqui no WhatsApp.
+Use / para criar e gerenciar agentes.`
+  );
+}
+
+/**
+ * Send ronin response (concise, for Dojo mode WhatsApp)
+ */
+export async function sendRoninResponse(to: string, response: string): Promise<void> {
+  // Ronin responses are always short and simple
+  await sendWhatsApp(to, response);
+}
+
+/**
+ * Send ronin rejection (when user tries to do something Ronin can't)
+ */
+export async function sendRoninRejection(to: string, action: string): Promise<void> {
+  await sendWhatsApp(to,
+    `Nao posso ${action} - sou read-only.
+Use o Dojo no Telegram para isso.`
+  );
 }

@@ -1,0 +1,29 @@
+{
+  "agentId": "a9e7750b-60bc-4500-92b2-d3d01c72ad9d",
+  "topics": [
+    {
+      "id": "2517c89a-22e6-475a-ba9a-0f12dcd5a073",
+      "agentId": "a9e7750b-60bc-4500-92b2-d3d01c72ad9d",
+      "telegramTopicId": 156,
+      "type": "worktree",
+      "name": "Tópico #156",
+      "emoji": "🌿",
+      "status": "active",
+      "messageCount": 0,
+      "createdAt": "2026-02-04T21:09:15.495Z",
+      "lastActivity": "2026-02-04T21:09:15.495Z"
+    },
+    {
+      "id": "b6fc29f5-1adc-4092-b795-4268192f2ba8",
+      "agentId": "a9e7750b-60bc-4500-92b2-d3d01c72ad9d",
+      "telegramTopicId": 183,
+      "type": "session",
+      "name": "Tópico #183",
+      "emoji": "💬",
+      "status": "active",
+      "messageCount": 0,
+      "createdAt": "2026-02-04T21:09:45.052Z",
+      "lastActivity": "2026-02-04T21:09:45.052Z"
+    }
+  ]
+}

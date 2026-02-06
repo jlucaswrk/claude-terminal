@@ -1,0 +1,19 @@
+[
+  {
+    "userId": "558197969570",
+    "mode": "dojo",
+    "telegramUsername": "jlucaswrk",
+    "onboardingComplete": true,
+    "telegramChatId": 6187428254,
+    "orphanedTelegramGroups": [
+      6187428254,
+      -1001234567890
+    ]
+  },
+  {
+    "userId": "+5581999999999",
+    "mode": "dojo",
+    "telegramUsername": "lucas",
+    "onboardingComplete": true
+  }
+]

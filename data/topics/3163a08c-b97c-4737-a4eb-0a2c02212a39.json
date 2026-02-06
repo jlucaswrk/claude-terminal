@@ -1,0 +1,53 @@
+{
+  "agentId": "3163a08c-b97c-4737-a4eb-0a2c02212a39",
+  "topics": [
+    {
+      "id": "01642a3d-fe62-4745-9fdd-f3bdb6783e7e",
+      "agentId": "3163a08c-b97c-4737-a4eb-0a2c02212a39",
+      "telegramTopicId": 4,
+      "type": "ralph",
+      "name": "Tópico #4",
+      "emoji": "🔄",
+      "status": "active",
+      "messageCount": 0,
+      "createdAt": "2026-02-05T15:15:47.852Z",
+      "lastActivity": "2026-02-05T15:15:47.852Z"
+    },
+    {
+      "id": "66fcab21-af13-4298-b529-04f056c2df03",
+      "agentId": "3163a08c-b97c-4737-a4eb-0a2c02212a39",
+      "telegramTopicId": 58,
+      "type": "session",
+      "name": "Tópico #58",
+      "emoji": "💬",
+      "status": "active",
+      "messageCount": 0,
+      "createdAt": "2026-02-05T16:11:28.558Z",
+      "lastActivity": "2026-02-05T16:11:28.558Z"
+    },
+    {
+      "id": "47724e7c-d7d6-459c-8cdf-361ffe3e85a5",
+      "agentId": "3163a08c-b97c-4737-a4eb-0a2c02212a39",
+      "telegramTopicId": 208,
+      "type": "ralph",
+      "name": "Tópico #208",
+      "emoji": "🔄",
+      "status": "active",
+      "messageCount": 0,
+      "createdAt": "2026-02-05T17:53:19.253Z",
+      "lastActivity": "2026-02-05T17:53:19.253Z"
+    },
+    {
+      "id": "e13ab870-b18e-4cca-a96b-2b78c60cd9ec",
+      "agentId": "3163a08c-b97c-4737-a4eb-0a2c02212a39",
+      "telegramTopicId": 339,
+      "type": "session",
+      "name": "Tópico #339",
+      "emoji": "💬",
+      "status": "active",
+      "messageCount": 0,
+      "createdAt": "2026-02-05T22:37:58.686Z",
+      "lastActivity": "2026-02-05T22:37:58.686Z"
+    }
+  ]
+}

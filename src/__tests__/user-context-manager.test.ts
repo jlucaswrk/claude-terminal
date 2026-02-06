@@ -26,10 +26,21 @@ describe('UserContextManager', () => {
       expect(context!.currentFlow).toBe('create_agent');
     });
 
-    test('clearContext removes user context', () => {
+    test('clearContext removes flow but preserves activeAgentId', () => {
+      manager.setContext('user1', { userId: 'user1', currentFlow: 'create_agent', activeAgentId: 'agent-123' });
+      manager.clearContext('user1');
+
+      // Flow is cleared but activeAgentId is preserved
+      const context = manager.getContext('user1');
+      expect(context?.currentFlow).toBeUndefined();
+      expect(context?.activeAgentId).toBe('agent-123');
+    });
+
+    test('clearContext removes context entirely when nothing to preserve', () => {
       manager.setContext('user1', { userId: 'user1', currentFlow: 'create_agent' });
       manager.clearContext('user1');
 
+      // No activeAgentId or pendingPrompt, so context should be fully cleared
       expect(manager.getContext('user1')).toBeUndefined();
     });
 
@@ -146,28 +157,29 @@ describe('UserContextManager', () => {
       expect(data!.agentType).toBe('bash');
     });
 
-    test('setAgentEmoji stores emoji and advances to workspace choice', () => {
+    test('setAgentEmoji stores emoji and advances to mode selection', () => {
       manager.startCreateAgentFlow('user1');
       manager.setAgentName('user1', 'Agent');
       manager.setAgentType('user1', 'claude');
       manager.setAgentEmoji('user1', '🚀');
 
       expect(manager.isAwaitingEmoji('user1')).toBe(false);
-      expect(manager.isAwaitingWorkspaceChoice('user1')).toBe(true);
+      expect(manager.isAwaitingAgentMode('user1')).toBe(true);
 
       const data = manager.getCreateAgentData('user1');
       expect(data!.emoji).toBe('🚀');
     });
 
-    test('setAgentWorkspace stores workspace and advances state', () => {
+    test('setAgentWorkspace stores workspace and advances to model mode', () => {
       manager.startCreateAgentFlow('user1');
       manager.setAgentName('user1', 'Agent');
       manager.setAgentType('user1', 'claude');
       manager.setAgentEmoji('user1', '🤖');
+      manager.setAgentMode('user1', 'conversational');
       manager.setAgentWorkspace('user1', '/path/to/workspace');
 
       expect(manager.isAwaitingWorkspaceChoice('user1')).toBe(false);
-      expect(manager.isAwaitingCreateConfirmation('user1')).toBe(true);
+      expect(manager.isAwaitingModelMode('user1')).toBe(true);
 
       const data = manager.getCreateAgentData('user1');
       expect(data!.workspace).toBe('/path/to/workspace');
@@ -178,23 +190,26 @@ describe('UserContextManager', () => {
       manager.setAgentName('user1', 'Agent');
       manager.setAgentType('user1', 'claude');
       manager.setAgentEmoji('user1', '🤖');
+      manager.setAgentMode('user1', 'conversational');
       manager.setAgentWorkspace('user1', null);
 
       const data = manager.getCreateAgentData('user1');
       expect(data!.workspace).toBeUndefined();
-      expect(manager.isAwaitingCreateConfirmation('user1')).toBe(true);
+      expect(manager.isAwaitingModelMode('user1')).toBe(true);
     });
 
     test('setAgentWorkspace throws if not in create agent flow', () => {
       expect(() => manager.setAgentWorkspace('user1', '/path')).toThrow('Not in create agent flow');
     });
 
-    test('isAwaitingCreateConfirmation returns true after workspace is set', () => {
+    test('isAwaitingCreateConfirmation returns true after model mode is set', () => {
       manager.startCreateAgentFlow('user1');
       manager.setAgentName('user1', 'Agent');
       manager.setAgentType('user1', 'claude');
       manager.setAgentEmoji('user1', '🤖');
+      manager.setAgentMode('user1', 'conversational');
       manager.setAgentWorkspace('user1', '/path');
+      manager.setAgentModelMode('user1', 'selection');
 
       expect(manager.isAwaitingCreateConfirmation('user1')).toBe(true);
     });
@@ -211,14 +226,18 @@ describe('UserContextManager', () => {
       manager.setAgentName('user1', 'Test Agent');
       manager.setAgentType('user1', 'bash');
       manager.setAgentEmoji('user1', '🚀');
+      manager.setAgentMode('user1', 'ralph');
       manager.setAgentWorkspace('user1', '/my/workspace');
+      manager.setAgentModelMode('user1', 'sonnet');
 
       const data = manager.getCreateAgentData('user1');
       expect(data).toEqual({
         agentName: 'Test Agent',
         agentType: 'bash',
         emoji: '🚀',
+        agentMode: 'ralph',
         workspace: '/my/workspace',
+        modelMode: 'sonnet',
       });
     });
   });
@@ -537,6 +556,110 @@ describe('UserContextManager', () => {
       // Pending prompt is overwritten when starting a new flow
       // This is expected behavior - flow state takes precedence
       expect(manager.getCurrentFlow('user1')).toBe('create_agent');
+    });
+  });
+
+  describe('Active Agent Management', () => {
+    test('setActiveAgent stores agent ID', () => {
+      manager.setActiveAgent('user1', 'agent-123');
+      expect(manager.getActiveAgent('user1')).toBe('agent-123');
+    });
+
+    test('hasActiveAgent returns true when agent is set', () => {
+      manager.setActiveAgent('user1', 'agent-123');
+      expect(manager.hasActiveAgent('user1')).toBe(true);
+    });
+
+    test('hasActiveAgent returns false when no agent is set', () => {
+      expect(manager.hasActiveAgent('user1')).toBe(false);
+    });
+
+    test('clearActiveAgent removes the active agent', () => {
+      manager.setActiveAgent('user1', 'agent-123');
+      manager.clearActiveAgent('user1');
+      expect(manager.getActiveAgent('user1')).toBeUndefined();
+      expect(manager.hasActiveAgent('user1')).toBe(false);
+    });
+
+    test('clearActiveAgent is safe for non-existent user', () => {
+      expect(() => manager.clearActiveAgent('unknown')).not.toThrow();
+    });
+
+    test('activeAgentId persists across clearContext', () => {
+      // This is the critical test for the bug fix
+      manager.setActiveAgent('user1', 'agent-123');
+      manager.startCreateAgentFlow('user1');
+
+      // Clear context after flow
+      manager.clearContext('user1');
+
+      // activeAgentId should still be preserved
+      expect(manager.getActiveAgent('user1')).toBe('agent-123');
+    });
+
+    test('clearContext preserves both activeAgentId and pendingPrompt', () => {
+      manager.setActiveAgent('user1', 'agent-123');
+      manager.setPendingPrompt('user1', 'Test prompt');
+      manager.startCreateAgentFlow('user1');
+
+      manager.clearContext('user1');
+
+      expect(manager.getActiveAgent('user1')).toBe('agent-123');
+      expect(manager.getPendingPrompt('user1')?.text).toBe('Test prompt');
+    });
+
+    test('clearContext removes context entirely when nothing to preserve', () => {
+      manager.startCreateAgentFlow('user1');
+      manager.clearContext('user1');
+
+      // No activeAgentId or pendingPrompt, so context should be fully cleared
+      expect(manager.getContext('user1')).toBeUndefined();
+    });
+
+    test('startPromptFlow sets activeAgentId', () => {
+      manager.startPromptFlow('user1', 'agent-456');
+
+      expect(manager.getActiveAgent('user1')).toBe('agent-456');
+      expect(manager.getPendingAgentId('user1')).toBe('agent-456');
+    });
+
+    test('activeAgentId persists through multiple clearContext calls', () => {
+      // Simulates continuous conversation - multiple prompts in sequence
+      manager.setActiveAgent('user1', 'agent-123');
+
+      // First prompt
+      manager.setPendingPrompt('user1', 'First prompt');
+      manager.clearContext('user1');
+      expect(manager.getActiveAgent('user1')).toBe('agent-123');
+
+      // Second prompt
+      manager.setPendingPrompt('user1', 'Second prompt');
+      manager.clearContext('user1');
+      expect(manager.getActiveAgent('user1')).toBe('agent-123');
+
+      // Third prompt
+      manager.setPendingPrompt('user1', 'Third prompt');
+      manager.clearContext('user1');
+      expect(manager.getActiveAgent('user1')).toBe('agent-123');
+    });
+
+    test('setActiveAgent updates existing active agent', () => {
+      manager.setActiveAgent('user1', 'agent-123');
+      manager.setActiveAgent('user1', 'agent-456');
+
+      expect(manager.getActiveAgent('user1')).toBe('agent-456');
+    });
+
+    test('clearActiveAgent preserves other context data', () => {
+      manager.setActiveAgent('user1', 'agent-123');
+      manager.setPendingPrompt('user1', 'Test prompt');
+      manager.enableBashMode('user1');
+
+      manager.clearActiveAgent('user1');
+
+      expect(manager.getActiveAgent('user1')).toBeUndefined();
+      expect(manager.getPendingPrompt('user1')?.text).toBe('Test prompt');
+      expect(manager.isInBashMode('user1')).toBe(true);
     });
   });
 });
