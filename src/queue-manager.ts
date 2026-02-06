@@ -176,7 +176,7 @@ export function formatFinalText(state: ProgressState, response: ClaudeResponse, 
     header += `${summary}\n\n`;
   }
 
-  const full = header + response.text;
+  const full = header + escapeMarkdown(response.text);
 
   // Truncate to Telegram limit if needed
   if (full.length > TELEGRAM_MESSAGE_LIMIT) {

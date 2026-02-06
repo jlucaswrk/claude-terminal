@@ -5,7 +5,7 @@
  * configuring priorities, etc. All state is in-memory (not persisted).
  */
 
-import type { UserContext, ModelMode, UserMode } from './types';
+import type { UserContext, ModelMode, UserMode, DirectoryNavigationState } from './types';
 
 /**
  * Flow types supported by the context manager
@@ -1346,5 +1346,112 @@ export class UserContextManager {
       topicWorkspace: workspace,
     };
     this.contexts.set(userId, context);
+  }
+
+  // ============================================
+  // Directory Navigation State Management
+  // ============================================
+
+  /**
+   * Start directory navigation for workspace selection
+   */
+  startDirectoryNavigation(
+    userId: string,
+    agentId: string,
+    topicId: string,
+    basePath: string,
+    baseOptions: string[] = []
+  ): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.directoryNavigationState = {
+      currentPath: basePath,
+      baseOptions,
+      targetTopicId: topicId,
+      targetAgentId: agentId,
+      visibleDirectories: [],
+    };
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Get the current directory navigation state
+   */
+  getDirectoryNavigationState(userId: string): DirectoryNavigationState | undefined {
+    return this.contexts.get(userId)?.directoryNavigationState;
+  }
+
+  /**
+   * Update the current path in directory navigation
+   */
+  updateDirectoryPath(userId: string, newPath: string): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.currentPath = newPath;
+      context.directoryNavigationState.filter = undefined; // Clear filter on navigate
+      this.contexts.set(userId, context);
+    }
+  }
+
+  /**
+   * Update the visible directories snapshot (for index mapping)
+   */
+  updateVisibleDirectories(userId: string, directories: string[]): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.visibleDirectories = directories;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  /**
+   * Set directory filter
+   */
+  setDirectoryFilter(userId: string, filter: string): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.filter = filter;
+      context.directoryNavigationState.awaitingInput = undefined;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  /**
+   * Clear directory filter
+   */
+  clearDirectoryFilter(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.filter = undefined;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  /**
+   * Set awaiting input type for directory navigation
+   */
+  setAwaitingDirectoryInput(userId: string, type: 'filter' | 'custom_base_path'): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.awaitingInput = type;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  /**
+   * Clear directory navigation state
+   */
+  clearDirectoryNavigation(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context) {
+      delete context.directoryNavigationState;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  /**
+   * Check if user has active directory navigation
+   */
+  hasDirectoryNavigation(userId: string): boolean {
+    return this.contexts.get(userId)?.directoryNavigationState !== undefined;
   }
 }

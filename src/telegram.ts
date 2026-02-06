@@ -2282,7 +2282,8 @@ export async function sendTopicWelcome(
   threadId: number,
   topicName: string,
   topicType: 'ralph' | 'worktree' | 'session',
-  task?: string
+  task?: string,
+  topicId?: string
 ): Promise<void> {
   const emoji = topicType === 'ralph' ? '🔄' : topicType === 'worktree' ? '🌿' : '💬';
 
@@ -2300,13 +2301,19 @@ export async function sendTopicWelcome(
       ? 'Tópico isolado para experimentos e features.'
       : 'Tópico com sessão de conversa isolada.';
 
-    await sendTelegramMessage(chatId,
-      `${emoji} *${topicName}*\n\n` +
+    const text = `${emoji} *${topicName}*\n\n` +
       `${description}\n\n` +
-      `_Envie uma mensagem para começar._`,
-      undefined,
-      threadId
-    );
+      `_Envie uma mensagem para começar._`;
+
+    // Add workspace button for non-ralph topics if topicId provided
+    if (topicId) {
+      const buttons = [[
+        { text: '⚙️ Workspace', callback_data: `topic_workspace:${topicId}` },
+      ]];
+      await sendTelegramButtons(chatId, text, buttons, threadId);
+    } else {
+      await sendTelegramMessage(chatId, text, undefined, threadId);
+    }
   }
 }
 

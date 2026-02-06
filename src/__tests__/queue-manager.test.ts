@@ -978,6 +978,22 @@ describe('Progress Monitor Formatting', () => {
       expect(text).not.toContain('📖');
     });
 
+    test('escapes Markdown special characters in response text', () => {
+      const state: ProgressState = {
+        events: [],
+        textBuffer: '',
+        startTime: Date.now() - 2000,
+      };
+      const response = { text: 'Use *bold* and _italic_ with `code` and [link]', images: [], files: [], toolsUsed: [], title: 'Test' };
+      const text = formatFinalText(state, response, 'Agent', '🤖');
+      expect(text).toContain('\\*bold\\*');
+      expect(text).toContain('\\_italic\\_');
+      expect(text).toContain('\\`code\\`');
+      expect(text).toContain('\\[link]');
+      // Header should still have intentional Markdown
+      expect(text).toContain('*Agent*');
+    });
+
     test('truncates response exceeding Telegram 4096 char limit', () => {
       const state: ProgressState = {
         events: [],

@@ -132,6 +132,19 @@ export interface RalphLoopState {
 }
 
 /**
+ * State for directory navigation in workspace selector
+ */
+export interface DirectoryNavigationState {
+  currentPath: string;              // Current path in navigation
+  baseOptions: string[];            // Base options shown (agent workspace, recents)
+  targetTopicId?: string;           // Topic being configured
+  targetAgentId?: string;           // Agent for the topic
+  visibleDirectories: string[];     // Snapshot of visible directories (for index mapping)
+  filter?: string;                  // Active filter (optional)
+  awaitingInput?: 'filter' | 'custom_base_path'; // Awaiting user text input
+}
+
+/**
  * Tracks conversational state per user for multi-step flows
  */
 export interface UserContext {
@@ -185,6 +198,7 @@ export interface UserContext {
   };
   bashMode?: boolean;           // Global bash mode toggle
   lastBashWorkspace?: string;   // Last workspace used for bash prefix commands
+  directoryNavigationState?: DirectoryNavigationState; // Directory navigation for workspace selector
 }
 
 /**
