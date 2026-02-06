@@ -138,7 +138,7 @@ export interface UserContext {
   userId: string;
   activeAgentId?: string;         // Persists across clearContext() for continuous conversations
   currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'onboarding' | 'ralph_loop' | 'image_action' | 'document_action' | 'topic_ralph' | 'topic_worktree' | 'topic_sessao' | 'workspace_not_found';
-  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_mode_selection' | 'awaiting_telegram_username' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt' | 'awaiting_topic_name' | 'awaiting_topic_task' | 'awaiting_topic_iterations';
+  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_mode_selection' | 'awaiting_telegram_username' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt' | 'awaiting_topic_name' | 'awaiting_topic_task' | 'awaiting_topic_iterations' | 'awaiting_topic_workspace';
   flowData?: {
     agentName?: string;
     agentId?: string;
@@ -160,6 +160,7 @@ export interface UserContext {
     topicName?: string;              // Topic name for topic creation flows
     topicTask?: string;              // Task description for Ralph topic
     topicMaxIterations?: number;     // Max iterations for Ralph topic
+    topicWorkspace?: string;         // Workspace path selected during topic creation
     // Workspace not found paused task data
     pausedTaskId?: string;           // ID of the paused task
     pausedPrompt?: string;           // Original prompt

@@ -117,6 +117,7 @@ import {
   sendTopicRalphIterationsPrompt,
   sendTopicRalphCustomIterationsPrompt,
   sendTopicNamePrompt,
+  sendTopicWorkspaceQuestion,
   sendTopicCreatedInGeneral,
   sendTopicWelcome,
   sendTopicsList,
@@ -1965,6 +1966,32 @@ function validateTopicName(name: string): string | null {
 }
 
 /**
+ * Finish topic creation after optional workspace selection.
+ * Reads flow data from UserContext and delegates to the appropriate creation function.
+ */
+async function finishTopicCreation(chatId: number, userId: string): Promise<void> {
+  const context = userContextManager.getContext(userId);
+  if (!context?.flowData?.agentId) return;
+
+  const agentId = context.flowData.agentId as string;
+  const workspace = context.flowData.topicWorkspace as string | undefined;
+
+  if (context.currentFlow === 'topic_ralph') {
+    const task = context.flowData.topicTask as string;
+    const maxIterations = context.flowData.topicMaxIterations as number;
+    if (task && maxIterations) {
+      await createRalphTopicAndStart(chatId, userId, agentId, task, maxIterations, workspace);
+    }
+  } else if (context.currentFlow === 'topic_worktree' || context.currentFlow === 'topic_sessao') {
+    const name = context.flowData.topicName as string;
+    const topicType = context.currentFlow === 'topic_worktree' ? 'worktree' : 'session';
+    if (name) {
+      await createTopicAndNotify(chatId, userId, agentId, name, topicType, workspace);
+    }
+  }
+}
+
+/**
  * Create a topic and send notifications to both General and the new topic
  */
 async function createTopicAndNotify(
@@ -1972,7 +1999,8 @@ async function createTopicAndNotify(
   userId: string,
   agentId: string,
   name: string,
-  type: 'worktree' | 'session'
+  type: 'worktree' | 'session',
+  workspace?: string
 ): Promise<void> {
   try {
     // Create the topic via TopicManager
@@ -1981,6 +2009,7 @@ async function createTopicAndNotify(
       chatId,
       name,
       type,
+      workspace,
     });
 
     if (!result.success || !result.topic) {
@@ -2014,7 +2043,8 @@ async function createRalphTopicAndStart(
   userId: string,
   agentId: string,
   task: string,
-  maxIterations: number
+  maxIterations: number,
+  workspace?: string
 ): Promise<void> {
   try {
     // Generate topic name from task (first 30 chars)
@@ -2026,6 +2056,7 @@ async function createRalphTopicAndStart(
       chatId,
       name: topicName,
       type: 'ralph',
+      workspace,
     });
 
     if (!result.success || !result.topic) {
@@ -2646,10 +2677,10 @@ async function handleTelegramFlowInput(chatId: number, userId: string, text: str
       return;
     }
 
-    const flowData = userContextManager.getTopicRalphData(userId);
-    if (flowData?.agentId && flowData?.topicTask) {
-      await createRalphTopicAndStart(chatId, userId, flowData.agentId, flowData.topicTask, iterations);
-    }
+    userContextManager.setTopicMaxIterations(userId, iterations);
+    // Ask about workspace before creating
+    userContextManager.setAwaitingTopicWorkspace(userId);
+    await sendTopicWorkspaceQuestion(chatId);
   }
   // Handle topic name input for worktree/sessao
   else if (userContextManager.isAwaitingTopicName(userId)) {
@@ -2661,11 +2692,35 @@ async function handleTelegramFlowInput(chatId: number, userId: string, text: str
     }
 
     userContextManager.setTopicName(userId, name);
-    const flowData = userContextManager.getTopicCreationData(userId);
+    // Ask about workspace before creating
+    userContextManager.setAwaitingTopicWorkspace(userId);
+    await sendTopicWorkspaceQuestion(chatId);
+  }
+  // Handle custom workspace path during topic creation
+  else if (userContextManager.isAwaitingTopicWorkspace(userId)) {
+    const path = text.trim();
+    let isDirectory = false;
+    try {
+      isDirectory = statSync(path).isDirectory();
+    } catch {
+      // path does not exist
+    }
 
-    if (flowData?.agentId && flowData?.flowType) {
-      const topicType = flowData.flowType === 'topic_worktree' ? 'worktree' : 'session';
-      await createTopicAndNotify(chatId, userId, flowData.agentId, name, topicType);
+    if (!isDirectory) {
+      await sendTelegramMessage(chatId,
+        `❌ Caminho não encontrado: \`${path}\`\n\nEnvie um caminho válido ou use os botões acima.`
+      );
+      return;
+    }
+
+    userContextManager.setTopicWorkspace(userId, path);
+    persistenceService.addRecentWorkspace(userId, path);
+    try {
+      await finishTopicCreation(chatId, userId);
+    } catch (error) {
+      userContextManager.clearContext(userId);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      await sendTelegramMessage(chatId, `❌ Erro ao criar tópico: ${errorMessage}`);
     }
   }
   // Other states are handled by callback queries (button presses)
@@ -3564,12 +3619,10 @@ async function handleTelegramCallback(query: any): Promise<void> {
       await sendTopicRalphCustomIterationsPrompt(chatId);
     } else {
       const iterations = parseInt(iterValue, 10);
-      const flowData = userContextManager.getTopicRalphData(userId);
-
-      if (flowData?.agentId && flowData?.topicTask) {
-        userContextManager.setTopicMaxIterations(userId, iterations);
-        await createRalphTopicAndStart(chatId, userId, flowData.agentId, flowData.topicTask, iterations);
-      }
+      userContextManager.setTopicMaxIterations(userId, iterations);
+      // Ask about workspace before creating
+      userContextManager.setAwaitingTopicWorkspace(userId);
+      await sendTopicWorkspaceQuestion(chatId);
     }
   }
   else if (data.startsWith('topic_close_')) {
@@ -3621,6 +3674,24 @@ async function handleTelegramCallback(query: any): Promise<void> {
         const errorMessage = error instanceof Error ? error.message : String(error);
         await sendTelegramMessage(chatId, `❌ Erro ao deletar tópico: ${errorMessage}`);
       }
+    }
+  }
+  // Topic creation workspace choice callbacks
+  else if (data === 'topic_create_ws_yes') {
+    // User wants to configure workspace during topic creation
+    if (userContextManager.isAwaitingTopicWorkspace(userId)) {
+      const context = userContextManager.getContext(userId);
+      const agentId = context?.flowData?.agentId as string | undefined;
+      if (agentId) {
+        // Use 'pending_topic' as topicId placeholder - topic doesn't exist yet
+        await showWorkspaceSelector(chatId, undefined, agentId, 'pending_topic');
+      }
+    }
+  }
+  else if (data === 'topic_create_ws_skip') {
+    // User wants to skip workspace config - create topic with inherited workspace
+    if (userContextManager.isAwaitingTopicWorkspace(userId)) {
+      await finishTopicCreation(chatId, userId);
     }
   }
   // Workspace management callbacks
@@ -3881,12 +3952,16 @@ async function handleTelegramCallback(query: any): Promise<void> {
     const payload = data.replace('wsbase_', '');
     const context = userContextManager.getContext(userId);
     const agent = agentManager.getAgentByTelegramChatId(chatId);
+    const isTopicCreation = userContextManager.isAwaitingTopicWorkspace(userId);
+    const isWorkspaceNotFound = context?.currentFlow === 'workspace_not_found' && !!context.flowData;
 
-    if (agent && agent.userId === userId && context?.currentFlow === 'workspace_not_found' && context.flowData) {
-      // Parse topicId (UUID, 36 chars) and path from payload: <topicId>_<path>
-      const topicId = payload.substring(0, 36);
-      const basePath = payload.substring(37); // skip underscore after UUID
-      const topic = topicManager.getTopic(agent.id, topicId);
+    if (agent && agent.userId === userId && (isWorkspaceNotFound || isTopicCreation)) {
+      // Parse topicId and path from payload
+      // Topic creation uses 'pending_topic' (13 chars), existing topics use UUID (36 chars)
+      const topicIdLen = isTopicCreation ? 13 : 36;
+      const topicId = payload.substring(0, topicIdLen);
+      const basePath = payload.substring(topicIdLen + 1); // skip underscore after topicId
+      const topic = isTopicCreation ? undefined : topicManager.getTopic(agent.id, topicId);
       const resolvedThreadId = topic?.telegramTopicId;
 
       await showWorkspaceDirectoryBrowser(chatId, resolvedThreadId, topicId, basePath);
@@ -3897,54 +3972,70 @@ async function handleTelegramCallback(query: any): Promise<void> {
     const payload = data.replace('wsnav_select_', '');
     const context = userContextManager.getContext(userId);
     const agent = agentManager.getAgentByTelegramChatId(chatId);
+    const isTopicCreation = userContextManager.isAwaitingTopicWorkspace(userId);
+    const isWorkspaceNotFound = context?.currentFlow === 'workspace_not_found' && !!context.flowData;
 
-    if (agent && agent.userId === userId && context?.currentFlow === 'workspace_not_found' && context.flowData) {
-      const topicId = payload.substring(0, 36);
-      const action = payload.substring(37); // after topicId_
+    if (agent && agent.userId === userId && (isWorkspaceNotFound || isTopicCreation)) {
+      const topicIdLen = isTopicCreation ? 13 : 36;
+      const topicId = payload.substring(0, topicIdLen);
+      const action = payload.substring(topicIdLen + 1); // after topicId_
 
       if (action === 'sandbox') {
-        const topic = topicManager.getTopic(agent.id, topicId);
-        const resolvedThreadId = topic?.telegramTopicId;
-        const sandboxPath = getAgentSandboxPath(agent.id);
+        if (isTopicCreation) {
+          // During topic creation: store actual sandbox path and create topic
+          const sandboxPath = getAgentSandboxPath(agent.id);
+          userContextManager.setTopicWorkspace(userId, sandboxPath);
+          persistenceService.addRecentWorkspace(userId, sandboxPath);
+          await finishTopicCreation(chatId, userId);
+        } else {
+          const topic = topicManager.getTopic(agent.id, topicId);
+          const resolvedThreadId = topic?.telegramTopicId;
+          const sandboxPath = getAgentSandboxPath(agent.id);
 
-        topicManager.updateTopicWorkspace(agent.id, topicId, sandboxPath);
-        await sendTelegramMessage(chatId,
-          `✅ Workspace atualizado\n📁 \`${sandboxPath}\``,
-          undefined,
-          resolvedThreadId
-        );
+          topicManager.updateTopicWorkspace(agent.id, topicId, sandboxPath);
+          await sendTelegramMessage(chatId,
+            `✅ Workspace atualizado\n📁 \`${sandboxPath}\``,
+            undefined,
+            resolvedThreadId
+          );
 
-        // Resume paused task
-        const { pausedPrompt, pausedModel, pausedImages } = context.flowData;
-        if (pausedPrompt && pausedModel) {
-          await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, resolvedThreadId);
-          queueManager.enqueue({
-            agentId: agent.id,
-            prompt: pausedPrompt as string,
-            model: pausedModel as 'haiku' | 'sonnet' | 'opus',
-            userId,
-            replyTo: chatId,
-            threadId: resolvedThreadId,
-            images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
-          });
+          // Resume paused task
+          const { pausedPrompt, pausedModel, pausedImages } = context!.flowData!;
+          if (pausedPrompt && pausedModel) {
+            await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, resolvedThreadId);
+            queueManager.enqueue({
+              agentId: agent.id,
+              prompt: pausedPrompt as string,
+              model: pausedModel as 'haiku' | 'sonnet' | 'opus',
+              userId,
+              replyTo: chatId,
+              threadId: resolvedThreadId,
+              images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
+            });
+          }
+          userContextManager.clearContext(userId);
         }
-        userContextManager.clearContext(userId);
 
       } else if (action === 'custom') {
-        const topic = topicManager.getTopic(agent.id, topicId);
-        const resolvedThreadId = topic?.telegramTopicId;
+        if (isTopicCreation) {
+          await sendTelegramMessage(chatId,
+            '📁 Envie o caminho absoluto do workspace:\n\n' +
+            '_Exemplo: `/Users/lucas/projeto-x`_'
+          );
+        } else {
+          const topic = topicManager.getTopic(agent.id, topicId);
+          const resolvedThreadId = topic?.telegramTopicId;
 
-        await sendTelegramMessage(chatId,
-          '📁 Envie o novo caminho com /workspace:\n\n' +
-          'Exemplo: `/workspace /Users/lucas/projeto-x`',
-          undefined,
-          resolvedThreadId
-        );
+          await sendTelegramMessage(chatId,
+            '📁 Envie o novo caminho com /workspace:\n\n' +
+            'Exemplo: `/workspace /Users/lucas/projeto-x`',
+            undefined,
+            resolvedThreadId
+          );
+        }
 
       } else if (action.startsWith('path_')) {
         const selectedPath = action.substring(5); // after 'path_'
-        const topic = topicManager.getTopic(agent.id, topicId);
-        const resolvedThreadId = topic?.telegramTopicId;
 
         // Validate path exists
         let isDirectory = false;
@@ -3957,37 +4048,44 @@ async function handleTelegramCallback(query: any): Promise<void> {
         if (!isDirectory) {
           await sendTelegramMessage(chatId,
             `❌ Caminho não encontrado: \`${selectedPath}\`\n\n` +
-            'Envie o caminho correto com /workspace:\n' +
-            'Exemplo: `/workspace /Users/lucas/projeto-x`',
-            undefined,
-            resolvedThreadId
+            'Tente outro caminho.',
           );
           return;
         }
 
-        topicManager.updateTopicWorkspace(agent.id, topicId, selectedPath);
-        persistenceService.addRecentWorkspace(userId, selectedPath);
-        await sendTelegramMessage(chatId,
-          `✅ Workspace atualizado\n📁 \`${selectedPath}\``,
-          undefined,
-          resolvedThreadId
-        );
+        if (isTopicCreation) {
+          // During topic creation: store workspace and create topic
+          userContextManager.setTopicWorkspace(userId, selectedPath);
+          persistenceService.addRecentWorkspace(userId, selectedPath);
+          await finishTopicCreation(chatId, userId);
+        } else {
+          const topic = topicManager.getTopic(agent.id, topicId);
+          const resolvedThreadId = topic?.telegramTopicId;
 
-        // Resume paused task
-        const { pausedPrompt, pausedModel, pausedImages } = context.flowData;
-        if (pausedPrompt && pausedModel) {
-          await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, resolvedThreadId);
-          queueManager.enqueue({
-            agentId: agent.id,
-            prompt: pausedPrompt as string,
-            model: pausedModel as 'haiku' | 'sonnet' | 'opus',
-            userId,
-            replyTo: chatId,
-            threadId: resolvedThreadId,
-            images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
-          });
+          topicManager.updateTopicWorkspace(agent.id, topicId, selectedPath);
+          persistenceService.addRecentWorkspace(userId, selectedPath);
+          await sendTelegramMessage(chatId,
+            `✅ Workspace atualizado\n📁 \`${selectedPath}\``,
+            undefined,
+            resolvedThreadId
+          );
+
+          // Resume paused task
+          const { pausedPrompt, pausedModel, pausedImages } = context!.flowData!;
+          if (pausedPrompt && pausedModel) {
+            await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, resolvedThreadId);
+            queueManager.enqueue({
+              agentId: agent.id,
+              prompt: pausedPrompt as string,
+              model: pausedModel as 'haiku' | 'sonnet' | 'opus',
+              userId,
+              replyTo: chatId,
+              threadId: resolvedThreadId,
+              images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
+            });
+          }
+          userContextManager.clearContext(userId);
         }
-        userContextManager.clearContext(userId);
       }
     }
   }

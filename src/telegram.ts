@@ -2241,6 +2241,21 @@ export async function sendTopicNamePrompt(chatId: number, type: 'worktree' | 'se
 }
 
 /**
+ * Send workspace configuration question during topic creation
+ */
+export async function sendTopicWorkspaceQuestion(chatId: number): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '⚙️ Configurar workspace para este tópico?',
+    [
+      [
+        { text: '✅ Sim', callback_data: 'topic_create_ws_yes' },
+        { text: '⏭️ Pular', callback_data: 'topic_create_ws_skip' },
+      ],
+    ]
+  );
+}
+
+/**
  * Send topic created confirmation (General topic)
  */
 export async function sendTopicCreatedInGeneral(

@@ -1312,4 +1312,39 @@ export class UserContextManager {
       || context?.currentFlow === 'topic_worktree'
       || context?.currentFlow === 'topic_sessao';
   }
+
+  /**
+   * Transition topic creation flow to awaiting workspace choice
+   */
+  setAwaitingTopicWorkspace(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || !this.isInTopicFlow(userId)) {
+      throw new Error('Not in topic creation flow');
+    }
+    context.flowState = 'awaiting_topic_workspace';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if we're awaiting topic workspace choice
+   */
+  isAwaitingTopicWorkspace(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return this.isInTopicFlow(userId) && context?.flowState === 'awaiting_topic_workspace';
+  }
+
+  /**
+   * Set the topic workspace during creation
+   */
+  setTopicWorkspace(userId: string, workspace: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || !this.isInTopicFlow(userId)) {
+      throw new Error('Not in topic creation flow');
+    }
+    context.flowData = {
+      ...context.flowData,
+      topicWorkspace: workspace,
+    };
+    this.contexts.set(userId, context);
+  }
 }

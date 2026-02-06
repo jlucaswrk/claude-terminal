@@ -43,6 +43,7 @@ export interface CreateTopicOptions {
   emoji?: string;
   sessionId?: string;
   loopId?: string;
+  workspace?: string;
   iconColor?: number;
   skipTelegramCreation?: boolean;
 }
@@ -162,6 +163,7 @@ export class TopicManager {
       emoji,
       sessionId,
       loopId,
+      workspace,
       iconColor,
       skipTelegramCreation = false,
     } = options;
@@ -217,6 +219,7 @@ export class TopicManager {
       emoji: emoji ?? getTopicEmojiForType(type),
       sessionId,
       loopId,
+      workspace,
       status: 'active',
       messageCount: 0,
       createdAt: now,
