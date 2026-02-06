@@ -492,34 +492,66 @@ export class RalphLoopManager {
   }
 
   /**
-   * Build the prompt for an iteration
-   * First iteration includes the full task, subsequent iterations continue the conversation
+   * Build the prompt for an iteration.
+   * Every iteration includes the full task, fixed rules, stopping criteria,
+   * and optionally a summary of the previous iteration.
    */
   private buildIterationPrompt(loop: RalphLoopState, iterationNumber: number): string {
-    if (iterationNumber === 1) {
-      // First iteration - include full context and instructions
-      return `You are operating in autonomous Ralph mode. Your task is:
+    const remainingIterations = loop.maxIterations - (iterationNumber - 1);
+    const parts: string[] = [];
 
-${loop.task}
+    // --- Header ---
+    parts.push(`You are operating in autonomous Ralph mode.`);
+    parts.push(`Iteration ${iterationNumber} of ${loop.maxIterations} (${remainingIterations} remaining).`);
+    parts.push('');
 
-IMPORTANT: You must work autonomously to complete this task. When you have fully completed the task, you MUST include the exact tag <promise>COMPLETE</promise> in your response. If you are blocked and cannot make further progress, include <promise>BLOCKED</promise> instead.
+    // --- Full task (always included) ---
+    parts.push('## TASK');
+    parts.push(loop.task);
+    parts.push('');
 
-You have access to all standard tools (Bash, Read, Write, Edit, Glob, Grep). Use them as needed to accomplish the task.
-
-This is iteration 1 of maximum ${loop.maxIterations}. Begin working on the task now.`;
+    // --- Previous iteration summary (when available) ---
+    if (iterationNumber > 1) {
+      const lastIteration = loop.iterations[loop.iterations.length - 1];
+      if (lastIteration) {
+        parts.push('## PREVIOUS ITERATION SUMMARY');
+        parts.push(`Action: ${lastIteration.action}`);
+        parts.push(`Promise: ${lastIteration.promiseType ?? 'none'}`);
+        parts.push(`Duration: ${lastIteration.duration}ms`);
+        parts.push('');
+      }
     }
 
-    // Subsequent iterations - continue working
-    const lastIteration = loop.iterations[loop.iterations.length - 1];
-    const remainingIterations = loop.maxIterations - loop.currentIteration;
+    // --- Fixed rules ---
+    parts.push('## RULES');
+    parts.push('1. Work autonomously — do NOT ask the user for input.');
+    parts.push('2. Use all standard tools (Bash, Read, Write, Edit, Glob, Grep) as needed.');
+    parts.push('3. Persist progress to files so state survives between iterations.');
+    parts.push('4. Run tests after meaningful changes (`bun test` or the project\'s test command).');
+    parts.push('5. Keep changes small and incremental per iteration.');
+    parts.push('');
 
-    return `Continue working on the task. This is iteration ${iterationNumber} of ${loop.maxIterations} (${remainingIterations} remaining).
+    // --- Stopping criteria ---
+    parts.push('## STOPPING CRITERIA');
+    parts.push('When the task is **fully done**, include exactly: <promise>COMPLETE</promise>');
+    parts.push('When you **cannot make further progress** (missing info, permissions, external dependency), include exactly: <promise>BLOCKED</promise>');
+    parts.push('If neither applies, keep working — the next iteration will continue from where you left off.');
+    parts.push('');
 
-Your previous action: ${lastIteration?.action || 'N/A'}
+    // --- Skeleton doc example ---
+    parts.push('## ITERATION SKELETON');
+    parts.push('Follow this structure in your response:');
+    parts.push('```');
+    parts.push('1. Assess current state (read files / check test results)');
+    parts.push('2. Plan the next concrete step');
+    parts.push('3. Execute the step (edit, write, bash)');
+    parts.push('4. Verify the result (run tests, read output)');
+    parts.push('5. Summarize what was done and what remains');
+    parts.push('6. If done → <promise>COMPLETE</promise>');
+    parts.push('   If stuck → <promise>BLOCKED</promise>');
+    parts.push('```');
 
-Remember: When you have fully completed the task, include <promise>COMPLETE</promise> in your response. If you are blocked and cannot make further progress, include <promise>BLOCKED</promise> instead.
-
-Continue with the next step of the task.`;
+    return parts.join('\n');
   }
 
   /**
