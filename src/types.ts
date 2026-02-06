@@ -50,13 +50,6 @@ export interface AgentTopic {
 }
 
 /**
- * User operation mode
- * - ronin: All agents in WhatsApp (default, current behavior)
- * - dojo: Agents in Telegram, WhatsApp has read-only Ronin agent
- */
-export type UserMode = 'ronin' | 'dojo';
-
-/**
  * Represents a single output/response from an agent
  */
 export interface Output {
@@ -83,7 +76,6 @@ export interface Agent {
   mode: 'conversational' | 'ralph';  // Agent operation mode
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;           // Absolute path (optional, immutable)
-  groupId?: string;             // WhatsApp group ID (format: 120363...@g.us, immutable)
   telegramChatId?: number;      // Telegram group/chat ID for this agent
   modelMode: ModelMode;         // 'selection' (asks each time) or fixed model
   mainSessionId?: string;       // Main Claude session ID (shared by General topic)
@@ -136,8 +128,8 @@ export interface RalphLoopState {
 export interface UserContext {
   userId: string;
   activeAgentId?: string;         // Persists across clearContext() for continuous conversations
-  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'onboarding' | 'ralph_loop' | 'image_action' | 'document_action' | 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
-  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_mode_selection' | 'awaiting_telegram_username' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt' | 'awaiting_topic_name' | 'awaiting_topic_task' | 'awaiting_topic_iterations';
+  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'ralph_loop' | 'image_action' | 'document_action' | 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
+  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt' | 'awaiting_topic_name' | 'awaiting_topic_task' | 'awaiting_topic_iterations';
   flowData?: {
     agentName?: string;
     agentId?: string;
@@ -147,8 +139,6 @@ export interface UserContext {
     workspace?: string;
     modelMode?: ModelMode;
     priority?: string;
-    userMode?: UserMode;           // For onboarding flow
-    telegramUsername?: string;     // For onboarding flow
     ralphTask?: string;            // Ralph loop task description
     ralphMaxIterations?: number;   // Ralph loop max iterations
     ralphLoopId?: string;          // Active Ralph loop ID
@@ -183,10 +173,8 @@ export interface UserContext {
  */
 export interface UserPreferences {
   userId: string;
-  mode: UserMode;
   telegramUsername?: string;       // Telegram username (without @)
   telegramChatId?: number;         // Telegram chat ID for direct messages
-  onboardingComplete: boolean;     // Whether user completed mode selection
   sandboxAutoCleanup?: boolean;    // Auto-cleanup sandbox directory on agent deletion
 }
 
@@ -195,10 +183,8 @@ export interface UserPreferences {
  */
 export interface SerializedUserPreferences {
   userId: string;
-  mode: UserMode;
   telegramUsername?: string;
   telegramChatId?: number;
-  onboardingComplete: boolean;
   sandboxAutoCleanup?: boolean;
 }
 
@@ -274,7 +260,6 @@ export interface SerializedAgent {
   mode?: 'conversational' | 'ralph';  // Agent operation mode - optional for backwards compat
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;
-  groupId?: string;             // WhatsApp group ID (format: 120363...@g.us)
   telegramChatId?: number;      // Telegram group/chat ID for this agent
   modelMode?: ModelMode;        // Model mode - optional for backwards compat
   sessionId?: string;           // DEPRECATED: Use mainSessionId. Kept for migration compatibility.
@@ -433,5 +418,5 @@ export const DEFAULTS = {
   TITLE_UPDATE_INTERVAL: 10,
   BASH_TIMEOUT: 60000,          // 60 seconds
   BASH_MAX_OUTPUT: 1024 * 1024, // 1MB
-  BASH_TRUNCATE_AT: 3500,       // WhatsApp message limit
+  BASH_TRUNCATE_AT: 3500,       // Message truncation limit
 } as const;
