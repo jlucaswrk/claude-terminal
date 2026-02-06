@@ -4812,14 +4812,12 @@ async function handleGroupPrompt(
   // Use specified model or agent's fixed model
   const finalModel = model || (agent.modelMode as 'haiku' | 'sonnet' | 'opus');
 
-  // Check if agent is busy - only notify for queue case
+  // Only notify for queue case (when agent is busy)
   if (agent.status === 'processing') {
     await sendWhatsApp(
       groupId,
       `⏳ Agente *${agent.name}* ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
     );
-  } else {
-    await sendWhatsApp(groupId, `🚀 *${agent.name}* recebeu seu prompt (${finalModel})`);
   }
 
   // Enqueue task - respond to the group
@@ -5479,14 +5477,12 @@ async function handleModelSelection(
 
   // Note: Error context is stored by QueueManager when errors occur (Flow 11)
 
-  // Check if agent is busy - only notify for queue case
+  // Only notify for queue case (when agent is busy)
   if (agent.status === 'processing') {
     await sendWhatsApp(
       userId,
       `⏳ Agente *${agent.name}* ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
     );
-  } else {
-    await sendWhatsApp(userId, `🚀 *${agent.name}* recebeu seu prompt (${model})`);
   }
 
   // Enqueue task
@@ -5534,14 +5530,12 @@ async function handleAgentModelSelection(
   // Store last choice for quick repeat
   userContextManager.setLastChoice(userId, agentId, agent.name, model);
 
-  // Check if agent is busy - only notify for queue case
+  // Only notify for queue case (when agent is busy)
   if (agent.status === 'processing') {
     await sendWhatsApp(
       userId,
       `⏳ Agente *${agent.name}* ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
     );
-  } else {
-    await sendWhatsApp(userId, `🚀 *${agent.name}* recebeu seu prompt (${model})`);
   }
 
   // Enqueue task
@@ -6495,14 +6489,12 @@ async function handleModelSelectionForPrompt(
   // Store last choice for quick repeat
   userContextManager.setLastChoice(userId, agentId, agent.name, model);
 
-  // Check if agent is busy - only notify for queue case
+  // Only notify for queue case (when agent is busy)
   if (agent.status === 'processing') {
     await sendWhatsApp(
       userId,
       `⏳ Agente *${agent.name}* ocupado. Prompt enfileirado. Você será notificado quando iniciar.`
     );
-  } else {
-    await sendWhatsApp(userId, `🚀 *${agent.name}* recebeu seu prompt (${model})`);
   }
 
   // Enqueue task

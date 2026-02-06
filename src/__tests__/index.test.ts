@@ -311,10 +311,10 @@ describe('Webhook Integration Tests', () => {
 
       expect(result.json.status).toBe('task_enqueued');
 
-      // Should have sent prompt received confirmation message
+      // Should NOT have sent pre-queue message (monitor handles notifications)
       expect(whatsappCalls.some(c =>
         c.body.text?.body?.includes('recebeu seu prompt')
-      )).toBe(true);
+      )).toBe(false);
     });
 
     it('should handle cancel confirmation', async () => {
