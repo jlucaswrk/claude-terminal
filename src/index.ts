@@ -936,6 +936,25 @@ async function handleTelegramMessage(message: any): Promise<void> {
   // Route based on chat type using TelegramCommandHandler
   // =============================================================================
   if (isGroup) {
+    // Check if user is in a topic creation flow awaiting text input
+    // This must happen BEFORE routeGroupMessage to prevent flow inputs from being
+    // routed as prompts (e.g. topic names, tasks, paths)
+    if (text && (
+      userContextManager.isAwaitingTopicTask(userId) ||
+      userContextManager.isAwaitingTopicName(userId) ||
+      userContextManager.isAwaitingTopicIterations(userId) ||
+      userContextManager.isAwaitingTopicWorkspace(userId)
+    )) {
+      // /cancelar must NOT be consumed as flow input — clear context and respond
+      if (text === '/cancelar' || text.startsWith('/cancel ') || text === '/cancel') {
+        userContextManager.clearContext(userId);
+        await sendTelegramMessage(chatId, '❌ Criação de tópico cancelada.');
+        return;
+      }
+      await handleTelegramFlowInput(chatId, userId, text);
+      return;
+    }
+
     // Check if chat is a forum (has topics enabled)
     // Note: is_forum is available in the chat object for supergroups
     const isForum = message.chat.is_forum === true;
@@ -7907,6 +7926,8 @@ export {
   handleTelegramCallback,
   handleTelegramMessage,
   isServiceMessage,
+  persistenceService,
+  topicManager,
 };
 
 // =============================================================================

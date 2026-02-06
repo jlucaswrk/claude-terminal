@@ -15,5 +15,11 @@
     "mode": "dojo",
     "telegramUsername": "lucas",
     "onboardingComplete": true
+  },
+  {
+    "userId": "tg_integrationtester",
+    "mode": "dojo",
+    "telegramUsername": "integrationtester",
+    "onboardingComplete": true
   }
 ]
