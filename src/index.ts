@@ -122,6 +122,12 @@ const config = {
   ),
 };
 
+function isAuthorizedUser(username?: string): boolean {
+  if (!username) return false;
+  if (config.allowedUsernames.size === 0) return true;
+  return config.allowedUsernames.has(username.toLowerCase());
+}
+
 // =============================================================================
 // Component Initialization
 // =============================================================================
@@ -523,23 +529,22 @@ async function handleTelegramMyChatMember(update: any): Promise<void> {
  * Identifies user, checks for existing agents, sends onboarding message and pins it
  */
 async function handleBotAddedToGroup(chatId: number, telegramUserId: number, telegramUsername?: string): Promise<void> {
-  // Try to identify user by Telegram username
-  const allPrefs = persistenceService.getAllUserPreferences();
-  const userPrefs = allPrefs.find(p =>
-    p.telegramUsername?.toLowerCase() === telegramUsername?.toLowerCase()
-  );
-
-  if (!userPrefs || !telegramUsername) {
-    // Unknown user - send generic message
-    await sendTelegramMessage(chatId,
-      '👋 *Bot adicionado ao grupo*\n\n' +
-      'Não encontrei seu cadastro.\n' +
-      'Configure o Dojo primeiro pelo WhatsApp.'
-    );
+  if (!isAuthorizedUser(telegramUsername)) {
+    console.log(`[telegram] Unauthorized group add from @${telegramUsername || 'unknown'} (chat ${chatId})`);
     return;
   }
 
-  const userId = userPrefs.userId;
+  // Auto-register if needed
+  const userId = `telegram:${telegramUsername}`;
+  let userPrefs = persistenceService.loadUserPreferences(userId);
+  if (!userPrefs) {
+    userPrefs = {
+      userId,
+      telegramUsername,
+      telegramChatId: chatId,
+    };
+    persistenceService.saveUserPreferences(userPrefs);
+  }
 
   // Check if user has existing agents
   const existingAgents = agentManager.listAgents(userId);
@@ -679,19 +684,24 @@ async function handleTelegramMessage(message: any): Promise<void> {
   }
 
   // =============================================================================
-  // User Preferences Check (required for all non-onboarding operations)
+  // Whitelist check
   // =============================================================================
-  const allPrefs = persistenceService.getAllUserPreferences();
-  const userPrefs = allPrefs.find(p =>
-    p.telegramUsername?.toLowerCase() === from.username?.toLowerCase()
-  );
-
-  if (!userPrefs) {
-    await sendTelegramMessage(chatId,
-      'Usuario nao encontrado.\n\n' +
-      'Configure o Dojo primeiro pelo WhatsApp.'
-    );
+  if (!isAuthorizedUser(from.username)) {
+    console.log(`[telegram] Unauthorized access from @${from.username || 'unknown'} (chat ${chatId})`);
     return;
+  }
+
+  // Auto-register user preferences if not exists
+  const userId = `telegram:${from.username}`;
+  let userPrefs = persistenceService.loadUserPreferences(userId);
+  if (!userPrefs) {
+    userPrefs = {
+      userId,
+      telegramUsername: from.username,
+      telegramChatId: chatId,
+    };
+    persistenceService.saveUserPreferences(userPrefs);
+    console.log(`[telegram] Auto-registered user @${from.username}`);
   }
 
   // Update telegram chat ID for private chats
@@ -699,8 +709,6 @@ async function handleTelegramMessage(message: any): Promise<void> {
     userPrefs.telegramChatId = chatId;
     persistenceService.saveUserPreferences(userPrefs);
   }
-
-  const userId = userPrefs.userId;
 
   // Handle photo messages in groups
   if (isGroup && message.photo) {
@@ -2268,14 +2276,23 @@ async function handleTelegramCallback(query: any): Promise<void> {
 
   await answerCallbackQuery(query.id);
 
-  // Find user by telegram username
-  const allPrefs = persistenceService.getAllUserPreferences();
-  const userPrefs = allPrefs.find(p =>
-    p.telegramUsername?.toLowerCase() === from.username?.toLowerCase()
-  );
+  // Whitelist check
+  if (!isAuthorizedUser(from.username)) {
+    console.log(`[telegram] Unauthorized callback from @${from.username || 'unknown'} (chat ${chatId})`);
+    return;
+  }
 
-  if (!userPrefs) return;
-  const userId = userPrefs.userId;
+  // Auto-register user preferences if not exists
+  const userId = `telegram:${from.username}`;
+  let userPrefs = persistenceService.loadUserPreferences(userId);
+  if (!userPrefs) {
+    userPrefs = {
+      userId,
+      telegramUsername: from.username,
+      telegramChatId: chatId,
+    };
+    persistenceService.saveUserPreferences(userPrefs);
+  }
 
   // Handle different callbacks
   if (data.startsWith('type_')) {
