@@ -52,6 +52,10 @@ mock.module('node-telegram-bot-api', () => {
       return true;
     }
 
+    async answerCallbackQuery(_callbackQueryId: string, _options?: any) {
+      return true;
+    }
+
     async _request(method: string, params: any) {
       telegramCalls.push({ method: `_request:${method}`, args: [params] });
       if (method === 'createForumTopic') {
@@ -101,6 +105,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
 // Import the real module singletons AFTER mocks are set up
 const {
   handleTelegramMessage,
+  handleTelegramCallback,
   agentManager,
   userContextManager,
   persistenceService,
@@ -113,6 +118,43 @@ const TELEGRAM_USERNAME = 'integrationtester';
 const USER_ID = `tg_${TELEGRAM_USERNAME}`;
 
 const TEST_WORKSPACE_DIR = '/tmp/test-integration-topic-flow-workspace';
+const TEST_SUBDIR_NAME = 'subproject';
+const TEST_SUBDIR_PATH = join(TEST_WORKSPACE_DIR, TEST_SUBDIR_NAME);
+
+/**
+ * Helper to build a simulated Telegram callback query (button press)
+ */
+function makeCallbackQuery(data: string) {
+  return {
+    id: `cbq_${Math.floor(Math.random() * 100000)}`,
+    message: {
+      chat: { id: CHAT_ID },
+      message_id: Math.floor(Math.random() * 10000),
+    },
+    from: {
+      id: TELEGRAM_USER_ID,
+      username: TELEGRAM_USERNAME,
+      first_name: 'Test',
+    },
+    data,
+  };
+}
+
+/**
+ * Find sent Telegram messages that contain inline_keyboard buttons
+ */
+function findButtonMessages(): Array<{ text: string; buttons: any[][] }> {
+  return telegramCalls
+    .filter(
+      (c) =>
+        c.method === 'sendMessage' &&
+        c.args[2]?.reply_markup?.inline_keyboard
+    )
+    .map((c) => ({
+      text: c.args[1] as string,
+      buttons: c.args[2].reply_markup.inline_keyboard,
+    }));
+}
 
 /**
  * Helper to build a simulated Telegram group message
@@ -150,9 +192,12 @@ describe('Integration: Topic Flow via handleTelegramMessage', () => {
     // Clear tracked calls
     telegramCalls.length = 0;
 
-    // Ensure test workspace directory exists
+    // Ensure test workspace directory and subdirectory exist
     if (!existsSync(TEST_WORKSPACE_DIR)) {
       mkdirSync(TEST_WORKSPACE_DIR, { recursive: true });
+    }
+    if (!existsSync(TEST_SUBDIR_PATH)) {
+      mkdirSync(TEST_SUBDIR_PATH, { recursive: true });
     }
 
     // Register user preferences so handleTelegramMessage can find the user
@@ -303,5 +348,116 @@ describe('Integration: Topic Flow via handleTelegramMessage', () => {
     // No flow-related messages (no name prompt, no workspace question, no cancellation)
     const flowMsgs = findSentMessages('nome do tópico');
     expect(flowMsgs.length).toBe(0);
+  });
+
+  test('/worktree full flow via wsnav buttons: command → name → ws_yes → wsnav:agent → wsnav:into → wsnav:select → topic created', async () => {
+    const agent = agentManager.listAgents(USER_ID)[0];
+
+    // Step 1: Send /worktree command (no name)
+    await handleTelegramMessage(makeGroupMessage('/worktree'));
+    expect(userContextManager.isAwaitingTopicName(USER_ID)).toBe(true);
+
+    // Step 2: Send topic name
+    telegramCalls.length = 0;
+    await handleTelegramMessage(makeGroupMessage('feature-auth'));
+    expect(userContextManager.isAwaitingTopicName(USER_ID)).toBe(false);
+    expect(userContextManager.isAwaitingTopicWorkspace(USER_ID)).toBe(true);
+
+    // Step 3: Click "✅ Sim" to configure workspace (callback: topic_create_ws_yes)
+    telegramCalls.length = 0;
+    await handleTelegramCallback(makeCallbackQuery('topic_create_ws_yes'));
+
+    // Should have started directory navigation with creationContext
+    const navStateAfterYes = userContextManager.getDirectoryNavigationState(USER_ID);
+    expect(navStateAfterYes).toBeDefined();
+    expect(navStateAfterYes!.creationContext).toBeDefined();
+    expect(navStateAfterYes!.creationContext!.flow).toBe('topic_worktree');
+    expect(navStateAfterYes!.creationContext!.flowData.topicName).toBe('feature-auth');
+
+    // Should have shown workspace selector with wsnav:agent button
+    const selectorMsgs = findButtonMessages();
+    expect(selectorMsgs.length).toBeGreaterThanOrEqual(1);
+    const selectorButtons = selectorMsgs.flatMap((m) => m.buttons.flat());
+    const agentButton = selectorButtons.find((b) => b.callback_data === 'wsnav:agent');
+    expect(agentButton).toBeDefined();
+
+    // Validate all selector callbacks are short (< 64 bytes) and contain no absolute paths
+    for (const btn of selectorButtons) {
+      expect(Buffer.byteLength(btn.callback_data, 'utf8')).toBeLessThan(64);
+      expect(btn.callback_data).not.toMatch(/\/tmp/);
+      expect(btn.callback_data).not.toMatch(/^\/|:\/\//);
+    }
+
+    // Step 4: Click "wsnav:agent" to navigate to agent workspace
+    telegramCalls.length = 0;
+    await handleTelegramCallback(makeCallbackQuery('wsnav:agent'));
+
+    // Should now be browsing the agent workspace directory
+    const navStateAfterAgent = userContextManager.getDirectoryNavigationState(USER_ID);
+    expect(navStateAfterAgent).toBeDefined();
+    expect(navStateAfterAgent!.currentPath).toBe(TEST_WORKSPACE_DIR);
+    // creationContext should be preserved through navigation
+    expect(navStateAfterAgent!.creationContext).toBeDefined();
+
+    // Should have shown directory browser with subdirectories
+    const browserMsgs = findButtonMessages();
+    expect(browserMsgs.length).toBeGreaterThanOrEqual(1);
+    const browserButtons = browserMsgs.flatMap((m) => m.buttons.flat());
+
+    // Should have wsnav:into:0 button for the subdirectory
+    const intoButton = browserButtons.find((b) => b.callback_data === 'wsnav:into:0');
+    expect(intoButton).toBeDefined();
+
+    // Validate all browser callbacks are short (< 64 bytes) and contain no absolute paths
+    for (const btn of browserButtons) {
+      expect(Buffer.byteLength(btn.callback_data, 'utf8')).toBeLessThan(64);
+      expect(btn.callback_data).not.toMatch(/\/tmp/);
+      expect(btn.callback_data).not.toMatch(/^\/|:\/\//);
+    }
+
+    // Step 5: Navigate into first subdirectory (wsnav:into:0)
+    telegramCalls.length = 0;
+    await handleTelegramCallback(makeCallbackQuery('wsnav:into:0'));
+
+    const navStateAfterInto = userContextManager.getDirectoryNavigationState(USER_ID);
+    expect(navStateAfterInto).toBeDefined();
+    expect(navStateAfterInto!.currentPath).toBe(TEST_SUBDIR_PATH);
+    // creationContext still preserved
+    expect(navStateAfterInto!.creationContext).toBeDefined();
+
+    // Step 6: Select this directory (wsnav:select) → finalizes topic creation
+    telegramCalls.length = 0;
+    await handleTelegramCallback(makeCallbackQuery('wsnav:select'));
+
+    // Flow should be complete — context and navigation cleared
+    expect(userContextManager.isAwaitingTopicWorkspace(USER_ID)).toBe(false);
+    expect(userContextManager.isAwaitingTopicName(USER_ID)).toBe(false);
+    expect(userContextManager.getDirectoryNavigationState(USER_ID)).toBeUndefined();
+
+    // Verify topic was created with the selected subdirectory as workspace
+    const topics = topicManager.listTopics(agent.id);
+    const createdTopic = topics.find((t) => t.name === 'feature-auth');
+    expect(createdTopic).toBeDefined();
+    expect(createdTopic!.type).toBe('worktree');
+    expect(createdTopic!.workspace).toBe(TEST_SUBDIR_PATH);
+
+    // Verify createForumTopic was called
+    const createTopicCalls = telegramCalls.filter((c) => c.method === '_request:createForumTopic');
+    expect(createTopicCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Verify welcome message includes "⚙️ Workspace" button with topic_workspace:<topicId>
+    const welcomeMsgs = findButtonMessages();
+    const welcomeButtons = welcomeMsgs.flatMap((m) => m.buttons.flat());
+    const workspaceButton = welcomeButtons.find(
+      (b) => b.text === '⚙️ Workspace' && b.callback_data.startsWith('topic_workspace:')
+    );
+    expect(workspaceButton).toBeDefined();
+    expect(workspaceButton!.callback_data).toBe(`topic_workspace:${createdTopic!.id}`);
+
+    // Validate the workspace button callback is also short (< 64 bytes) and contains no absolute paths
+    expect(Buffer.byteLength(workspaceButton!.callback_data, 'utf8')).toBeLessThan(64);
+    expect(workspaceButton!.callback_data).not.toMatch(/\/tmp/);
+    expect(workspaceButton!.callback_data).not.toMatch(/^\/|:\/\//);
+
   });
 });
