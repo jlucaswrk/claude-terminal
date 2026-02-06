@@ -5,10 +5,10 @@ import { ClaudeTerminal, type Model, type ProgressCallback } from './terminal';
 import type { RalphLoopState, RalphIteration, Agent } from './types';
 
 /**
- * Completion promise tag regex
- * Matches <promise>COMPLETE</promise> (case-insensitive, allows whitespace)
+ * Promise tag regex
+ * Matches <promise>COMPLETE</promise> or <promise>BLOCKED</promise> (case-insensitive, allows whitespace)
  */
-const COMPLETION_REGEX = /<promise>\s*COMPLETE\s*<\/promise>/i;
+const PROMISE_REGEX = /<promise>\s*(COMPLETE|BLOCKED)\s*<\/promise>/i;
 
 /**
  * Result of a single loop iteration
@@ -16,6 +16,7 @@ const COMPLETION_REGEX = /<promise>\s*COMPLETE\s*<\/promise>/i;
 export interface IterationResult {
   iteration: RalphIteration;
   isComplete: boolean;
+  promiseType: 'complete' | 'blocked' | null;
 }
 
 /**
@@ -67,7 +68,7 @@ export interface QueuedRalphMessage {
  * Features:
  * - Create and manage autonomous task loops
  * - Semaphore integration for concurrency control
- * - Completion detection via <promise>COMPLETE</promise> tag
+ * - Promise detection via <promise>COMPLETE</promise> and <promise>BLOCKED</promise> tags
  * - Pause/resume functionality with semaphore slot management
  * - Iteration tracking and persistence
  * - Max iteration blocking (marks as "blocked" when exhausted)
@@ -321,6 +322,34 @@ export class RalphLoopManager {
           };
         }
 
+        // Check for blocked promise
+        if (iterationResult.promiseType === 'blocked') {
+          loop.status = 'blocked';
+          this.persistLoop(loop);
+          this.agentManager.clearLoopReference(loop.agentId);
+          this.updateAgentLoopState(
+            loop.agentId,
+            loopId,
+            'error',
+            `Bloqueado: agente sinalizou bloqueio na iteração ${loop.currentIteration}`
+          );
+
+          console.log(`[ralph] Loop ${loopId} blocked by promise at iteration ${loop.currentIteration}`);
+
+          // Notify completion (blocked)
+          if (this.completionCallback) {
+            this.completionCallback(loopId, 'blocked', loop.currentIteration, loop.threadId);
+          }
+
+          return {
+            loopId,
+            status: 'blocked',
+            iterations: loop.currentIteration,
+            isComplete: false,
+            isBlocked: true,
+          };
+        }
+
         // Check if we were paused externally
         if (loop.status === 'paused') {
           console.log(`[ralph] Loop ${loopId} was paused externally`);
@@ -435,8 +464,8 @@ export class RalphLoopManager {
     const endTime = Date.now();
     const duration = endTime - startTime;
 
-    // Check for completion promise
-    const completionFound = this.checkCompletion(response.text);
+    // Check for promise tag (COMPLETE or BLOCKED)
+    const promiseType = this.checkCompletion(response.text);
 
     // Extract action summary from response
     const action = this.extractAction(response.text);
@@ -447,16 +476,18 @@ export class RalphLoopManager {
       action,
       prompt,
       response: response.text,
-      completionPromiseFound: completionFound,
+      completionPromiseFound: promiseType !== null,
+      promiseType,
       timestamp: new Date(),
       duration,
     };
 
-    console.log(`[ralph] Iteration ${iterationNumber} completed in ${duration}ms. Completion: ${completionFound}`);
+    console.log(`[ralph] Iteration ${iterationNumber} completed in ${duration}ms. Promise: ${promiseType}`);
 
     return {
       iteration,
-      isComplete: completionFound,
+      isComplete: promiseType === 'complete',
+      promiseType,
     };
   }
 
@@ -471,7 +502,7 @@ export class RalphLoopManager {
 
 ${loop.task}
 
-IMPORTANT: You must work autonomously to complete this task. When you have fully completed the task, you MUST include the exact tag <promise>COMPLETE</promise> in your response.
+IMPORTANT: You must work autonomously to complete this task. When you have fully completed the task, you MUST include the exact tag <promise>COMPLETE</promise> in your response. If you are blocked and cannot make further progress, include <promise>BLOCKED</promise> instead.
 
 You have access to all standard tools (Bash, Read, Write, Edit, Glob, Grep). Use them as needed to accomplish the task.
 
@@ -486,16 +517,18 @@ This is iteration 1 of maximum ${loop.maxIterations}. Begin working on the task 
 
 Your previous action: ${lastIteration?.action || 'N/A'}
 
-Remember: When you have fully completed the task, include <promise>COMPLETE</promise> in your response.
+Remember: When you have fully completed the task, include <promise>COMPLETE</promise> in your response. If you are blocked and cannot make further progress, include <promise>BLOCKED</promise> instead.
 
 Continue with the next step of the task.`;
   }
 
   /**
-   * Check if response contains completion promise
+   * Check if response contains a promise tag (COMPLETE or BLOCKED)
    */
-  checkCompletion(response: string): boolean {
-    return COMPLETION_REGEX.test(response);
+  checkCompletion(response: string): 'complete' | 'blocked' | null {
+    const match = response.match(PROMISE_REGEX);
+    if (!match) return null;
+    return match[1].toUpperCase() === 'COMPLETE' ? 'complete' : 'blocked';
   }
 
   /**

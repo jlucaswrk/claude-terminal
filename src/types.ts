@@ -109,7 +109,8 @@ export interface RalphIteration {
   action: string;               // What the agent decided to do
   prompt: string;               // Prompt sent to Claude
   response: string;             // Claude's response
-  completionPromiseFound: boolean;  // Whether completion was signaled
+  completionPromiseFound: boolean;  // Whether any promise was signaled
+  promiseType: 'complete' | 'blocked' | null;  // Type of promise found
   timestamp: Date;
   duration: number;             // milliseconds
 }
@@ -349,6 +350,7 @@ export interface SerializedRalphIteration {
   prompt: string;
   response: string;
   completionPromiseFound: boolean;
+  promiseType: 'complete' | 'blocked' | null;  // Type of promise found
   timestamp: string;            // ISO date string
   duration: number;
 }
