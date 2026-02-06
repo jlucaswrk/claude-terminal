@@ -150,7 +150,7 @@ export async function sendTelegramPhoto(
 export async function sendTelegramButtons(
   chatId: number | string,
   text: string,
-  buttons: Array<{ text: string; callback_data: string }[]>,
+  buttons: Array<{ text: string; callback_data?: string; url?: string }[]>,
   threadId?: number
 ): Promise<TelegramBot.Message | null> {
   const telegramBot = getTelegramBot();

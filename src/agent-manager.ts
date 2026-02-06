@@ -461,7 +461,7 @@ export class AgentManager {
       throw new AgentValidationError(`Agent not found: ${agentId}`);
     }
 
-    agent.sessionId = sessionId;
+    agent.mainSessionId = sessionId;
     this.persist();
   }
 

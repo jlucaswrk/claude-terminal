@@ -303,7 +303,6 @@ export class PersistenceService {
         mode: agent.mode,
         emoji: agent.emoji,
         workspace: agent.workspace,
-        groupId: agent.groupId,
         modelMode: agent.modelMode,
         telegramChatId: agent.telegramChatId,
         mainSessionId: agent.mainSessionId,
@@ -362,7 +361,6 @@ export class PersistenceService {
           mode: agent.mode || 'conversational',
           emoji: agent.emoji,
           workspace: agent.workspace,
-          groupId: agent.groupId,
           // Backward compatibility: default to 'selection' for old agents without modelMode
           modelMode: agent.modelMode || 'selection',
           telegramChatId: agent.telegramChatId,

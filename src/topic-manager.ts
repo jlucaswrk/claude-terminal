@@ -9,7 +9,7 @@
  * - Sync between local state and Telegram
  */
 
-import { v4 as uuidv4 } from 'uuid';
+// Use built-in crypto.randomUUID() instead of uuid package
 import type { AgentTopic, TopicType, TopicStatus, AgentTopicsFile } from './types';
 import { PersistenceService } from './persistence';
 import {
@@ -209,7 +209,7 @@ export class TopicManager {
     // Create local topic object
     const now = new Date();
     const topic: AgentTopic = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       agentId,
       telegramTopicId: telegramTopicId ?? 0,
       type,
@@ -695,7 +695,7 @@ export class TopicManager {
     // Create local topic object with correct emoji for the type
     const now = new Date();
     const topic: AgentTopic = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       agentId,
       telegramTopicId: threadId,
       type,

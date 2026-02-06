@@ -118,7 +118,7 @@ export class RalphLoopManager {
   /**
    * Set the progress callback for loop updates
    */
-  setProgressCallback(callback: LoopProgressCallback): void {
+  setProgressCallback(callback: LoopProgressCallback | undefined): void {
     this.progressCallback = callback;
   }
 
@@ -321,15 +321,15 @@ export class RalphLoopManager {
           };
         }
 
-        // Check if we were paused externally
-        if (loop.status === 'paused') {
+        // Check if we were paused externally (status can change from another call)
+        if ((loop.status as string) === 'paused') {
           console.log(`[ralph] Loop ${loopId} was paused externally`);
           break;
         }
       }
 
-      // Check why we exited the loop
-      if (loop.status === 'paused') {
+      // Check why we exited the loop (status may have been changed externally)
+      if ((loop.status as string) === 'paused') {
         // Paused - semaphore will be released, ready for resume
         return {
           loopId,

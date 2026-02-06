@@ -5,7 +5,7 @@
  * configuring priorities, etc. All state is in-memory (not persisted).
  */
 
-import type { UserContext, ModelMode, UserMode } from './types';
+import type { UserContext, ModelMode } from './types';
 
 /**
  * Flow types supported by the context manager
@@ -963,27 +963,6 @@ export class UserContextManager {
     this.contexts.set(userId, context);
   }
 
-  // ============================================
-  // Onboarding Flow
-  // States: awaiting_mode_selection → (awaiting_telegram_username for dojo) → complete
-  // ============================================
-
-  /**
-   * Start the onboarding flow for mode selection
-   * Preserves activeAgentId and pendingPrompt for continuous conversation support
-   */
-  startOnboardingFlow(userId: string): void {
-    const existingContext = this.contexts.get(userId);
-    this.contexts.set(userId, {
-      userId,
-      activeAgentId: existingContext?.activeAgentId,
-      pendingPrompt: existingContext?.pendingPrompt,
-      currentFlow: 'onboarding',
-      flowState: 'awaiting_mode_selection',
-      flowData: {},
-    });
-  }
-
   /**
    * Start prompt flow for Telegram - stores agentId and waits for text
    * Also sets activeAgentId for continuous conversation support
@@ -1012,50 +991,6 @@ export class UserContextManager {
   getPendingAgentId(userId: string): string | undefined {
     const context = this.contexts.get(userId);
     return context?.flowData?.agentId as string | undefined;
-  }
-
-  /**
-   * Check if user is awaiting mode selection
-   */
-  isAwaitingModeSelection(userId: string): boolean {
-    const context = this.contexts.get(userId);
-    return context?.currentFlow === 'onboarding' && context?.flowState === 'awaiting_mode_selection';
-  }
-
-  /**
-   * Set the user mode (ronin or dojo)
-   */
-  setUserMode(userId: string, mode: UserMode): void {
-    const context = this.contexts.get(userId);
-    if (!context) return;
-
-    context.flowData = { ...context.flowData, userMode: mode };
-
-    if (mode === 'dojo') {
-      context.flowState = 'awaiting_telegram_username';
-    } else {
-      // Ronin mode - complete onboarding
-      this.contexts.delete(userId);
-    }
-  }
-
-  /**
-   * Check if user is awaiting telegram username
-   */
-  isAwaitingTelegramUsername(userId: string): boolean {
-    const context = this.contexts.get(userId);
-    return context?.currentFlow === 'onboarding' && context?.flowState === 'awaiting_telegram_username';
-  }
-
-  /**
-   * Set telegram username (completes dojo onboarding)
-   */
-  setTelegramUsername(userId: string, username: string): void {
-    const context = this.contexts.get(userId);
-    if (!context) return;
-
-    context.flowData = { ...context.flowData, telegramUsername: username };
-    // Flow data is preserved for the caller to use, then they clear context
   }
 
   // ============================================
