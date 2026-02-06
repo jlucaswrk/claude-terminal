@@ -451,14 +451,19 @@ export class RalphLoopManager {
 
     console.log(`[ralph] Executing iteration ${iterationNumber}/${loop.maxIterations} for loop ${loop.id}`);
 
-    // Execute via ClaudeTerminal
+    // Clear previous session so each iteration starts fresh (isolated session per loop)
+    this.terminal.clearTopicSession(loop.id);
+
+    // Execute via ClaudeTerminal with isolated session (topicKey = loop.id)
     const response = await this.terminal.send(
       prompt,
       loop.currentModel,
       loop.userId,
       loop.agentId,
       agent.workspace,
-      undefined // No progress callback for individual iterations
+      undefined, // No progress callback for individual iterations
+      undefined, // No images
+      loop.id    // topicKey: isolated session per loop
     );
 
     const endTime = Date.now();
