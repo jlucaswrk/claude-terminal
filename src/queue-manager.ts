@@ -449,6 +449,19 @@ export class QueueManager {
 
     this.queue.enqueue(fullTask);
 
+    // If no permits available, notify user about queue position (fire-and-forget)
+    if (this.semaphore.availablePermits() === 0) {
+      const position = this.queue.getPosition(fullTask.id);
+      if (position !== undefined) {
+        this.sendResponse(
+          task.replyTo,
+          task.userId,
+          `⏳ Na fila (posição ${position})`,
+          task.threadId
+        ).catch(err => console.error('[queue] Failed to send queue position:', err));
+      }
+    }
+
     // Try to process immediately
     this.processNext();
 
@@ -599,7 +612,7 @@ export class QueueManager {
         // Start 1s progress update interval for Telegram live view
         const chatId = replyTo;
         progressInterval = setInterval(async () => {
-          if (progressState.messageId && progressState.events.length > 0) {
+          if (progressState.messageId && (progressState.events.length > 0 || progressState.textBuffer)) {
             try {
               const text = formatProgressText(progressState);
               await this.editTelegram!(chatId, progressState.messageId, text);
@@ -720,9 +733,9 @@ export class QueueManager {
             console.error('[progress] Failed to edit final message:', editErr);
           }
           if (!edited) {
-            // Fallback: send as new message
-            const header = `${agentEmoji} *${agent.name}*\n───\n`;
-            await this.sendResponse(replyTo, userId, header + response.text, threadId);
+            // Fallback: send as new message with summarized final format
+            const fallbackText = formatFinalText(progressState, response, agent.name, agentEmoji);
+            await this.sendResponse(replyTo, userId, fallbackText, threadId);
           }
         } else {
           // WhatsApp or fallback: send as new message

@@ -1379,18 +1379,20 @@ describe('Telegram Live View Integration', () => {
     expect(editCalls.length).toBe(editCountAfterError);
   });
 
-  test('edit failures during interval are silently ignored', async () => {
-    let editCallCount = 0;
-    const flakeyEditTelegram: EditTelegramFn = async () => {
-      editCallCount++;
-      if (editCallCount <= 2) {
-        throw new Error('429 Too Many Requests');
-      }
-      return true;
+  test('edit failures during final edit fall back to new message', async () => {
+    const throwingEditTelegram: EditTelegramFn = async () => {
+      throw new Error('429 Too Many Requests');
     };
 
     const persistenceService = new MockPersistenceService() as unknown as PersistenceService;
     const localAgentManager = new AgentManager(persistenceService);
+
+    const localTelegramMessages: Array<{ chatId: number; text: string; threadId?: number }> = [];
+    const localSendTelegram: SendTelegramFn = async (chatId: number, text: string, threadId?: number) => {
+      localTelegramMessages.push({ chatId, text, threadId });
+      return { message_id: 1000 + localTelegramMessages.length };
+    };
+
     const localQueueManager = new QueueManager(
       new Semaphore(2),
       localAgentManager,
@@ -1399,13 +1401,12 @@ describe('Telegram Live View Integration', () => {
       undefined,
       undefined,
       undefined,
-      sendTelegram,
-      flakeyEditTelegram,
+      localSendTelegram,
+      throwingEditTelegram,
     );
 
     const agent = localAgentManager.createAgent('user1', 'Agent');
-    terminal.setDelay('test prompt', 3000);
-    terminal.setResponse('test prompt', { text: 'Success', images: [], toolsUsed: [] });
+    terminal.setResponse('test prompt', { text: 'Success response', images: [], toolsUsed: [] });
 
     localQueueManager.enqueue({
       agentId: agent.id,
@@ -1415,11 +1416,131 @@ describe('Telegram Live View Integration', () => {
       replyTo: 12345 as any,
     });
 
-    // Wait for a few interval cycles
-    await new Promise((r) => setTimeout(r, 3500));
+    await new Promise((r) => setTimeout(r, 200));
 
-    // Task should complete despite edit failures
+    // Task should complete despite edit failure (falls back to new message)
     const updatedAgent = localAgentManager.getAgent(agent.id)!;
     expect(updatedAgent.status).toBe('idle');
+    // Should have sent a fallback message with the response
+    const fallbackMsg = localTelegramMessages.find(m => m.text.includes('Success response'));
+    expect(fallbackMsg).toBeDefined();
+  });
+});
+
+describe('Queue Position Notification', () => {
+  test('sends queue position message when no permits available (Telegram)', async () => {
+    const telegramMessages: Array<{ chatId: number; text: string; threadId?: number }> = [];
+    const sendTelegram: SendTelegramFn = async (chatId: number, text: string, threadId?: number) => {
+      telegramMessages.push({ chatId, text, threadId });
+      return { message_id: 1000 + telegramMessages.length };
+    };
+
+    const editTelegram: EditTelegramFn = async () => true;
+
+    // Use semaphore with 1 permit so second task must queue
+    const semaphore = new Semaphore(1);
+    const terminal = new MockClaudeTerminal();
+    const persistenceService = new MockPersistenceService() as unknown as PersistenceService;
+    const localAgentManager = new AgentManager(persistenceService);
+
+    const qm = new QueueManager(
+      semaphore,
+      localAgentManager,
+      terminal as unknown as ClaudeTerminal,
+      async () => {},
+      undefined,
+      undefined,
+      undefined,
+      sendTelegram,
+      editTelegram,
+    );
+
+    const agent = localAgentManager.createAgent('user1', 'Agent');
+    // First task: will acquire the only permit
+    terminal.setDelay('prompt1', 2000);
+    qm.enqueue({
+      agentId: agent.id,
+      prompt: 'prompt1',
+      model: 'haiku',
+      userId: 'user1',
+      replyTo: 12345 as any,
+    });
+
+    // Wait for first task to start processing
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Second task: should be queued (no permits)
+    qm.enqueue({
+      agentId: agent.id,
+      prompt: 'prompt2',
+      model: 'haiku',
+      userId: 'user1',
+      replyTo: 12345 as any,
+    });
+
+    // Wait for queue notification to fire
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should have a queue position message
+    const queueMsg = telegramMessages.find(m => m.text.includes('Na fila'));
+    expect(queueMsg).toBeDefined();
+    expect(queueMsg!.text).toContain('posição');
+  });
+
+  test('does not send queue position when permits are available', async () => {
+    const telegramMessages: Array<{ chatId: number; text: string; threadId?: number }> = [];
+    const sendTelegram: SendTelegramFn = async (chatId: number, text: string, threadId?: number) => {
+      telegramMessages.push({ chatId, text, threadId });
+      return { message_id: 1000 + telegramMessages.length };
+    };
+
+    const editTelegram: EditTelegramFn = async () => true;
+
+    // 2 permits available
+    const semaphore = new Semaphore(2);
+    const terminal = new MockClaudeTerminal();
+    const persistenceService = new MockPersistenceService() as unknown as PersistenceService;
+    const localAgentManager = new AgentManager(persistenceService);
+
+    const qm = new QueueManager(
+      semaphore,
+      localAgentManager,
+      terminal as unknown as ClaudeTerminal,
+      async () => {},
+      undefined,
+      undefined,
+      undefined,
+      sendTelegram,
+      editTelegram,
+    );
+
+    const agent = localAgentManager.createAgent('user1', 'Agent');
+    qm.enqueue({
+      agentId: agent.id,
+      prompt: 'test',
+      model: 'haiku',
+      userId: 'user1',
+      replyTo: 12345 as any,
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // No queue position message should be sent (task processes immediately)
+    const queueMsg = telegramMessages.find(m => m.text.includes('Na fila'));
+    expect(queueMsg).toBeUndefined();
+  });
+});
+
+describe('getToolIcon (extended)', () => {
+  test('returns correct icon for Task tool', () => {
+    expect(getToolIcon('Task')).toBe('🤖');
+  });
+
+  test('returns correct icon for WebFetch tool', () => {
+    expect(getToolIcon('WebFetch')).toBe('🌐');
+  });
+
+  test('returns correct icon for WebSearch tool', () => {
+    expect(getToolIcon('WebSearch')).toBe('🔎');
   });
 });
