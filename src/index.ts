@@ -143,7 +143,6 @@ import {
   sendCancelFeedback,
   sendTopicActionFeedbackGeneral,
   sendWorkspaceNotFoundOptions,
-  sendTopicWorkspaceReconfig,
   type TopicListItem,
 } from './telegram';
 import { GroupOnboardingManager } from './group-onboarding-manager';
@@ -162,7 +161,8 @@ import type { Agent, AgentType, ModelMode, UserMode, UserPreferences } from './t
 import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
 import { uploadToKapso, downloadFromKapso } from './storage';
 import { TelegramTokenManager } from './telegram-tokens';
-import { existsSync, statSync } from 'fs';
+import { existsSync, statSync, readdirSync } from 'fs';
+import { join, dirname } from 'path';
 
 // =============================================================================
 // Configuration
@@ -1863,6 +1863,88 @@ async function handleTopicWorkspace(
       threadId
     );
   }
+}
+
+/**
+ * Show interactive workspace selector for topic workspace reconfiguration.
+ * Emits wsbase_* callbacks for directory browsing and wsnav_select callbacks for selection.
+ */
+async function showWorkspaceSelector(
+  chatId: number,
+  threadId: number | undefined,
+  agentId: string,
+  topicId: string
+): Promise<void> {
+  const home = process.env.HOME || '/home/user';
+
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+  // Base directories to browse into (wsbase_ callbacks)
+  rows.push([
+    { text: '🏠 Home', callback_data: `wsbase_${topicId}_${home}` },
+    { text: '📂 Desktop', callback_data: `wsbase_${topicId}_${home}/Desktop` },
+  ]);
+  rows.push([
+    { text: '📄 Documents', callback_data: `wsbase_${topicId}_${home}/Documents` },
+    { text: '🧪 Sandbox', callback_data: `wsnav_select_${topicId}_sandbox` },
+  ]);
+  rows.push([
+    { text: '✏️ Customizado', callback_data: `wsnav_select_${topicId}_custom` },
+  ]);
+
+  await sendTelegramButtons(chatId, '📁 *Selecione o workspace para este tópico:*', rows, threadId);
+}
+
+/**
+ * Show directory contents for workspace browsing (wsbase_ navigation).
+ */
+async function showWorkspaceDirectoryBrowser(
+  chatId: number,
+  threadId: number | undefined,
+  topicId: string,
+  basePath: string
+): Promise<void> {
+  let subdirs: string[] = [];
+  try {
+    subdirs = readdirSync(basePath)
+      .filter(name => !name.startsWith('.'))
+      .filter(name => {
+        try { return statSync(join(basePath, name)).isDirectory(); }
+        catch { return false; }
+      })
+      .sort()
+      .slice(0, 6);
+  } catch {
+    // directory not readable
+  }
+
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+  // Select this directory button (wsnav_select callback)
+  rows.push([
+    { text: '✅ Selecionar esta pasta', callback_data: `wsnav_select_${topicId}_path_${basePath}` },
+  ]);
+
+  // Subdirectory buttons (2 per row, wsbase_ callbacks)
+  for (let i = 0; i < subdirs.length; i += 2) {
+    const row: Array<{ text: string; callback_data: string }> = [
+      { text: `📁 ${subdirs[i]}`, callback_data: `wsbase_${topicId}_${join(basePath, subdirs[i])}` },
+    ];
+    if (subdirs[i + 1]) {
+      row.push({ text: `📁 ${subdirs[i + 1]}`, callback_data: `wsbase_${topicId}_${join(basePath, subdirs[i + 1])}` });
+    }
+    rows.push(row);
+  }
+
+  // Back button (go to parent directory)
+  const parentPath = dirname(basePath);
+  if (parentPath !== basePath) {
+    rows.push([
+      { text: '⬆️ Voltar', callback_data: `wsbase_${topicId}_${parentPath}` },
+    ]);
+  }
+
+  await sendTelegramButtons(chatId, `📁 *${basePath}*`, rows, threadId);
 }
 
 /**
@@ -3633,11 +3715,10 @@ async function handleTelegramCallback(query: any): Promise<void> {
       const topic = topicManager.getTopic(agent.id, topicId);
       const resolvedThreadId = topic?.telegramTopicId;
 
-      // Set topic workspace to agent-specific sandbox path
-      const sandboxPath = getAgentSandboxPath(agent.id);
-      topicManager.updateTopicWorkspace(agent.id, topicId, sandboxPath);
+      // Set topic workspace to 'sandbox' sentinel - forces sandbox regardless of agent workspace
+      topicManager.updateTopicWorkspace(agent.id, topicId, 'sandbox');
       await sendTelegramMessage(chatId,
-        `✅ Usando sandbox\n📁 \`${sandboxPath}\``,
+        '✅ Usando sandbox',
         undefined,
         resolvedThreadId
       );
@@ -3670,7 +3751,7 @@ async function handleTelegramCallback(query: any): Promise<void> {
       const topic = topicManager.getTopic(agent.id, topicId);
       const resolvedThreadId = topic?.telegramTopicId;
 
-      await sendTopicWorkspaceReconfig(chatId, topicId, resolvedThreadId);
+      await showWorkspaceSelector(chatId, resolvedThreadId, agent.id, topicId);
     }
   }
   else if (data.startsWith('ws_notfound_cancel_')) {
@@ -3749,6 +3830,121 @@ async function handleTelegramCallback(query: any): Promise<void> {
         const markerIdx = payload.indexOf(pathMarker);
         const topicId = payload.substring(0, markerIdx);
         const selectedPath = payload.substring(markerIdx + pathMarker.length);
+        const topic = topicManager.getTopic(agent.id, topicId);
+        const resolvedThreadId = topic?.telegramTopicId;
+
+        // Validate path exists
+        let isDirectory = false;
+        try {
+          isDirectory = statSync(selectedPath).isDirectory();
+        } catch {
+          // path does not exist
+        }
+
+        if (!isDirectory) {
+          await sendTelegramMessage(chatId,
+            `❌ Caminho não encontrado: \`${selectedPath}\`\n\n` +
+            'Envie o caminho correto com /workspace:\n' +
+            'Exemplo: `/workspace /Users/lucas/projeto-x`',
+            undefined,
+            resolvedThreadId
+          );
+          return;
+        }
+
+        topicManager.updateTopicWorkspace(agent.id, topicId, selectedPath);
+        persistenceService.addRecentWorkspace(userId, selectedPath);
+        await sendTelegramMessage(chatId,
+          `✅ Workspace atualizado\n📁 \`${selectedPath}\``,
+          undefined,
+          resolvedThreadId
+        );
+
+        // Resume paused task
+        const { pausedPrompt, pausedModel, pausedImages } = context.flowData;
+        if (pausedPrompt && pausedModel) {
+          await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, resolvedThreadId);
+          queueManager.enqueue({
+            agentId: agent.id,
+            prompt: pausedPrompt as string,
+            model: pausedModel as 'haiku' | 'sonnet' | 'opus',
+            userId,
+            replyTo: chatId,
+            threadId: resolvedThreadId,
+            images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
+          });
+        }
+        userContextManager.clearContext(userId);
+      }
+    }
+  }
+  else if (data.startsWith('wsbase_')) {
+    // Handle directory browsing for workspace selector
+    const payload = data.replace('wsbase_', '');
+    const context = userContextManager.getContext(userId);
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId && context?.currentFlow === 'workspace_not_found' && context.flowData) {
+      // Parse topicId (UUID, 36 chars) and path from payload: <topicId>_<path>
+      const topicId = payload.substring(0, 36);
+      const basePath = payload.substring(37); // skip underscore after UUID
+      const topic = topicManager.getTopic(agent.id, topicId);
+      const resolvedThreadId = topic?.telegramTopicId;
+
+      await showWorkspaceDirectoryBrowser(chatId, resolvedThreadId, topicId, basePath);
+    }
+  }
+  else if (data.startsWith('wsnav_select_')) {
+    // Handle workspace selection from interactive selector
+    const payload = data.replace('wsnav_select_', '');
+    const context = userContextManager.getContext(userId);
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId && context?.currentFlow === 'workspace_not_found' && context.flowData) {
+      const topicId = payload.substring(0, 36);
+      const action = payload.substring(37); // after topicId_
+
+      if (action === 'sandbox') {
+        const topic = topicManager.getTopic(agent.id, topicId);
+        const resolvedThreadId = topic?.telegramTopicId;
+        const sandboxPath = getAgentSandboxPath(agent.id);
+
+        topicManager.updateTopicWorkspace(agent.id, topicId, sandboxPath);
+        await sendTelegramMessage(chatId,
+          `✅ Workspace atualizado\n📁 \`${sandboxPath}\``,
+          undefined,
+          resolvedThreadId
+        );
+
+        // Resume paused task
+        const { pausedPrompt, pausedModel, pausedImages } = context.flowData;
+        if (pausedPrompt && pausedModel) {
+          await sendTelegramMessage(chatId, '🔄 Retomando processamento do prompt...', undefined, resolvedThreadId);
+          queueManager.enqueue({
+            agentId: agent.id,
+            prompt: pausedPrompt as string,
+            model: pausedModel as 'haiku' | 'sonnet' | 'opus',
+            userId,
+            replyTo: chatId,
+            threadId: resolvedThreadId,
+            images: pausedImages as Array<{data: string; mimeType: string}> | undefined,
+          });
+        }
+        userContextManager.clearContext(userId);
+
+      } else if (action === 'custom') {
+        const topic = topicManager.getTopic(agent.id, topicId);
+        const resolvedThreadId = topic?.telegramTopicId;
+
+        await sendTelegramMessage(chatId,
+          '📁 Envie o novo caminho com /workspace:\n\n' +
+          'Exemplo: `/workspace /Users/lucas/projeto-x`',
+          undefined,
+          resolvedThreadId
+        );
+
+      } else if (action.startsWith('path_')) {
+        const selectedPath = action.substring(5); // after 'path_'
         const topic = topicManager.getTopic(agent.id, topicId);
         const resolvedThreadId = topic?.telegramTopicId;
 

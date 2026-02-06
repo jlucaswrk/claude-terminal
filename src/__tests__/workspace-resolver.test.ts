@@ -173,6 +173,17 @@ describe('WorkspaceResolver', () => {
       expect(result.error).toBeUndefined();
     });
 
+    test('sandbox sentinel bypasses agent workspace', () => {
+      const agent = createMockAgent({ workspace: '/some/agent/path' });
+      const topic = createMockTopic({ workspace: 'sandbox' });
+
+      const result = resolveWorkspace(agent, topic);
+
+      expect(result.workspace).toBeUndefined();
+      expect(result.source).toBe('sandbox');
+      expect(result.error).toBeUndefined();
+    });
+
     test('handles topic with empty string workspace (treated as falsy, falls through)', () => {
       const agentWorkspace = '/some/agent/path';
       const agent = createMockAgent({ workspace: agentWorkspace });

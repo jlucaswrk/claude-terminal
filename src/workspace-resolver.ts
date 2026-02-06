@@ -53,6 +53,11 @@ export function resolveWorkspace(
 ): WorkspaceResolution {
   // 1. Topic has workspace configured?
   if (topic?.workspace) {
+    // Sentinel value: 'sandbox' means explicitly use sandbox regardless of agent workspace
+    if (topic.workspace === 'sandbox') {
+      return { workspace: undefined, source: 'sandbox' };
+    }
+
     if (isExistingDirectory(topic.workspace)) {
       return { workspace: topic.workspace, source: 'topic' };
     } else {
