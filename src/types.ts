@@ -43,6 +43,7 @@ export interface AgentTopic {
   emoji: string;                 // Visual identifier (🔄, 🌿, 💬, 📌)
   sessionId?: string;            // Claude session ID (isolated, only for non-general topics)
   loopId?: string;               // Ralph loop ID (only for type='ralph')
+  workspace?: string;            // Absolute path for topic workspace (optional, overrides agent workspace)
   status: TopicStatus;
   messageCount: number;          // Counter for messages sent to this topic
   createdAt: Date;
@@ -188,6 +189,7 @@ export interface UserPreferences {
   telegramChatId?: number;         // Telegram chat ID for direct messages
   onboardingComplete: boolean;     // Whether user completed mode selection
   sandboxAutoCleanup?: boolean;    // Auto-cleanup sandbox directory on agent deletion
+  recentWorkspaces?: string[];     // Last 5 workspaces used (most recent first)
 }
 
 /**
@@ -200,6 +202,7 @@ export interface SerializedUserPreferences {
   telegramChatId?: number;
   onboardingComplete: boolean;
   sandboxAutoCleanup?: boolean;
+  recentWorkspaces?: string[];
 }
 
 /**
@@ -260,6 +263,7 @@ export interface SerializedAgentTopic {
   emoji: string;
   sessionId?: string;
   loopId?: string;
+  workspace?: string;
   status: TopicStatus;
   messageCount: number;         // Counter for messages sent to this topic
   createdAt: string;            // ISO date string
@@ -421,6 +425,15 @@ export interface SerializedGroupOnboardingState {
     selectedAgentId?: string;
   };
   startedAt: string;              // ISO date string
+}
+
+/**
+ * Callbacks for real-time progress monitoring during SDK processing
+ */
+export interface ProgressCallbacks {
+  onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void;
+  onBashOutput?: (command: string, output: string, exitCode: number) => void;
+  onTextChunk?: (chunk: string) => void;
 }
 
 /**

@@ -34,6 +34,8 @@ export type TelegramRouteResult =
   | { action: 'topic_closed'; chatId: number; userId: string; threadId: number; topicName: string }
   | { action: 'topic_ralph_active'; chatId: number; userId: string; threadId: number; topicName: string; agentId: string; text: string; loopId: string }
   | { action: 'topic_command'; command: 'ralph' | 'worktree' | 'sessao' | 'topicos'; args: string; chatId: number; userId: string; threadId?: number; agentId?: string }
+  | { action: 'topic_workspace'; chatId: number; userId: string; threadId?: number; agentId: string; path?: string }
+  | { action: 'topic_workspace_general'; chatId: number; userId: string }
   | { action: 'ralph_control'; command: 'pausar' | 'retomar' | 'cancelar'; chatId: number; userId: string; threadId: number; agentId: string; loopId: string }
   | { action: 'ignore' };
 
@@ -151,6 +153,39 @@ export class TelegramCommandHandler {
             userId,
           };
         }
+      }
+
+      // /workspace command - route to topic_workspace handler
+      if (commandLower === '/workspace') {
+        const agent = this.agentManager.getAgentByTelegramChatId(chatId);
+        if (!agent || agent.userId !== userId) {
+          return {
+            action: 'command',
+            command: commandLower,
+            args,
+            chatId,
+            userId,
+            threadId,
+          };
+        }
+
+        // In General topic (threadId undefined or 1) → show instruction message
+        if (!threadId || threadId === 1) {
+          return {
+            action: 'topic_workspace_general',
+            chatId,
+            userId,
+          };
+        }
+
+        return {
+          action: 'topic_workspace',
+          chatId,
+          userId,
+          threadId,
+          agentId: agent.id,
+          path: args.trim() || undefined,
+        };
       }
 
       // Topic management commands - route to topic_command handler only for forum groups

@@ -254,3 +254,60 @@ describe('Topic Session Isolation', () => {
     expect(response.text).toBe('Test response [TITLE: Test Title]');
   });
 });
+
+describe('ProgressCallbacks', () => {
+  let terminal: ClaudeTerminal;
+
+  beforeEach(() => {
+    terminal = new ClaudeTerminal();
+  });
+
+  test('accepts callbacks parameter without error', async () => {
+    const callbacks = {
+      onToolUse: (_name: string, _input: Record<string, unknown>) => {},
+      onBashOutput: (_cmd: string, _output: string, _exitCode: number) => {},
+      onTextChunk: (_chunk: string) => {},
+    };
+
+    const response = await terminal.send(
+      'test prompt', 'haiku', 'user1', 'agent1',
+      undefined, undefined, undefined, undefined, callbacks
+    );
+
+    expect(response.text).toBe('Test response [TITLE: Test Title]');
+  });
+
+  test('onTextChunk is called with final result text', async () => {
+    let receivedChunk = '';
+    const callbacks = {
+      onTextChunk: (chunk: string) => { receivedChunk = chunk; },
+    };
+
+    await terminal.send(
+      'test prompt', 'haiku', 'user1', 'agent1',
+      undefined, undefined, undefined, undefined, callbacks
+    );
+
+    expect(receivedChunk).toBe('Test response [TITLE: Test Title]');
+  });
+
+  test('works without callbacks (backwards compatible)', async () => {
+    // No callbacks passed - should work fine
+    const response = await terminal.send('test prompt', 'haiku', 'user1', 'agent1');
+    expect(response.text).toBe('Test response [TITLE: Test Title]');
+  });
+
+  test('works with partial callbacks', async () => {
+    // Only onTextChunk, no onToolUse or onBashOutput
+    const callbacks = {
+      onTextChunk: (_chunk: string) => {},
+    };
+
+    const response = await terminal.send(
+      'test prompt', 'haiku', 'user1', 'agent1',
+      undefined, undefined, undefined, undefined, callbacks
+    );
+
+    expect(response.text).toBe('Test response [TITLE: Test Title]');
+  });
+});

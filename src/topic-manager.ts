@@ -461,6 +461,27 @@ export class TopicManager {
   }
 
   /**
+   * Update topic workspace
+   *
+   * @param agentId - The agent ID
+   * @param topicId - The topic ID
+   * @param workspace - The workspace path (or undefined to clear)
+   */
+  updateTopicWorkspace(agentId: string, topicId: string, workspace: string | undefined): void {
+    const topic = this.getTopic(agentId, topicId);
+    if (!topic) return;
+
+    const updatedTopic: AgentTopic = {
+      ...topic,
+      workspace,
+      lastActivity: new Date(),
+    };
+
+    this.updateTopic(agentId, updatedTopic);
+    console.log(`[topic-manager] Updated workspace for topic ${topicId}: ${workspace || '(cleared)'}`);
+  }
+
+  /**
    * Clear the Ralph loop ID from a topic
    *
    * @param agentId - The agent ID

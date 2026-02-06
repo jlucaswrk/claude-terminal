@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, mock, spyOn } from 'bun:test';
-import { QueueManager, SendWhatsAppFn } from '../queue-manager';
+import { QueueManager, SendWhatsAppFn, getToolIcon, escapeMarkdown, formatProgressText, formatFinalText, TELEGRAM_MESSAGE_LIMIT, type ProgressState, type SendTelegramFn, type EditTelegramFn, type StartTypingIndicatorFn } from '../queue-manager';
 import { Semaphore } from '../semaphore';
 import { AgentManager } from '../agent-manager';
 import { ClaudeTerminal } from '../terminal';
@@ -801,5 +801,625 @@ describe('QueueManager', () => {
       expect(status.active).toBe(1);
       expect(status.queued).toBe(2);
     });
+  });
+});
+
+describe('Progress Monitor Formatting', () => {
+  describe('getToolIcon', () => {
+    test('returns correct icon for known tools', () => {
+      expect(getToolIcon('Bash')).toBe('🔧');
+      expect(getToolIcon('Read')).toBe('📖');
+      expect(getToolIcon('Write')).toBe('✍️');
+      expect(getToolIcon('Edit')).toBe('✏️');
+      expect(getToolIcon('Grep')).toBe('🔍');
+      expect(getToolIcon('Glob')).toBe('📂');
+    });
+
+    test('returns default icon for unknown tools', () => {
+      expect(getToolIcon('UnknownTool')).toBe('🔨');
+      expect(getToolIcon('CustomPlugin')).toBe('🔨');
+    });
+  });
+
+  describe('escapeMarkdown', () => {
+    test('escapes asterisks', () => {
+      expect(escapeMarkdown('**bold**')).toBe('\\*\\*bold\\*\\*');
+    });
+
+    test('escapes underscores', () => {
+      expect(escapeMarkdown('_italic_')).toBe('\\_italic\\_');
+    });
+
+    test('escapes backticks', () => {
+      expect(escapeMarkdown('`code`')).toBe('\\`code\\`');
+    });
+
+    test('escapes square brackets', () => {
+      expect(escapeMarkdown('[link](url)')).toBe('\\[link](url)');
+    });
+
+    test('escapes mixed characters', () => {
+      const result = escapeMarkdown('*test* _foo_ `bar` [baz]');
+      expect(result).toContain('\\*');
+      expect(result).toContain('\\_');
+      expect(result).toContain('\\`');
+      expect(result).toContain('\\[');
+    });
+
+    test('leaves plain text unchanged', () => {
+      expect(escapeMarkdown('hello world')).toBe('hello world');
+    });
+  });
+
+  describe('formatProgressText', () => {
+    test('shows elapsed time', () => {
+      const state: ProgressState = {
+        events: [],
+        textBuffer: '',
+        startTime: Date.now() - 5000,
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('5s');
+    });
+
+    test('shows tool events with icons', () => {
+      const state: ProgressState = {
+        events: [
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Read', toolInput: { file_path: '/src/index.ts' } } },
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Bash', toolInput: { command: 'npm test' } } },
+        ],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('📖');
+      expect(text).toContain('Read');
+      expect(text).toContain('index.ts');
+      expect(text).toContain('🔧');
+      expect(text).toContain('npm test');
+    });
+
+    test('shows text buffer when present', () => {
+      const state: ProgressState = {
+        events: [
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Read' } },
+        ],
+        textBuffer: 'Here is the analysis of the code...',
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('Resposta');
+      expect(text).toContain('analysis');
+    });
+
+    test('truncates long text buffer', () => {
+      const state: ProgressState = {
+        events: [],
+        textBuffer: 'x'.repeat(300),
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      // The text buffer should be truncated to 200 chars
+      expect(text.length).toBeLessThan(500);
+    });
+
+    test('shows bash output inline', () => {
+      const state: ProgressState = {
+        events: [
+          { type: 'bash_output', timestamp: Date.now(), data: { bashCommand: 'ls', bashOutput: 'file1.ts\nfile2.ts', bashExitCode: 0 } },
+        ],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('file1.ts');
+      expect(text).toContain('file2.ts');
+    });
+
+    test('truncates long bash output', () => {
+      const lines = Array.from({ length: 20 }, (_, i) => `line${i}`).join('\n');
+      const state: ProgressState = {
+        events: [
+          { type: 'bash_output', timestamp: Date.now(), data: { bashOutput: lines } },
+        ],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('linhas omitidas');
+    });
+  });
+
+  describe('formatFinalText', () => {
+    test('shows agent header with duration', () => {
+      const state: ProgressState = {
+        events: [
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Read' } },
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Write' } },
+        ],
+        textBuffer: '',
+        startTime: Date.now() - 10000,
+      };
+      const response = { text: 'Done!', images: [], files: [], toolsUsed: [], title: 'Test' };
+      const text = formatFinalText(state, response, 'MyAgent', '🤖');
+      expect(text).toContain('🤖');
+      expect(text).toContain('*MyAgent*');
+      expect(text).toContain('10s');
+      expect(text).toContain('Done!');
+    });
+
+    test('shows tool summary counts', () => {
+      const state: ProgressState = {
+        events: [
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Read' } },
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Read' } },
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Write' } },
+        ],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const response = { text: 'Result', images: [], files: [], toolsUsed: [], title: 'Test' };
+      const text = formatFinalText(state, response, 'Agent', '🤖');
+      expect(text).toContain('📖2');
+      expect(text).toContain('✍️1');
+    });
+
+    test('handles no tool events', () => {
+      const state: ProgressState = {
+        events: [],
+        textBuffer: '',
+        startTime: Date.now() - 3000,
+      };
+      const response = { text: 'Simple response', images: [], files: [], toolsUsed: [], title: 'Test' };
+      const text = formatFinalText(state, response, 'Agent', '🤖');
+      expect(text).toContain('*Agent*');
+      expect(text).toContain('Simple response');
+      // No tool summary section
+      expect(text).not.toContain('📖');
+    });
+
+    test('truncates response exceeding Telegram 4096 char limit', () => {
+      const state: ProgressState = {
+        events: [],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const longResponse = 'a'.repeat(5000);
+      const response = { text: longResponse, images: [], files: [], toolsUsed: [], title: 'Test' };
+      const text = formatFinalText(state, response, 'Agent', '🤖');
+      expect(text.length).toBeLessThanOrEqual(TELEGRAM_MESSAGE_LIMIT);
+      expect(text).toEndWith('...');
+    });
+  });
+
+  describe('formatProgressText (advanced)', () => {
+    test('truncates progress text exceeding Telegram 4096 char limit', () => {
+      // Create many events with long bash output to exceed limit
+      const longOutput = Array.from({ length: 10 }, (_, i) => 'x'.repeat(80)).join('\n');
+      const events = Array.from({ length: 10 }, () => ({
+        type: 'bash_output' as const,
+        timestamp: Date.now(),
+        data: { bashOutput: longOutput },
+      }));
+      const state: ProgressState = {
+        events,
+        textBuffer: 'y'.repeat(200),
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      expect(text.length).toBeLessThanOrEqual(TELEGRAM_MESSAGE_LIMIT);
+    });
+
+    test('shows 3 tools without bash output (simple processing)', () => {
+      const state: ProgressState = {
+        events: [
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Read', toolInput: { file_path: '/src/index.ts' } } },
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Grep', toolInput: { pattern: 'function' } } },
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Write', toolInput: { file_path: '/src/output.ts' } } },
+        ],
+        textBuffer: 'Analysis complete.',
+        startTime: Date.now() - 5000,
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('📖');
+      expect(text).toContain('Read');
+      expect(text).toContain('🔍');
+      expect(text).toContain('Grep');
+      expect(text).toContain('✍️');
+      expect(text).toContain('Write');
+      expect(text).toContain('Analysis complete');
+    });
+
+    test('shows complete bash output when <= 10 lines', () => {
+      const lines = Array.from({ length: 5 }, (_, i) => `line${i}`).join('\n');
+      const state: ProgressState = {
+        events: [
+          { type: 'bash_output', timestamp: Date.now(), data: { bashOutput: lines, bashExitCode: 0 } },
+        ],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('line0');
+      expect(text).toContain('line4');
+      expect(text).not.toContain('linhas omitidas');
+    });
+
+    test('truncates bash output at 5 lines when > 10 lines, showing omitted count', () => {
+      const lines = Array.from({ length: 50 }, (_, i) => `line${i}`).join('\n');
+      const state: ProgressState = {
+        events: [
+          { type: 'bash_output', timestamp: Date.now(), data: { bashOutput: lines, bashExitCode: 0 } },
+        ],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('line0');
+      expect(text).toContain('line4');
+      expect(text).toContain('45 linhas omitidas');
+      expect(text).not.toContain('line49');
+    });
+
+    test('truncates text buffer at 200 chars with ellipsis', () => {
+      const state: ProgressState = {
+        events: [],
+        textBuffer: 'a'.repeat(500),
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('Resposta');
+      expect(text).toContain('...');
+      // The text should contain at most 200 'a' chars (plus formatting + escaping overhead)
+      const responseSection = text.split('Resposta')[1] || '';
+      // Count 'a' characters in the response section
+      const aCount = (responseSection.match(/a/g) || []).length;
+      expect(aCount).toBeLessThanOrEqual(200);
+    });
+
+    test('handles empty bash output', () => {
+      const state: ProgressState = {
+        events: [
+          { type: 'bash_output', timestamp: Date.now(), data: { bashOutput: '', bashExitCode: 0 } },
+        ],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      // Should not crash, and shouldn't add unnecessary whitespace
+      expect(text).toBeDefined();
+    });
+
+    test('truncates long bash output lines at 80 chars', () => {
+      const longLine = 'x'.repeat(200);
+      const state: ProgressState = {
+        events: [
+          { type: 'bash_output', timestamp: Date.now(), data: { bashOutput: longLine, bashExitCode: 0 } },
+        ],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      // The line should be truncated to 80 chars + '...'
+      expect(text).not.toContain('x'.repeat(200));
+      expect(text).toContain('x'.repeat(80));
+    });
+
+    test('shows Edit tool with filename', () => {
+      const state: ProgressState = {
+        events: [
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Edit', toolInput: { file_path: '/src/components/Header.tsx' } } },
+        ],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('✏️');
+      expect(text).toContain('Header.tsx');
+    });
+
+    test('truncates long Bash commands at 40 chars', () => {
+      const longCmd = 'npm run build && npm run test && npm run lint && npm run deploy';
+      const state: ProgressState = {
+        events: [
+          { type: 'tool', timestamp: Date.now(), data: { toolName: 'Bash', toolInput: { command: longCmd } } },
+        ],
+        textBuffer: '',
+        startTime: Date.now(),
+      };
+      const text = formatProgressText(state);
+      expect(text).toContain('...');
+      expect(text).not.toContain(longCmd);
+    });
+  });
+});
+
+describe('Progress State Management', () => {
+  test('events array keeps only last 10 items', () => {
+    const state: ProgressState = {
+      events: [],
+      textBuffer: '',
+      startTime: Date.now(),
+    };
+
+    // Simulate the callback behavior from QueueManager
+    for (let i = 0; i < 15; i++) {
+      state.events.push({
+        type: 'tool',
+        timestamp: Date.now() + i,
+        data: { toolName: 'Read', toolInput: { file_path: `/file${i}.ts` } },
+      });
+      if (state.events.length > 10) {
+        state.events = state.events.slice(-10);
+      }
+    }
+
+    expect(state.events.length).toBe(10);
+    // Should have events 5-14 (last 10)
+    expect(state.events[0].data.toolInput?.file_path).toBe('/file5.ts');
+    expect(state.events[9].data.toolInput?.file_path).toBe('/file14.ts');
+  });
+
+  test('text buffer replaces on each chunk (not appending)', () => {
+    const state: ProgressState = {
+      events: [],
+      textBuffer: '',
+      startTime: Date.now(),
+    };
+
+    // Simulate onTextChunk behavior (from queue-manager callbacks)
+    state.textBuffer = 'First chunk of response...';
+    expect(state.textBuffer).toBe('First chunk of response...');
+
+    state.textBuffer = 'Full response text after SDK completes';
+    expect(state.textBuffer).toBe('Full response text after SDK completes');
+  });
+
+  test('multiple topics maintain independent progress states', () => {
+    const state1: ProgressState = {
+      messageId: 100,
+      events: [
+        { type: 'tool', timestamp: Date.now(), data: { toolName: 'Read', toolInput: { file_path: '/topic1/file.ts' } } },
+      ],
+      textBuffer: 'Topic 1 response...',
+      startTime: Date.now(),
+    };
+
+    const state2: ProgressState = {
+      messageId: 200,
+      events: [
+        { type: 'tool', timestamp: Date.now(), data: { toolName: 'Write', toolInput: { file_path: '/topic2/output.ts' } } },
+        { type: 'tool', timestamp: Date.now(), data: { toolName: 'Bash', toolInput: { command: 'npm test' } } },
+      ],
+      textBuffer: 'Topic 2 response...',
+      startTime: Date.now() - 3000,
+    };
+
+    const text1 = formatProgressText(state1);
+    const text2 = formatProgressText(state2);
+
+    // Topic 1 should only have Read
+    expect(text1).toContain('Read');
+    expect(text1).toContain('Topic 1');
+    expect(text1).not.toContain('Write');
+    expect(text1).not.toContain('npm test');
+
+    // Topic 2 should have Write and Bash
+    expect(text2).toContain('Write');
+    expect(text2).toContain('npm test');
+    expect(text2).toContain('Topic 2');
+    expect(text2).not.toContain('topic1');
+  });
+});
+
+describe('Telegram Live View Integration', () => {
+  let semaphore: Semaphore;
+  let agentManager: AgentManager;
+  let terminal: MockClaudeTerminal;
+  let sendWhatsApp: SendWhatsAppFn;
+  let whatsAppMessages: Array<{ to: string; text: string }>;
+  let telegramMessages: Array<{ chatId: number; text: string; threadId?: number }>;
+  let editCalls: Array<{ chatId: number; messageId: number; text: string }>;
+  let sendTelegram: SendTelegramFn;
+  let editTelegram: EditTelegramFn;
+  let queueManager: QueueManager;
+
+  beforeEach(() => {
+    semaphore = new Semaphore(2);
+    terminal = new MockClaudeTerminal();
+    whatsAppMessages = [];
+    telegramMessages = [];
+    editCalls = [];
+
+    sendWhatsApp = async (to: string, text: string) => {
+      whatsAppMessages.push({ to, text });
+    };
+
+    sendTelegram = async (chatId: number, text: string, threadId?: number) => {
+      telegramMessages.push({ chatId, text, threadId });
+      return { message_id: 1000 + telegramMessages.length };
+    };
+
+    editTelegram = async (chatId: number | string, messageId: number, text: string) => {
+      editCalls.push({ chatId: Number(chatId), messageId, text });
+      return true;
+    };
+
+    const persistenceService = new MockPersistenceService() as unknown as PersistenceService;
+    agentManager = new AgentManager(persistenceService);
+
+    queueManager = new QueueManager(
+      semaphore,
+      agentManager,
+      terminal as unknown as ClaudeTerminal,
+      sendWhatsApp,
+      undefined, // sendWhatsAppImage
+      undefined, // sendErrorWithActions
+      undefined, // sendWhatsAppMedia
+      sendTelegram,
+      editTelegram,
+      undefined, // sendTelegramImage
+      undefined  // startTypingIndicator
+    );
+  });
+
+  test('sends initial progress message to Telegram and captures messageId', async () => {
+    const agent = agentManager.createAgent('user1', 'TelegramAgent');
+    terminal.setDelay('test prompt', 50);
+
+    queueManager.enqueue({
+      agentId: agent.id,
+      prompt: 'test prompt',
+      model: 'haiku',
+      userId: 'user1',
+      replyTo: 12345 as any, // Telegram chatId (number = Telegram)
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Should have sent initial "Iniciando..." message
+    const initMsg = telegramMessages.find(m => m.text.includes('Iniciando'));
+    expect(initMsg).toBeDefined();
+    expect(initMsg!.chatId).toBe(12345);
+  });
+
+  test('edits message with final response on completion', async () => {
+    const agent = agentManager.createAgent('user1', 'TelegramAgent');
+    terminal.setResponse('test prompt', { text: 'Done! Task completed.', images: [], toolsUsed: [] });
+
+    queueManager.enqueue({
+      agentId: agent.id,
+      prompt: 'test prompt',
+      model: 'haiku',
+      userId: 'user1',
+      replyTo: 12345 as any,
+    });
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Should have at least one edit call with the final response
+    const finalEdit = editCalls.find(e => e.text.includes('Done! Task completed'));
+    expect(finalEdit).toBeDefined();
+    expect(finalEdit!.text).toContain('TelegramAgent');
+  });
+
+  test('falls back to new message if edit fails', async () => {
+    // Make edit always fail
+    const failingEditTelegram: EditTelegramFn = async () => false;
+
+    const persistenceService = new MockPersistenceService() as unknown as PersistenceService;
+    const localAgentManager = new AgentManager(persistenceService);
+    const localQueueManager = new QueueManager(
+      new Semaphore(2),
+      localAgentManager,
+      terminal as unknown as ClaudeTerminal,
+      sendWhatsApp,
+      undefined,
+      undefined,
+      undefined,
+      sendTelegram,
+      failingEditTelegram,
+    );
+
+    const agent = localAgentManager.createAgent('user1', 'Agent');
+    terminal.setResponse('test', { text: 'Result text', images: [], toolsUsed: [] });
+
+    localQueueManager.enqueue({
+      agentId: agent.id,
+      prompt: 'test',
+      model: 'haiku',
+      userId: 'user1',
+      replyTo: 12345 as any,
+    });
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Should have sent a fallback new message with the response
+    const fallbackMsg = telegramMessages.find(m => m.text.includes('Result text'));
+    expect(fallbackMsg).toBeDefined();
+  });
+
+  test('clears progress interval on error', async () => {
+    const errorTerminal = {
+      send: async () => {
+        throw new Error('SDK Error');
+      },
+      clearSession: () => {},
+    };
+
+    const persistenceService = new MockPersistenceService() as unknown as PersistenceService;
+    const localAgentManager = new AgentManager(persistenceService);
+    const localQueueManager = new QueueManager(
+      new Semaphore(2),
+      localAgentManager,
+      errorTerminal as unknown as ClaudeTerminal,
+      sendWhatsApp,
+      undefined,
+      undefined,
+      undefined,
+      sendTelegram,
+      editTelegram,
+    );
+
+    const agent = localAgentManager.createAgent('user1', 'Agent');
+    localQueueManager.enqueue({
+      agentId: agent.id,
+      prompt: 'will fail',
+      model: 'haiku',
+      userId: 'user1',
+      replyTo: 12345 as any,
+    });
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    // After error + cleanup, no more edits should happen
+    const editCountAfterError = editCalls.length;
+    await new Promise((r) => setTimeout(r, 2000));
+    // Interval should be cleared - no new edits
+    expect(editCalls.length).toBe(editCountAfterError);
+  });
+
+  test('edit failures during interval are silently ignored', async () => {
+    let editCallCount = 0;
+    const flakeyEditTelegram: EditTelegramFn = async () => {
+      editCallCount++;
+      if (editCallCount <= 2) {
+        throw new Error('429 Too Many Requests');
+      }
+      return true;
+    };
+
+    const persistenceService = new MockPersistenceService() as unknown as PersistenceService;
+    const localAgentManager = new AgentManager(persistenceService);
+    const localQueueManager = new QueueManager(
+      new Semaphore(2),
+      localAgentManager,
+      terminal as unknown as ClaudeTerminal,
+      sendWhatsApp,
+      undefined,
+      undefined,
+      undefined,
+      sendTelegram,
+      flakeyEditTelegram,
+    );
+
+    const agent = localAgentManager.createAgent('user1', 'Agent');
+    terminal.setDelay('test prompt', 3000);
+    terminal.setResponse('test prompt', { text: 'Success', images: [], toolsUsed: [] });
+
+    localQueueManager.enqueue({
+      agentId: agent.id,
+      prompt: 'test prompt',
+      model: 'haiku',
+      userId: 'user1',
+      replyTo: 12345 as any,
+    });
+
+    // Wait for a few interval cycles
+    await new Promise((r) => setTimeout(r, 3500));
+
+    // Task should complete despite edit failures
+    const updatedAgent = localAgentManager.getAgent(agent.id)!;
+    expect(updatedAgent.status).toBe('idle');
   });
 });

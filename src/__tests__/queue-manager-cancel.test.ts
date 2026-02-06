@@ -311,7 +311,8 @@ describe('QueueManager - Typing Indicator Integration', () => {
       undefined, // sendWhatsAppImage
       undefined, // sendErrorWithActions
       undefined, // sendWhatsAppMedia
-      async () => {}, // sendTelegram
+      async () => ({ message_id: 1 }), // sendTelegram (returns message)
+      async () => true, // editTelegram
       undefined, // sendTelegramImage
       startTypingIndicator
     );
@@ -401,7 +402,8 @@ describe('QueueManager - Typing Indicator Integration', () => {
       undefined,
       undefined,
       undefined,
-      async () => {},
+      async () => ({ message_id: 1 }), // sendTelegram
+      async () => true, // editTelegram
       undefined,
       startTypingIndicator
     );

@@ -160,6 +160,7 @@ import type { Agent, AgentType, ModelMode, UserMode, UserPreferences } from './t
 import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
 import { uploadToKapso, downloadFromKapso } from './storage';
 import { TelegramTokenManager } from './telegram-tokens';
+import { existsSync, statSync } from 'fs';
 
 // =============================================================================
 // Configuration
@@ -231,8 +232,13 @@ async function sendMedia(to: string, mediaId: string, mediaType: string, filenam
 }
 
 // Direct Telegram send functions for QueueManager
-async function sendTelegramDirectMessage(chatId: number, text: string, threadId?: number): Promise<void> {
-  await sendTelegramMessage(chatId, text, undefined, threadId);
+async function sendTelegramDirectMessage(chatId: number, text: string, threadId?: number): Promise<{ message_id: number } | null> {
+  const msg = await sendTelegramMessage(chatId, text, undefined, threadId);
+  return msg ? { message_id: msg.message_id } : null;
+}
+
+async function editTelegramDirect(chatId: number | string, messageId: number, text: string): Promise<boolean> {
+  return editTelegramMessage(chatId, messageId, text);
 }
 
 async function sendTelegramDirectImage(chatId: number, imageUrl: string, caption?: string, threadId?: number): Promise<void> {
@@ -249,8 +255,10 @@ const queueManager = new QueueManager(
   sendErrorWithActionsWrapper,
   sendMedia,
   sendTelegramDirectMessage,
+  editTelegramDirect,
   sendTelegramDirectImage,
-  startTypingIndicator
+  startTypingIndicator,
+  topicManager
 );
 
 // Telegram command handler (stateless router)
@@ -1024,6 +1032,22 @@ async function handleTelegramMessage(message: any): Promise<void> {
         await handleTopicCommand(chatId, userId, route.command, route.args, route.agentId, isForum);
         return;
 
+      case 'topic_workspace':
+        // Handle /workspace command in a specific topic
+        await handleTopicWorkspace(chatId, route.threadId!, userId, route.agentId, route.path);
+        return;
+
+      case 'topic_workspace_general':
+        // /workspace used in General topic - show instruction
+        await sendTelegramMessage(chatId,
+          '⚠️ O comando /workspace só funciona em tópicos.\n\n' +
+          'Use /ralph, /worktree ou /sessao para criar um tópico, ' +
+          'depois use /workspace dentro dele.',
+          undefined,
+          threadId
+        );
+        return;
+
       case 'ralph_control':
         // Handle /pausar, /retomar, /cancelar commands in Ralph topics
         await handleRalphControlCommand(
@@ -1710,6 +1734,88 @@ async function handleTopicosCommand(chatId: number, agentId: string): Promise<vo
   });
 
   await sendEnhancedTopicsList(chatId, topicItems, agentName);
+}
+
+/**
+ * Handle /workspace command in a specific topic
+ */
+async function handleTopicWorkspace(
+  chatId: number,
+  threadId: number,
+  userId: string,
+  agentId: string,
+  path?: string
+): Promise<void> {
+  const agent = agentManager.getAgent(agentId);
+  if (!agent) {
+    await sendTelegramMessage(chatId, '❌ Agente não encontrado.', undefined, threadId);
+    return;
+  }
+
+  const topic = topicManager.getTopicByThreadId(agentId, threadId);
+  if (!topic) {
+    await sendTelegramMessage(chatId, '❌ Tópico não encontrado.', undefined, threadId);
+    return;
+  }
+
+  if (path) {
+    // Validate existence and ensure it's a directory (not a file)
+    let isDirectory = false;
+    try {
+      isDirectory = statSync(path).isDirectory();
+    } catch {
+      // path does not exist
+    }
+    if (!isDirectory) {
+      // Flow 4: Workspace not found or not a directory - show options
+      const buttons = [
+        [{ text: '📁 Usar workspace do agente', callback_data: `ws_use_agent_${topic.id}_${threadId}` }],
+        [{ text: '🔄 Tentar outro caminho', callback_data: `ws_retry_${topic.id}_${threadId}` }],
+      ];
+
+      if (agent.workspace) {
+        await sendTelegramMessage(chatId,
+          `❌ Caminho não encontrado: \`${path}\`\n\n` +
+          `O workspace do agente é: \`${agent.workspace}\``,
+          undefined,
+          threadId
+        );
+      } else {
+        await sendTelegramMessage(chatId,
+          `❌ Caminho não encontrado: \`${path}\``,
+          undefined,
+          threadId
+        );
+      }
+
+      await sendTelegramButtons(chatId, 'O que deseja fazer?', buttons, threadId);
+      return;
+    }
+
+    // Update workspace
+    topicManager.updateTopicWorkspace(agentId, topic.id, path);
+
+    // Add to recent workspaces
+    persistence.addRecentWorkspace(userId, path);
+
+    await sendTelegramMessage(chatId,
+      `✅ Workspace atualizado\n📁 \`${path}\``,
+      undefined,
+      threadId
+    );
+  } else {
+    // No argument: show current workspace and usage instructions
+    const currentWorkspace = topic.workspace || agent.workspace || '(sandbox padrão)';
+    const source = topic.workspace ? 'tópico' : agent.workspace ? 'agente' : 'sandbox';
+
+    await sendTelegramMessage(chatId,
+      `📁 *Workspace atual:* \`${currentWorkspace}\` (${source})\n\n` +
+      'Use /workspace <caminho> para definir o workspace deste tópico.\n\n' +
+      'Exemplo: `/workspace /Users/lucas/projeto-x`',
+      undefined,
+      threadId
+    );
+  }
 }
 
 /**
@@ -3389,6 +3495,48 @@ async function handleTelegramCallback(query: any): Promise<void> {
         await sendTelegramMessage(chatId, `❌ Erro ao deletar tópico: ${errorMessage}`);
       }
     }
+  }
+  // Workspace management callbacks
+  else if (data.startsWith('ws_use_agent_')) {
+    // Use agent workspace for this topic
+    // Format: ws_use_agent_<topicId>_<threadId> (UUID uses hyphens, so _ cleanly separates)
+    const payload = data.replace('ws_use_agent_', '');
+    const lastUnderscore = payload.lastIndexOf('_');
+    const topicId = lastUnderscore !== -1 ? payload.substring(0, lastUnderscore) : payload;
+    const callbackThreadId = lastUnderscore !== -1 ? parseInt(payload.substring(lastUnderscore + 1), 10) : undefined;
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+
+    if (agent && agent.userId === userId) {
+      const topic = topicManager.getTopic(agent.id, topicId);
+      const resolvedThreadId = topic?.telegramTopicId ?? callbackThreadId;
+
+      // Clear topic workspace so it falls through to agent workspace
+      topicManager.updateTopicWorkspace(agent.id, topicId, undefined);
+      const agentWorkspace = agent.workspace || '(sandbox padrão)';
+      await sendTelegramMessage(chatId,
+        `✅ Workspace do tópico resetado.\n📁 Usando workspace do agente: \`${agentWorkspace}\``,
+        undefined,
+        resolvedThreadId
+      );
+    }
+  }
+  else if (data.startsWith('ws_retry_')) {
+    // Prompt user to try another path
+    // Format: ws_retry_<topicId>_<threadId>
+    const payload = data.replace('ws_retry_', '');
+    const lastUnderscore = payload.lastIndexOf('_');
+    const topicId = lastUnderscore !== -1 ? payload.substring(0, lastUnderscore) : payload;
+    const callbackThreadId = lastUnderscore !== -1 ? parseInt(payload.substring(lastUnderscore + 1), 10) : undefined;
+    const agent = agentManager.getAgentByTelegramChatId(chatId);
+    const topic = agent ? topicManager.getTopic(agent.id, topicId) : undefined;
+    const resolvedThreadId = topic?.telegramTopicId ?? callbackThreadId;
+
+    await sendTelegramMessage(chatId,
+      '📁 Envie o novo caminho com /workspace:\n\n' +
+      'Exemplo: `/workspace /Users/lucas/projeto-x`',
+      undefined,
+      resolvedThreadId
+    );
   }
 }
 
