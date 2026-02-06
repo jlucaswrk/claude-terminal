@@ -929,7 +929,6 @@ async function handleTelegramMessage(message: any): Promise<void> {
         const stopTyping = startTypingIndicator(chatId, route.threadId);
         try {
           // Queue the prompt directly with the specified model
-          await sendTelegramMessage(chatId, `Processando com *${route.model}*...`, undefined, route.threadId);
           queueManager.enqueue({
             agentId: route.agentId,
             prompt: route.text,
@@ -1796,7 +1795,7 @@ async function handleTopicWorkspace(
     topicManager.updateTopicWorkspace(agentId, topic.id, path);
 
     // Add to recent workspaces
-    persistence.addRecentWorkspace(userId, path);
+    persistenceService.addRecentWorkspace(userId, path);
 
     await sendTelegramMessage(chatId,
       `✅ Workspace atualizado\n📁 \`${path}\``,
