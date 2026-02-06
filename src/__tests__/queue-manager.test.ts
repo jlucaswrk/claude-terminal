@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, mock, spyOn } from 'bun:test';
-import { QueueManager, SendWhatsAppFn } from '../queue-manager';
+import { QueueManager, type SendTelegramFn, type SendTelegramImageFn, type StartTypingIndicatorFn } from '../queue-manager';
 import { Semaphore } from '../semaphore';
 import { AgentManager } from '../agent-manager';
 import { ClaudeTerminal } from '../terminal';
@@ -54,17 +54,21 @@ describe('QueueManager', () => {
   let semaphore: Semaphore;
   let agentManager: AgentManager;
   let terminal: MockClaudeTerminal;
-  let sendWhatsApp: SendWhatsAppFn;
-  let whatsAppMessages: Array<{ to: string; text: string }>;
+  let mockSendTelegram: SendTelegramFn;
+  let mockSendTelegramImage: SendTelegramImageFn;
+  let mockStartTypingIndicator: StartTypingIndicatorFn;
+  let telegramMessages: Array<{ chatId: number; text: string }>;
   let queueManager: QueueManager;
 
   beforeEach(() => {
     semaphore = new Semaphore(2);
     terminal = new MockClaudeTerminal();
-    whatsAppMessages = [];
-    sendWhatsApp = async (to: string, text: string) => {
-      whatsAppMessages.push({ to, text });
+    telegramMessages = [];
+    mockSendTelegram = async (chatId: number, text: string) => {
+      telegramMessages.push({ chatId, text });
     };
+    mockSendTelegramImage = async () => {};
+    mockStartTypingIndicator = () => () => {};
 
     const persistenceService = new MockPersistenceService() as unknown as PersistenceService;
     agentManager = new AgentManager(persistenceService);
@@ -73,7 +77,9 @@ describe('QueueManager', () => {
       semaphore,
       agentManager,
       terminal as unknown as ClaudeTerminal,
-      sendWhatsApp
+      mockSendTelegram,
+      mockSendTelegramImage,
+      mockStartTypingIndicator
     );
   });
 
@@ -264,7 +270,9 @@ describe('QueueManager', () => {
         semaphore,
         agentManager,
         testTerminal as unknown as ClaudeTerminal,
-        sendWhatsApp
+        mockSendTelegram,
+        mockSendTelegramImage,
+        mockStartTypingIndicator
       );
 
       const blockerAgent = agentManager.createAgent('user1', 'BlockerAgent');
@@ -326,7 +334,9 @@ describe('QueueManager', () => {
         semaphore,
         agentManager,
         terminal as unknown as ClaudeTerminal,
-        sendWhatsApp
+        mockSendTelegram,
+        mockSendTelegramImage,
+        mockStartTypingIndicator
       );
 
       const agent = agentManager.createAgent('user1', 'Agent');
@@ -383,7 +393,9 @@ describe('QueueManager', () => {
         semaphore,
         agentManager,
         terminal as unknown as ClaudeTerminal,
-        sendWhatsApp
+        mockSendTelegram,
+        mockSendTelegramImage,
+        mockStartTypingIndicator
       );
 
       const agent = agentManager.createAgent('user1', 'Agent');
@@ -555,49 +567,45 @@ describe('QueueManager', () => {
   });
 
   describe('notifications', () => {
-    test('sends notification when task starts', async () => {
+    test('sends response to Telegram when task completes', async () => {
       const agent = agentManager.createAgent('user1', 'MyAgent');
 
       terminal.setDelay('hello world', 10);
+      terminal.setResponse('hello world', { text: 'Hello response', images: [] });
 
       queueManager.enqueue({
         agentId: agent.id,
         prompt: 'hello world',
         model: 'haiku',
         userId: 'user1',
+        replyTo: 12345,
       });
 
-      await new Promise((r) => setTimeout(r, 30));
+      await new Promise((r) => setTimeout(r, 50));
 
-      expect(whatsAppMessages.length).toBeGreaterThan(0);
-      const startMsg = whatsAppMessages.find((m) => m.text.includes('iniciou'));
-      expect(startMsg).toBeDefined();
-      expect(startMsg!.text).toContain('MyAgent');
-      expect(startMsg!.text).toContain('hello world');
-      expect(startMsg!.text).toContain('haiku');
-      expect(startMsg!.to).toBe('user1');
+      expect(telegramMessages.length).toBeGreaterThan(0);
+      const responseMsg = telegramMessages.find((m) => m.text.includes('Hello response'));
+      expect(responseMsg).toBeDefined();
+      expect(responseMsg!.chatId).toBe(12345);
     });
 
-    test('truncates long prompts in notification', async () => {
+    test('does not send to non-Telegram targets', async () => {
       const agent = agentManager.createAgent('user1', 'Agent');
 
-      const longPrompt = 'a'.repeat(100);
-      terminal.setDelay(longPrompt, 10);
+      terminal.setDelay('test', 10);
+      terminal.setResponse('test', { text: 'Response', images: [] });
 
       queueManager.enqueue({
         agentId: agent.id,
-        prompt: longPrompt,
+        prompt: 'test',
         model: 'haiku',
         userId: 'user1',
+        // No replyTo - should not send Telegram message
       });
 
-      await new Promise((r) => setTimeout(r, 30));
+      await new Promise((r) => setTimeout(r, 50));
 
-      const startMsg = whatsAppMessages.find((m) => m.text.includes('iniciou'));
-      expect(startMsg).toBeDefined();
-      // Should be truncated to 30 chars
-      expect(startMsg!.text).not.toContain('a'.repeat(100));
-      expect(startMsg!.text).toContain('a'.repeat(30));
+      expect(telegramMessages.length).toBe(0);
     });
   });
 
@@ -617,7 +625,9 @@ describe('QueueManager', () => {
         semaphore,
         agentManager,
         errorTerminal as unknown as ClaudeTerminal,
-        sendWhatsApp
+        mockSendTelegram,
+        mockSendTelegramImage,
+        mockStartTypingIndicator
       );
 
       queueManager.enqueue({
@@ -634,7 +644,7 @@ describe('QueueManager', () => {
       expect(updatedAgent.statusDetails).toContain('erro');
     });
 
-    test('sends error notification to user', async () => {
+    test('sends error notification to user via Telegram', async () => {
       const agent = agentManager.createAgent('user1', 'TestAgent');
 
       const errorTerminal = {
@@ -648,7 +658,9 @@ describe('QueueManager', () => {
         semaphore,
         agentManager,
         errorTerminal as unknown as ClaudeTerminal,
-        sendWhatsApp
+        mockSendTelegram,
+        mockSendTelegramImage,
+        mockStartTypingIndicator
       );
 
       queueManager.enqueue({
@@ -656,13 +668,15 @@ describe('QueueManager', () => {
         prompt: 'test',
         model: 'haiku',
         userId: 'user1',
+        replyTo: 12345,
       });
 
       await new Promise((r) => setTimeout(r, 50));
 
-      const errorMsg = whatsAppMessages.find((m) => m.text.includes('Erro'));
+      const errorMsg = telegramMessages.find((m) => m.text.includes('Erro'));
       expect(errorMsg).toBeDefined();
       expect(errorMsg!.text).toContain('TestAgent');
+      expect(errorMsg!.chatId).toBe(12345);
     });
 
     test('releases permit on error', async () => {
@@ -681,7 +695,9 @@ describe('QueueManager', () => {
         semaphore,
         agentManager,
         errorTerminal as unknown as ClaudeTerminal,
-        sendWhatsApp
+        mockSendTelegram,
+        mockSendTelegramImage,
+        mockStartTypingIndicator
       );
 
       const agent = agentManager.createAgent('user1', 'Agent');
@@ -720,7 +736,9 @@ describe('QueueManager', () => {
         semaphore,
         agentManager,
         mixedTerminal as unknown as ClaudeTerminal,
-        sendWhatsApp
+        mockSendTelegram,
+        mockSendTelegramImage,
+        mockStartTypingIndicator
       );
 
       const agent1 = agentManager.createAgent('user1', 'Agent1');
@@ -765,7 +783,9 @@ describe('QueueManager', () => {
         semaphore,
         agentManager,
         terminal as unknown as ClaudeTerminal,
-        sendWhatsApp
+        mockSendTelegram,
+        mockSendTelegramImage,
+        mockStartTypingIndicator
       );
 
       const agent = agentManager.createAgent('user1', 'Agent');
