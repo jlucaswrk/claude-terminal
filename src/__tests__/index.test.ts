@@ -311,9 +311,9 @@ describe('Webhook Integration Tests', () => {
 
       expect(result.json.status).toBe('task_enqueued');
 
-      // Should have sent processing message
+      // Should have sent prompt received confirmation message
       expect(whatsappCalls.some(c =>
-        c.body.text?.body?.includes('Processando')
+        c.body.text?.body?.includes('recebeu seu prompt')
       )).toBe(true);
     });
 
