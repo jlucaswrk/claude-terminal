@@ -1037,4 +1037,101 @@ describe('Integration: Telegram Callback Flow', () => {
       await testModelMode('selection', 'Seleção');
     });
   });
+
+  describe('orphan_recreate callback - GroupOnboardingManager integration', () => {
+    const otherTelegramUserId = 99999;
+
+    it('should start GroupOnboardingManager onboarding (not UserContextManager)', () => {
+      // This tests the fix for the bug where orphan_recreate used UserContextManager
+      // but the router checked GroupOnboardingManager, causing flow interruption
+
+      const orphanGroupChatId = -1009999999999;
+      const clickingUserId = telegramUserId;
+
+      // Simulate what the fixed callback handler does:
+      // groupOnboardingManager.startOnboarding(groupChatId, from.id, 'awaiting_name')
+      const result = groupOnboardingManager.startOnboarding(orphanGroupChatId, clickingUserId, 'awaiting_name');
+      expect(result.success).toBe(true);
+
+      // Verify onboarding is active in GroupOnboardingManager
+      expect(groupOnboardingManager.hasActiveOnboarding(orphanGroupChatId)).toBe(true);
+
+      // Verify the state is correct
+      const state = groupOnboardingManager.getState(orphanGroupChatId);
+      expect(state).not.toBeNull();
+      expect(state?.step).toBe('awaiting_name');
+      expect(state?.userId).toBe(clickingUserId);
+      expect(state?.chatId).toBe(orphanGroupChatId);
+    });
+
+    it('should allow name input to continue flow after orphan_recreate', () => {
+      const orphanGroupChatId = -1009999999999;
+
+      // Step 1: Start onboarding via orphan_recreate
+      groupOnboardingManager.startOnboarding(orphanGroupChatId, telegramUserId, 'awaiting_name');
+
+      // Step 2: User sends name - router should detect active onboarding
+      expect(groupOnboardingManager.hasActiveOnboarding(orphanGroupChatId)).toBe(true);
+      expect(groupOnboardingManager.isLockedByUser(orphanGroupChatId, telegramUserId)).toBe(true);
+
+      // Step 3: Set name and advance
+      groupOnboardingManager.setAgentName(orphanGroupChatId, telegramUserId, 'Recreated Agent');
+      groupOnboardingManager.advanceStep(orphanGroupChatId, telegramUserId, 'awaiting_emoji');
+
+      const state = groupOnboardingManager.getState(orphanGroupChatId);
+      expect(state?.step).toBe('awaiting_emoji');
+      expect(state?.data.agentName).toBe('Recreated Agent');
+    });
+
+    it('should reject other user during orphan_recreate flow', () => {
+      const orphanGroupChatId = -1009999999999;
+
+      // User A starts the flow
+      const result1 = groupOnboardingManager.startOnboarding(orphanGroupChatId, telegramUserId, 'awaiting_name');
+      expect(result1.success).toBe(true);
+
+      // User B tries to start flow - should be rejected
+      const result2 = groupOnboardingManager.startOnboarding(orphanGroupChatId, otherTelegramUserId, 'awaiting_name');
+      expect(result2.success).toBe(false);
+      expect(result2.lockedByUserId).toBe(telegramUserId);
+
+      // Verify User B is not the lock owner
+      expect(groupOnboardingManager.isLockedByUser(orphanGroupChatId, otherTelegramUserId)).toBe(false);
+    });
+
+    it('should complete full orphan recreate flow: name → emoji → workspace → model mode', () => {
+      const orphanGroupChatId = -1009999999999;
+
+      // Start via orphan_recreate
+      groupOnboardingManager.startOnboarding(orphanGroupChatId, telegramUserId, 'awaiting_name');
+
+      // Name step
+      groupOnboardingManager.setAgentName(orphanGroupChatId, telegramUserId, 'Phoenix Agent');
+      groupOnboardingManager.advanceStep(orphanGroupChatId, telegramUserId, 'awaiting_emoji');
+
+      // Emoji step
+      groupOnboardingManager.setEmoji(orphanGroupChatId, telegramUserId, '🔥');
+      groupOnboardingManager.advanceStep(orphanGroupChatId, telegramUserId, 'awaiting_workspace');
+
+      // Workspace step
+      groupOnboardingManager.setWorkspace(orphanGroupChatId, telegramUserId, '__sandbox__');
+      groupOnboardingManager.advanceStep(orphanGroupChatId, telegramUserId, 'awaiting_model_mode');
+
+      // Model mode step
+      groupOnboardingManager.setModelMode(orphanGroupChatId, telegramUserId, 'sonnet');
+
+      // Verify final state
+      const state = groupOnboardingManager.getState(orphanGroupChatId);
+      expect(state?.data).toEqual({
+        agentName: 'Phoenix Agent',
+        emoji: '🔥',
+        workspace: '__sandbox__',
+        modelMode: 'sonnet',
+      });
+
+      // Complete and verify cleanup
+      groupOnboardingManager.completeOnboarding(orphanGroupChatId, telegramUserId);
+      expect(groupOnboardingManager.hasActiveOnboarding(orphanGroupChatId)).toBe(false);
+    });
+  });
 });

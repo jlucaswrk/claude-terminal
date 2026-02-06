@@ -2700,15 +2700,15 @@ async function handleTelegramCallback(query: any): Promise<void> {
   else if (data.startsWith('orphan_recreate_')) {
     const groupChatId = parseInt(data.replace('orphan_recreate_', ''), 10);
 
-    // Start agent creation flow with the group pre-linked
-    userContextManager.startCreateAgentFlow(userId);
-    // Store the group chat ID to link after creation
-    const context = userContextManager.getContext(userId);
-    if (context) {
-      context.flowData = { ...context.flowData, pendingGroupLink: groupChatId };
+    // Start onboarding using GroupOnboardingManager (matches router expectations)
+    const result = groupOnboardingManager.startOnboarding(groupChatId, from.id, 'awaiting_name');
+    if (!result.success) {
+      await sendTelegramMessage(chatId, '⚠️ Outro usuário está configurando este grupo.');
+      return;
     }
 
-    await sendTelegramAgentNamePrompt(chatId);
+    // Send name prompt to the group (same as regular group onboarding)
+    await sendTelegramAgentNamePrompt(groupChatId);
   }
   else if (data.startsWith('model_')) {
     // Handle model selection for pending prompt
