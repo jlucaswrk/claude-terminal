@@ -51,7 +51,7 @@ async function simulateHandleBotAddedToGroup(
     await mockSendMessage(chatId,
       '👋 *Bot adicionado ao grupo*\n\n' +
       'Não encontrei seu cadastro.\n' +
-      'Configure o Dojo primeiro pelo WhatsApp.'
+      'Cadastro nao localizado.'
     );
     return;
   }
@@ -207,9 +207,7 @@ describe('Integration: Group Onboarding Flow', () => {
       // Save user preferences with telegram username
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Verify user can be found by telegram username
@@ -444,12 +442,10 @@ describe('Integration: Group Onboarding Flow', () => {
       const chatId = 12345;
       const messageId = 11111;
 
-      // Step 1: User has Dojo mode configured
+      // Step 1: User has preferences configured
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Step 2: Identify user by telegram username
@@ -484,12 +480,10 @@ describe('Integration: Group Onboarding Flow', () => {
       const chatId = 12345;
       const messageId = 11111;
 
-      // Step 1: User has Dojo mode configured with existing agent
+      // Step 1: User has preferences configured with existing agent
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Create an existing agent
@@ -573,12 +567,10 @@ describe('Integration: Group Onboarding Flow', () => {
       const telegramUserId = 67890;
       const chatId = 12345;
 
-      // Setup: User has Dojo mode configured but no agents
+      // Setup: User has preferences configured but no agents
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Create my_chat_member update for bot being added
@@ -627,12 +619,10 @@ describe('Integration: Group Onboarding Flow', () => {
       const telegramUserId = 67890;
       const chatId = 12345;
 
-      // Setup: User has Dojo mode configured with existing agents
+      // Setup: User has preferences configured with existing agents
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Create an existing agent
@@ -725,9 +715,7 @@ describe('Integration: Group Onboarding Flow', () => {
       // User exists but from.username is undefined
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername: 'lucas',
-        onboardingComplete: true,
       });
 
       // Create my_chat_member update with no username
@@ -764,9 +752,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Create my_chat_member update for private chat
@@ -804,9 +790,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Create my_chat_member update for supergroup
@@ -840,9 +824,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Create my_chat_member update for bot being promoted to admin
@@ -876,9 +858,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Create my_chat_member update for status change but still member
@@ -1092,9 +1072,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       await simulateHandleBotAddedToGroup(
@@ -1122,9 +1100,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       agentManager.createAgent(userId, 'Agent1', undefined, '🤖');
@@ -1201,9 +1177,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       await simulateHandleBotAddedToGroup(
@@ -1240,9 +1214,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       await simulateHandleBotAddedToGroup(
@@ -1287,7 +1259,7 @@ describe('Integration: Group Onboarding Flow', () => {
     ): Promise<void> {
       // Get user's unlinked agents
       const agents = agentManager.listAgents(userId)
-        .filter(a => a.name !== 'Ronin' && !a.telegramChatId);
+        .filter(a => !a.telegramChatId);
 
       // Case C: No available agents
       if (agents.length === 0) {
@@ -1615,26 +1587,6 @@ describe('Integration: Group Onboarding Flow', () => {
         expect(call[2][0]).toHaveLength(1); // 1 button
         expect(call[2][0][0].text).toBe('✨ Criar um');
         expect(call[2][0][0].callback_data).toBe(`onboard_create_${telegramUserId}`);
-      });
-
-      it('should exclude Ronin agent from available agents', async () => {
-        const userId = '+5581999999999';
-        const telegramUserId = 67890;
-        const chatId = 12345;
-
-        // Create only a Ronin agent (should be excluded)
-        agentManager.createAgent(userId, 'Ronin', undefined, '⚔️');
-
-        groupOnboardingManager.startOnboarding(chatId, telegramUserId, 'awaiting_name');
-
-        await simulateOnboardLinkCallback(
-          chatId, telegramUserId, userId,
-          agentManager, groupOnboardingManager, mockSendTelegramButtons
-        );
-
-        // Should show "all agents linked" message since Ronin is excluded
-        const call = mockSendTelegramButtons.mock.calls[0];
-        expect(call[1]).toContain('Todos os agentes já estão vinculados');
       });
 
       it('should show create button when all agents are already linked', async () => {
@@ -2659,7 +2611,7 @@ describe('Integration: Group Onboarding Flow', () => {
         await mockSendMessage(chatId,
           '👋 *Bot adicionado ao grupo*\n\n' +
           'Não encontrei seu cadastro.\n' +
-          'Configure o Dojo primeiro pelo WhatsApp.'
+          'Cadastro nao localizado.'
         );
         return;
       }
@@ -2719,12 +2671,10 @@ describe('Integration: Group Onboarding Flow', () => {
       const telegramUserId = 67890;
       const chatId = 12345;
 
-      // User has Dojo mode configured
+      // User has preferences configured
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Pin will fail
@@ -2761,9 +2711,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       const mockFailingPin = mock(() => Promise.resolve(false));
@@ -2794,9 +2742,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Create an existing agent
@@ -2834,9 +2780,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       const mockFailingPin = mock(() => Promise.resolve(false));
@@ -2931,9 +2875,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId: '+5581999999999',
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // sendButtons fails
@@ -3006,9 +2948,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId,
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // Start onboarding in two groups concurrently
@@ -3329,9 +3269,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId: '+5581999999999',
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // User 1 starts onboarding
@@ -3376,9 +3314,7 @@ describe('Integration: Group Onboarding Flow', () => {
 
       persistenceService.saveUserPreferences({
         userId: '+5581999999999',
-        mode: 'dojo',
         telegramUsername,
-        onboardingComplete: true,
       });
 
       // User 1 completes onboarding in group 1

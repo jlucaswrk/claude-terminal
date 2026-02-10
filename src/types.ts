@@ -43,18 +43,12 @@ export interface AgentTopic {
   emoji: string;                 // Visual identifier (🔄, 🌿, 💬, 📌)
   sessionId?: string;            // Claude session ID (isolated, only for non-general topics)
   loopId?: string;               // Ralph loop ID (only for type='ralph')
+  workspace?: string;            // Absolute path for topic workspace (optional, overrides agent workspace)
   status: TopicStatus;
   messageCount: number;          // Counter for messages sent to this topic
   createdAt: Date;
   lastActivity: Date;
 }
-
-/**
- * User operation mode
- * - ronin: All agents in WhatsApp (default, current behavior)
- * - dojo: Agents in Telegram, WhatsApp has read-only Ronin agent
- */
-export type UserMode = 'ronin' | 'dojo';
 
 /**
  * Represents a single output/response from an agent
@@ -83,7 +77,6 @@ export interface Agent {
   mode: 'conversational' | 'ralph';  // Agent operation mode
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;           // Absolute path (optional, immutable)
-  groupId?: string;             // WhatsApp group ID (format: 120363...@g.us, immutable)
   telegramChatId?: number;      // Telegram group/chat ID for this agent
   modelMode: ModelMode;         // 'selection' (asks each time) or fixed model
   mainSessionId?: string;       // Main Claude session ID (shared by General topic)
@@ -109,6 +102,7 @@ export interface RalphIteration {
   prompt: string;               // Prompt sent to Claude
   response: string;             // Claude's response
   completionPromiseFound: boolean;  // Whether completion was signaled
+  promiseType: 'complete' | 'blocked' | null;  // Type of promise found
   timestamp: Date;
   duration: number;             // milliseconds
 }
@@ -131,13 +125,35 @@ export interface RalphLoopState {
 }
 
 /**
+ * State for directory navigation in workspace selector
+ */
+export interface DirectoryNavigationState {
+  currentPath: string;
+  baseOptions: string[];
+  targetTopicId?: string;
+  targetAgentId?: string;
+  visibleDirectories: string[];
+  filter?: string;
+  awaitingInput?: 'filter' | 'custom_base_path';
+  creationContext?: {
+    flow: 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
+    flowData: {
+      agentId: string;
+      topicName?: string;
+      topicTask?: string;
+      topicMaxIterations?: number;
+    };
+  };
+}
+
+/**
  * Tracks conversational state per user for multi-step flows
  */
 export interface UserContext {
   userId: string;
   activeAgentId?: string;         // Persists across clearContext() for continuous conversations
-  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'onboarding' | 'ralph_loop' | 'image_action' | 'document_action' | 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
-  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_mode_selection' | 'awaiting_telegram_username' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt' | 'awaiting_topic_name' | 'awaiting_topic_task' | 'awaiting_topic_iterations';
+  currentFlow?: 'create_agent' | 'configure_priority' | 'configure_limit' | 'delete_agent' | 'edit_emoji' | 'edit_name' | 'configure_ralph' | 'ralph_loop' | 'image_action' | 'document_action' | 'topic_ralph' | 'topic_worktree' | 'topic_sessao' | 'workspace_not_found';
+  flowState?: 'awaiting_name' | 'awaiting_type' | 'awaiting_emoji' | 'awaiting_mode' | 'awaiting_workspace' | 'awaiting_workspace_choice' | 'awaiting_model_mode' | 'awaiting_confirmation' | 'awaiting_selection' | 'awaiting_emoji_text' | 'awaiting_ralph_task' | 'awaiting_ralph_max_iterations' | 'awaiting_custom_iterations' | 'awaiting_image_prompt' | 'awaiting_document_prompt' | 'awaiting_topic_name' | 'awaiting_topic_task' | 'awaiting_topic_iterations' | 'awaiting_topic_workspace';
   flowData?: {
     agentName?: string;
     agentId?: string;
@@ -147,8 +163,6 @@ export interface UserContext {
     workspace?: string;
     modelMode?: ModelMode;
     priority?: string;
-    userMode?: UserMode;           // For onboarding flow
-    telegramUsername?: string;     // For onboarding flow
     ralphTask?: string;            // Ralph loop task description
     ralphMaxIterations?: number;   // Ralph loop max iterations
     ralphLoopId?: string;          // Active Ralph loop ID
@@ -159,6 +173,13 @@ export interface UserContext {
     topicName?: string;              // Topic name for topic creation flows
     topicTask?: string;              // Task description for Ralph topic
     topicMaxIterations?: number;     // Max iterations for Ralph topic
+    topicWorkspace?: string;
+    pausedTaskId?: string;
+    pausedPrompt?: string;
+    pausedModel?: 'haiku' | 'sonnet' | 'opus';
+    pausedImages?: Array<{data: string; mimeType: string}>;
+    missingWorkspacePath?: string;
+    topicId?: string;
     [key: string]: unknown;
   };
   pendingPrompt?: {
@@ -176,6 +197,7 @@ export interface UserContext {
   };
   bashMode?: boolean;           // Global bash mode toggle
   lastBashWorkspace?: string;   // Last workspace used for bash prefix commands
+  directoryNavigationState?: DirectoryNavigationState;
 }
 
 /**
@@ -183,11 +205,10 @@ export interface UserContext {
  */
 export interface UserPreferences {
   userId: string;
-  mode: UserMode;
   telegramUsername?: string;       // Telegram username (without @)
   telegramChatId?: number;         // Telegram chat ID for direct messages
-  onboardingComplete: boolean;     // Whether user completed mode selection
   sandboxAutoCleanup?: boolean;    // Auto-cleanup sandbox directory on agent deletion
+  recentWorkspaces?: string[];
 }
 
 /**
@@ -195,11 +216,10 @@ export interface UserPreferences {
  */
 export interface SerializedUserPreferences {
   userId: string;
-  mode: UserMode;
   telegramUsername?: string;
   telegramChatId?: number;
-  onboardingComplete: boolean;
   sandboxAutoCleanup?: boolean;
+  recentWorkspaces?: string[];
 }
 
 /**
@@ -260,6 +280,7 @@ export interface SerializedAgentTopic {
   emoji: string;
   sessionId?: string;
   loopId?: string;
+  workspace?: string;
   status: TopicStatus;
   messageCount: number;         // Counter for messages sent to this topic
   createdAt: string;            // ISO date string
@@ -274,7 +295,6 @@ export interface SerializedAgent {
   mode?: 'conversational' | 'ralph';  // Agent operation mode - optional for backwards compat
   emoji?: string;               // Visual identifier emoji (default: 🤖)
   workspace?: string;
-  groupId?: string;             // WhatsApp group ID (format: 120363...@g.us)
   telegramChatId?: number;      // Telegram group/chat ID for this agent
   modelMode?: ModelMode;        // Model mode - optional for backwards compat
   sessionId?: string;           // DEPRECATED: Use mainSessionId. Kept for migration compatibility.
@@ -314,6 +334,7 @@ export interface SerializedRalphIteration {
   prompt: string;
   response: string;
   completionPromiseFound: boolean;
+  promiseType: 'complete' | 'blocked' | null;  // Type of promise found
   timestamp: string;            // ISO date string
   duration: number;
 }
@@ -424,6 +445,15 @@ export interface SerializedGroupOnboardingState {
 }
 
 /**
+ * Progress callbacks for real-time monitoring of SDK processing
+ */
+export interface ProgressCallbacks {
+  onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void;
+  onBashOutput?: (command: string, output: string, exitCode: number) => void;
+  onTextChunk?: (chunk: string) => void;
+}
+
+/**
  * Default values
  */
 export const DEFAULTS = {
@@ -433,5 +463,5 @@ export const DEFAULTS = {
   TITLE_UPDATE_INTERVAL: 10,
   BASH_TIMEOUT: 60000,          // 60 seconds
   BASH_MAX_OUTPUT: 1024 * 1024, // 1MB
-  BASH_TRUNCATE_AT: 3500,       // WhatsApp message limit
+  BASH_TRUNCATE_AT: 3500,       // Message truncation limit
 } as const;

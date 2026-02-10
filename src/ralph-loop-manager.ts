@@ -1,3 +1,5 @@
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { join } from 'path';
 import { Semaphore } from './semaphore';
 import { AgentManager } from './agent-manager';
 import { PersistenceService } from './persistence';
@@ -5,10 +7,10 @@ import { ClaudeTerminal, type Model, type ProgressCallback } from './terminal';
 import type { RalphLoopState, RalphIteration, Agent } from './types';
 
 /**
- * Completion promise tag regex
- * Matches <promise>COMPLETE</promise> (case-insensitive, allows whitespace)
+ * Promise tag regex
+ * Matches <promise>COMPLETE</promise> or <promise>BLOCKED</promise> (case-insensitive, allows whitespace)
  */
-const COMPLETION_REGEX = /<promise>\s*COMPLETE\s*<\/promise>/i;
+const PROMISE_REGEX = /<promise>\s*(COMPLETE|BLOCKED)\s*<\/promise>/i;
 
 /**
  * Result of a single loop iteration
@@ -16,6 +18,7 @@ const COMPLETION_REGEX = /<promise>\s*COMPLETE\s*<\/promise>/i;
 export interface IterationResult {
   iteration: RalphIteration;
   isComplete: boolean;
+  promiseType: 'complete' | 'blocked' | null;
 }
 
 /**
@@ -321,15 +324,46 @@ export class RalphLoopManager {
           };
         }
 
-        // Check if we were paused externally
-        if (loop.status === 'paused') {
+        // Check for blocked promise
+        if (iterationResult.promiseType === 'blocked') {
+          loop.status = 'blocked';
+          this.persistLoop(loop);
+          this.writeBlockersMd(loop, `Agent signaled BLOCKED at iteration ${loop.currentIteration}`);
+          this.agentManager.clearLoopReference(loop.agentId);
+          this.updateAgentLoopState(
+            loop.agentId,
+            loopId,
+            'error',
+            `Bloqueado: agente sinalizou bloqueio na iteração ${loop.currentIteration}`
+          );
+
+          console.log(`[ralph] Loop ${loopId} blocked by promise at iteration ${loop.currentIteration}`);
+
+          if (this.completionCallback) {
+            this.completionCallback(loopId, 'blocked', loop.currentIteration, loop.threadId);
+          }
+
+          return {
+            loopId,
+            status: 'blocked',
+            iterations: loop.currentIteration,
+            isComplete: false,
+            isBlocked: true,
+          };
+        }
+
+        // Check if we were paused externally (status can change from another call)
+        // Note: status may be mutated by pause() from another async context
+        const currentStatus = loop.status as RalphLoopState['status'];
+        if (currentStatus === 'paused') {
           console.log(`[ralph] Loop ${loopId} was paused externally`);
           break;
         }
       }
 
-      // Check why we exited the loop
-      if (loop.status === 'paused') {
+      // Check why we exited the loop (status may have been changed externally)
+      const exitStatus = loop.status as RalphLoopState['status'];
+      if (exitStatus === 'paused') {
         // Paused - semaphore will be released, ready for resume
         return {
           loopId,
@@ -344,6 +378,7 @@ export class RalphLoopManager {
       if (loop.currentIteration >= loop.maxIterations) {
         loop.status = 'blocked';
         this.persistLoop(loop);
+        this.writeBlockersMd(loop, `Maximum iterations reached (${loop.maxIterations}) without task completion`);
         this.agentManager.clearLoopReference(loop.agentId);
         this.updateAgentLoopState(
           loop.agentId,
@@ -422,6 +457,9 @@ export class RalphLoopManager {
 
     console.log(`[ralph] Executing iteration ${iterationNumber}/${loop.maxIterations} for loop ${loop.id}`);
 
+    // Clear topic session to ensure fresh context per iteration
+    this.terminal.clearTopicSession(loop.id);
+
     // Execute via ClaudeTerminal
     const response = await this.terminal.send(
       prompt,
@@ -429,14 +467,16 @@ export class RalphLoopManager {
       loop.userId,
       loop.agentId,
       agent.workspace,
-      undefined // No progress callback for individual iterations
+      undefined, // No progress callback for individual iterations
+      undefined, // No images
+      loop.id    // topicKey: isolated session per loop
     );
 
     const endTime = Date.now();
     const duration = endTime - startTime;
 
-    // Check for completion promise
-    const completionFound = this.checkCompletion(response.text);
+    // Check for promise tag (COMPLETE or BLOCKED)
+    const promiseType = this.checkCompletion(response.text);
 
     // Extract action summary from response
     const action = this.extractAction(response.text);
@@ -447,55 +487,90 @@ export class RalphLoopManager {
       action,
       prompt,
       response: response.text,
-      completionPromiseFound: completionFound,
+      completionPromiseFound: promiseType !== null,
+      promiseType,
       timestamp: new Date(),
       duration,
     };
 
-    console.log(`[ralph] Iteration ${iterationNumber} completed in ${duration}ms. Completion: ${completionFound}`);
+    console.log(`[ralph] Iteration ${iterationNumber} completed in ${duration}ms. Promise: ${promiseType}`);
 
     return {
       iteration,
-      isComplete: completionFound,
+      isComplete: promiseType === 'complete',
+      promiseType,
     };
   }
 
   /**
    * Build the prompt for an iteration
-   * First iteration includes the full task, subsequent iterations continue the conversation
+   * Always includes full task, rules, stopping criteria, and iteration skeleton
    */
   private buildIterationPrompt(loop: RalphLoopState, iterationNumber: number): string {
-    if (iterationNumber === 1) {
-      // First iteration - include full context and instructions
-      return `You are operating in autonomous Ralph mode. Your task is:
+    const remainingIterations = loop.maxIterations - (iterationNumber - 1);
+    const parts: string[] = [];
 
-${loop.task}
+    parts.push(`You are operating in autonomous Ralph mode.`);
+    parts.push(`Iteration ${iterationNumber} of ${loop.maxIterations} (${remainingIterations} remaining).`);
+    parts.push('');
 
-IMPORTANT: You must work autonomously to complete this task. When you have fully completed the task, you MUST include the exact tag <promise>COMPLETE</promise> in your response.
+    parts.push('## TASK');
+    parts.push(loop.task);
+    parts.push('');
 
-You have access to all standard tools (Bash, Read, Write, Edit, Glob, Grep). Use them as needed to accomplish the task.
-
-This is iteration 1 of maximum ${loop.maxIterations}. Begin working on the task now.`;
+    if (iterationNumber > 1) {
+      const lastIteration = loop.iterations[loop.iterations.length - 1];
+      if (lastIteration) {
+        parts.push('## PREVIOUS ITERATION SUMMARY');
+        parts.push(`Action: ${lastIteration.action}`);
+        parts.push(`Promise: ${lastIteration.promiseType ?? 'none'}`);
+        parts.push(`Duration: ${lastIteration.duration}ms`);
+        parts.push('');
+      }
     }
 
-    // Subsequent iterations - continue working
-    const lastIteration = loop.iterations[loop.iterations.length - 1];
-    const remainingIterations = loop.maxIterations - loop.currentIteration;
+    parts.push('## RULES');
+    parts.push('1. Work autonomously — do NOT ask the user for input.');
+    parts.push('2. Use all standard tools (Bash, Read, Write, Edit, Glob, Grep) as needed.');
+    parts.push('3. Persist progress to files so state survives between iterations.');
+    parts.push('4. Run tests after meaningful changes (`bun test` or the project\'s test command).');
+    parts.push('5. Keep changes small and incremental per iteration.');
+    parts.push('');
 
-    return `Continue working on the task. This is iteration ${iterationNumber} of ${loop.maxIterations} (${remainingIterations} remaining).
+    parts.push('## STOPPING CRITERIA');
+    parts.push('When the task is **fully done**, include exactly: <promise>COMPLETE</promise>');
+    parts.push('When you **cannot make further progress** (missing info, permissions, external dependency):');
+    parts.push('  1. First, write a `BLOCKERS.md` file in the current workspace with the following sections:');
+    parts.push('     - **Blocker**: What is blocking progress');
+    parts.push('     - **Attempts**: What you tried to resolve it');
+    parts.push('     - **Relevant Logs/Errors**: Any error messages or log output');
+    parts.push('     - **Next Human Step**: What the human needs to do to unblock');
+    parts.push('  2. Then include exactly: <promise>BLOCKED</promise>');
+    parts.push('If neither applies, keep working — the next iteration will continue from where you left off.');
+    parts.push('');
 
-Your previous action: ${lastIteration?.action || 'N/A'}
+    parts.push('## ITERATION SKELETON');
+    parts.push('Follow this structure in your response:');
+    parts.push('```');
+    parts.push('1. Assess current state (read files / check test results)');
+    parts.push('2. Plan the next concrete step');
+    parts.push('3. Execute the step (edit, write, bash)');
+    parts.push('4. Verify the result (run tests, read output)');
+    parts.push('5. Summarize what was done and what remains');
+    parts.push('6. If done → <promise>COMPLETE</promise>');
+    parts.push('   If stuck → <promise>BLOCKED</promise>');
+    parts.push('```');
 
-Remember: When you have fully completed the task, include <promise>COMPLETE</promise> in your response.
-
-Continue with the next step of the task.`;
+    return parts.join('\n');
   }
 
   /**
-   * Check if response contains completion promise
+   * Check if response contains a promise tag (COMPLETE or BLOCKED)
    */
-  checkCompletion(response: string): boolean {
-    return COMPLETION_REGEX.test(response);
+  checkCompletion(response: string): 'complete' | 'blocked' | null {
+    const match = response.match(PROMISE_REGEX);
+    if (!match) return null;
+    return match[1].toUpperCase() === 'COMPLETE' ? 'complete' : 'blocked';
   }
 
   /**
@@ -748,6 +823,72 @@ Continue with the next step of the task.`;
       return text;
     }
     return text.substring(0, maxLength - 3) + '...';
+  }
+
+  /**
+   * Write a safeguard BLOCKERS.md file to the agent's workspace
+   * Only writes if the file doesn't already exist (agent may have written its own)
+   */
+  private writeBlockersMd(loop: RalphLoopState, reason: string): void {
+    const agent = this.agentManager.getAgent(loop.agentId);
+    const workspace = agent?.workspace;
+    if (!workspace) {
+      console.log(`[ralph] No workspace for agent ${loop.agentId}, skipping BLOCKERS.md`);
+      return;
+    }
+
+    const blockersPath = join(workspace, 'BLOCKERS.md');
+
+    if (existsSync(blockersPath)) {
+      console.log(`[ralph] BLOCKERS.md already exists at ${blockersPath}, skipping safeguard write`);
+      return;
+    }
+
+    const iterationSummary = loop.iterations
+      .map(it => `- Iteration ${it.number}: ${it.action} (${it.duration}ms, promise: ${it.promiseType ?? 'none'})`)
+      .join('\n');
+
+    const lastResponse = loop.iterations.length > 0
+      ? loop.iterations[loop.iterations.length - 1].response
+      : '(no iterations executed)';
+    const truncatedResponse = lastResponse.length > 2000
+      ? lastResponse.substring(0, 2000) + '\n...(truncated)'
+      : lastResponse;
+
+    const content = [
+      '# BLOCKERS.md',
+      '',
+      '> Auto-generated safeguard by Ralph loop manager',
+      '',
+      '## Blocker',
+      reason,
+      '',
+      '## Iteration Summary',
+      `Total iterations: ${loop.currentIteration}/${loop.maxIterations}`,
+      iterationSummary || '(none)',
+      '',
+      '## Last Iteration Response',
+      '```',
+      truncatedResponse,
+      '```',
+      '',
+      '## Next Human Step',
+      'Review the blocker above and the last iteration response, then either:',
+      '- Fix the blocking issue and restart the loop',
+      '- Provide additional context or permissions',
+      '- Adjust the task scope',
+      '',
+    ].join('\n');
+
+    try {
+      if (!existsSync(workspace)) {
+        mkdirSync(workspace, { recursive: true });
+      }
+      writeFileSync(blockersPath, content, 'utf-8');
+      console.log(`[ralph] Wrote safeguard BLOCKERS.md to ${blockersPath}`);
+    } catch (err) {
+      console.error(`[ralph] Failed to write BLOCKERS.md to ${blockersPath}:`, err);
+    }
   }
 
   /**

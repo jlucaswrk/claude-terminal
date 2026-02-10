@@ -1,6 +1,6 @@
 // src/telegram.ts
 /**
- * Telegram Bot API integration for Dojo mode
+ * Telegram Bot API integration
  *
  * Handles:
  * - Bot initialization
@@ -150,7 +150,7 @@ export async function sendTelegramPhoto(
 export async function sendTelegramButtons(
   chatId: number | string,
   text: string,
-  buttons: Array<{ text: string; callback_data: string }[]>,
+  buttons: Array<{ text: string; callback_data?: string; url?: string }[]>,
   threadId?: number
 ): Promise<TelegramBot.Message | null> {
   const telegramBot = getTelegramBot();
@@ -225,39 +225,19 @@ export async function setTelegramWebhook(url: string): Promise<boolean> {
 }
 
 // ============================================
-// UI Components for Dojo Mode
+// UI Components
 // ============================================
-
-/**
- * Send mode selector (for onboarding via Telegram)
- */
-export async function sendTelegramModeSelector(chatId: number): Promise<void> {
-  await sendTelegramButtons(chatId,
-    '*Como voce quer organizar seus agentes?*\n\n' +
-    '*Modo Dojo* (recomendado)\n' +
-    'Agentes organizados no Telegram.\n' +
-    'Cada agente em seu proprio territorio.\n' +
-    'WhatsApp so para consultas rapidas.\n\n' +
-    '*Modo Ronin*\n' +
-    'Voce e seus agentes, tudo no WhatsApp.\n' +
-    'Simples, direto, sem estrutura.',
-    [
-      [
-        { text: 'Dojo (recomendado)', callback_data: 'mode_dojo' },
-        { text: 'Ronin', callback_data: 'mode_ronin' },
-      ],
-    ]
-  );
-}
 
 /**
  * Send agent creation flow - name input
  */
-export async function sendTelegramAgentNamePrompt(chatId: number): Promise<void> {
+export async function sendTelegramAgentNamePrompt(chatId: number, threadId?: number): Promise<void> {
   await sendTelegramMessage(chatId,
     '*Criar novo agente*\n\n' +
     'Qual o nome do agente?\n' +
-    'Exemplo: Backend API, Data Analysis'
+    'Exemplo: Backend API, Data Analysis',
+    undefined,
+    threadId
   );
 }
 
@@ -414,28 +394,17 @@ export async function sendTelegramAgentConfirmation(
 }
 
 /**
- * Send dojo activated message
- */
-export async function sendTelegramDojoActivated(chatId: number, whatsAppRoninInfo: string): Promise<void> {
-  await sendTelegramMessage(chatId,
-    '*Dojo ativado!*\n\n' +
-    '*WhatsApp*: consultas rapidas (read-only)\n' +
-    '*Telegram*: seus agentes organizados\n\n' +
-    'Use /criar para criar seu primeiro agente.\n\n' +
-    `_${whatsAppRoninInfo}_`
-  );
-}
-
-/**
  * Send command list
  */
-export async function sendTelegramCommandList(chatId: number): Promise<void> {
+export async function sendTelegramCommandList(chatId: number, threadId?: number): Promise<void> {
   await sendTelegramMessage(chatId,
-    '*Comandos do Dojo*\n\n' +
+    '*Comandos*\n\n' +
     '/criar - Criar novo agente\n' +
     '/agentes - Listar agentes\n' +
     '/status - Status de todos\n' +
-    '/help - Esta ajuda'
+    '/help - Esta ajuda',
+    undefined,
+    threadId
   );
 }
 
@@ -444,13 +413,16 @@ export async function sendTelegramCommandList(chatId: number): Promise<void> {
  */
 export async function sendTelegramAgentsList(
   chatId: number,
-  agents: Array<{ id: string; name: string; emoji: string; status: string; workspace?: string }>
+  agents: Array<{ id: string; name: string; emoji: string; status: string; workspace?: string }>,
+  threadId?: number
 ): Promise<void> {
   if (agents.length === 0) {
     await sendTelegramMessage(chatId,
       '*Seus agentes*\n\n' +
       'Nenhum agente criado ainda.\n' +
-      'Use /criar para criar um.'
+      'Use /criar para criar um.',
+      undefined,
+      threadId
     );
     return;
   }
@@ -475,7 +447,7 @@ export async function sendTelegramAgentsList(
     buttons.push([{ text: `${agent.emoji} ${agent.name}`, callback_data: `agent_${agent.id}` }]);
   }
 
-  await sendTelegramButtons(chatId, text, buttons);
+  await sendTelegramButtons(chatId, text, buttons, threadId);
 }
 
 /**
@@ -663,10 +635,11 @@ export async function sendTelegramStatusOverview(
     emoji: string;
     status: string;
     statusDetails?: string;
-  }>
+  }>,
+  threadId?: number
 ): Promise<void> {
   if (agents.length === 0) {
-    await sendTelegramMessage(chatId, '*Status dos Agentes*\n\nNenhum agente criado ainda.');
+    await sendTelegramMessage(chatId, '*Status dos Agentes*\n\nNenhum agente criado ainda.', undefined, threadId);
     return;
   }
 
@@ -688,7 +661,7 @@ export async function sendTelegramStatusOverview(
     }
   }
 
-  await sendTelegramMessage(chatId, text);
+  await sendTelegramMessage(chatId, text, undefined, threadId);
 }
 
 /**
@@ -718,10 +691,12 @@ export async function leaveTelegramGroup(chatId: number): Promise<boolean> {
   if (!telegramBot) return false;
 
   try {
+    console.log(`[telegram] Leaving group ${chatId}...`);
     await telegramBot.leaveChat(chatId);
+    console.log(`[telegram] Successfully left group ${chatId}`);
     return true;
-  } catch (error) {
-    console.error('Failed to leave Telegram group:', error);
+  } catch (error: any) {
+    console.error(`[telegram] Failed to leave group ${chatId}:`, error?.message || error);
     return false;
   }
 }
@@ -2206,31 +2181,42 @@ export async function sendTopicWelcome(
   threadId: number,
   topicName: string,
   topicType: 'ralph' | 'worktree' | 'session',
-  task?: string
+  task?: string,
+  topicId?: string
 ): Promise<void> {
   const emoji = topicType === 'ralph' ? '🔄' : topicType === 'worktree' ? '🌿' : '💬';
 
   if (topicType === 'ralph' && task) {
     const truncatedTask = task.length > 200 ? task.slice(0, 197) + '...' : task;
-    await sendTelegramMessage(chatId,
+    const text =
       `${emoji} *${topicName}*\n\n` +
       `*Tarefa:* ${truncatedTask}\n\n` +
-      `_Loop Ralph iniciando..._`,
-      undefined,
-      threadId
-    );
+      `_Loop Ralph iniciando..._`;
+
+    if (topicId) {
+      await sendTelegramButtons(chatId, text, [
+        [{ text: '⚙️ Workspace', callback_data: `topic_workspace:${topicId}` }],
+      ], threadId);
+    } else {
+      await sendTelegramMessage(chatId, text, undefined, threadId);
+    }
   } else {
     const description = topicType === 'worktree'
       ? 'Tópico isolado para experimentos e features.'
       : 'Tópico com sessão de conversa isolada.';
 
-    await sendTelegramMessage(chatId,
+    const text =
       `${emoji} *${topicName}*\n\n` +
       `${description}\n\n` +
-      `_Envie uma mensagem para começar._`,
-      undefined,
-      threadId
-    );
+      `_Envie uma mensagem para começar._`;
+
+    if (topicId) {
+      await sendTelegramButtons(chatId, text, [
+        [{ text: '⚙️ Workspace', callback_data: `topic_workspace:${topicId}` }],
+      ], threadId);
+    } else {
+      await sendTelegramMessage(chatId, text, undefined, threadId);
+    }
   }
 }
 
@@ -3046,5 +3032,62 @@ export async function sendCancelFeedback(
     `O tópico permanece aberto para novas interações.`,
     undefined,
     threadId
+  );
+}
+
+export async function sendWorkspaceNotFoundOptions(
+  chatId: number,
+  threadId: number | undefined,
+  topicId: string,
+  missingPath: string
+): Promise<void> {
+  const text =
+    `⚠️ *Workspace não encontrado*\n\n` +
+    `O caminho configurado para este tópico não existe:\n` +
+    `\`${missingPath}\`\n\n` +
+    `Escolha uma opção:`;
+
+  await sendTelegramButtons(chatId, text, [
+    [{ text: '🏠 Usar workspace do agente', callback_data: `ws_notfound_agent_${topicId}` }],
+    [{ text: '🧪 Usar sandbox', callback_data: `ws_notfound_sandbox_${topicId}` }],
+    [{ text: '⚙️ Reconfigurar workspace', callback_data: `ws_notfound_reconfig_${topicId}` }],
+    [{ text: '❌ Cancelar', callback_data: `ws_notfound_cancel_${topicId}` }],
+  ], threadId);
+}
+
+export async function sendTopicWorkspaceReconfig(
+  chatId: number,
+  topicId: string,
+  threadId?: number
+): Promise<void> {
+  const home = process.env.HOME || '/home/user';
+  await sendTelegramButtons(chatId,
+    '📁 *Selecione o workspace para este tópico:*',
+    [
+      [
+        { text: '🏠 Home', callback_data: `ws_reconfig_${topicId}_path_${home}` },
+        { text: '📂 Desktop', callback_data: `ws_reconfig_${topicId}_path_${home}/Desktop` },
+      ],
+      [
+        { text: '📄 Documents', callback_data: `ws_reconfig_${topicId}_path_${home}/Documents` },
+        { text: '🧪 Sandbox', callback_data: `ws_reconfig_${topicId}_sandbox` },
+      ],
+      [
+        { text: '✏️ Customizado', callback_data: `ws_reconfig_${topicId}_custom` },
+      ],
+    ],
+    threadId
+  );
+}
+
+export async function sendTopicWorkspaceQuestion(chatId: number): Promise<void> {
+  await sendTelegramButtons(chatId,
+    '⚙️ Configurar workspace para este tópico?',
+    [
+      [
+        { text: '✅ Sim', callback_data: 'topic_create_ws_yes' },
+        { text: '⏭️ Pular (usar workspace do agente)', callback_data: 'topic_create_ws_skip' },
+      ],
+    ]
   );
 }

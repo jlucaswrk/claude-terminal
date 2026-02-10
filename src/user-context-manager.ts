@@ -5,7 +5,7 @@
  * configuring priorities, etc. All state is in-memory (not persisted).
  */
 
-import type { UserContext, ModelMode, UserMode } from './types';
+import type { UserContext, ModelMode, DirectoryNavigationState } from './types';
 
 /**
  * Flow types supported by the context manager
@@ -963,27 +963,6 @@ export class UserContextManager {
     this.contexts.set(userId, context);
   }
 
-  // ============================================
-  // Onboarding Flow
-  // States: awaiting_mode_selection → (awaiting_telegram_username for dojo) → complete
-  // ============================================
-
-  /**
-   * Start the onboarding flow for mode selection
-   * Preserves activeAgentId and pendingPrompt for continuous conversation support
-   */
-  startOnboardingFlow(userId: string): void {
-    const existingContext = this.contexts.get(userId);
-    this.contexts.set(userId, {
-      userId,
-      activeAgentId: existingContext?.activeAgentId,
-      pendingPrompt: existingContext?.pendingPrompt,
-      currentFlow: 'onboarding',
-      flowState: 'awaiting_mode_selection',
-      flowData: {},
-    });
-  }
-
   /**
    * Start prompt flow for Telegram - stores agentId and waits for text
    * Also sets activeAgentId for continuous conversation support
@@ -1012,50 +991,6 @@ export class UserContextManager {
   getPendingAgentId(userId: string): string | undefined {
     const context = this.contexts.get(userId);
     return context?.flowData?.agentId as string | undefined;
-  }
-
-  /**
-   * Check if user is awaiting mode selection
-   */
-  isAwaitingModeSelection(userId: string): boolean {
-    const context = this.contexts.get(userId);
-    return context?.currentFlow === 'onboarding' && context?.flowState === 'awaiting_mode_selection';
-  }
-
-  /**
-   * Set the user mode (ronin or dojo)
-   */
-  setUserMode(userId: string, mode: UserMode): void {
-    const context = this.contexts.get(userId);
-    if (!context) return;
-
-    context.flowData = { ...context.flowData, userMode: mode };
-
-    if (mode === 'dojo') {
-      context.flowState = 'awaiting_telegram_username';
-    } else {
-      // Ronin mode - complete onboarding
-      this.contexts.delete(userId);
-    }
-  }
-
-  /**
-   * Check if user is awaiting telegram username
-   */
-  isAwaitingTelegramUsername(userId: string): boolean {
-    const context = this.contexts.get(userId);
-    return context?.currentFlow === 'onboarding' && context?.flowState === 'awaiting_telegram_username';
-  }
-
-  /**
-   * Set telegram username (completes dojo onboarding)
-   */
-  setTelegramUsername(userId: string, username: string): void {
-    const context = this.contexts.get(userId);
-    if (!context) return;
-
-    context.flowData = { ...context.flowData, telegramUsername: username };
-    // Flow data is preserved for the caller to use, then they clear context
   }
 
   // ============================================
@@ -1311,5 +1246,146 @@ export class UserContextManager {
     return context?.currentFlow === 'topic_ralph'
       || context?.currentFlow === 'topic_worktree'
       || context?.currentFlow === 'topic_sessao';
+  }
+
+  /**
+   * Transition topic creation flow to awaiting workspace choice
+   */
+  setAwaitingTopicWorkspace(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || !this.isInTopicFlow(userId)) {
+      throw new Error('Not in topic creation flow');
+    }
+    context.flowState = 'awaiting_topic_workspace';
+    this.contexts.set(userId, context);
+  }
+
+  /**
+   * Check if we're awaiting topic workspace choice
+   */
+  isAwaitingTopicWorkspace(userId: string): boolean {
+    const context = this.contexts.get(userId);
+    return this.isInTopicFlow(userId) && context?.flowState === 'awaiting_topic_workspace';
+  }
+
+  /**
+   * Set the topic workspace during creation
+   */
+  setTopicWorkspace(userId: string, workspace: string): void {
+    const context = this.contexts.get(userId);
+    if (!context || !this.isInTopicFlow(userId)) {
+      throw new Error('Not in topic creation flow');
+    }
+    context.flowData = {
+      ...context.flowData,
+      topicWorkspace: workspace,
+    };
+    this.contexts.set(userId, context);
+  }
+
+  // ============================================
+  // Directory Navigation State Management
+  // ============================================
+
+  startDirectoryNavigation(
+    userId: string,
+    agentId: string,
+    topicId: string,
+    basePath: string,
+    baseOptions: string[] = []
+  ): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.directoryNavigationState = {
+      currentPath: basePath,
+      baseOptions,
+      targetTopicId: topicId,
+      targetAgentId: agentId,
+      visibleDirectories: [],
+    };
+    this.contexts.set(userId, context);
+  }
+
+  startDirectoryNavigationWithCreation(
+    userId: string,
+    options: {
+      targetAgentId: string;
+      creationContext: {
+        flow: 'topic_ralph' | 'topic_worktree' | 'topic_sessao';
+        flowData: {
+          agentId: string;
+          topicName?: string;
+          topicTask?: string;
+          topicMaxIterations?: number;
+        };
+      };
+    }
+  ): void {
+    const context = this.contexts.get(userId) ?? { userId };
+    context.directoryNavigationState = {
+      currentPath: '',
+      baseOptions: [],
+      targetAgentId: options.targetAgentId,
+      visibleDirectories: [],
+      creationContext: options.creationContext,
+    };
+    this.contexts.set(userId, context);
+  }
+
+  getDirectoryNavigationState(userId: string): DirectoryNavigationState | undefined {
+    return this.contexts.get(userId)?.directoryNavigationState;
+  }
+
+  updateDirectoryPath(userId: string, newPath: string): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.currentPath = newPath;
+      context.directoryNavigationState.filter = undefined;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  updateVisibleDirectories(userId: string, directories: string[]): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.visibleDirectories = directories;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  setDirectoryFilter(userId: string, filter: string): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.filter = filter;
+      context.directoryNavigationState.awaitingInput = undefined;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  clearDirectoryFilter(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.filter = undefined;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  setAwaitingDirectoryInput(userId: string, type: 'filter' | 'custom_base_path'): void {
+    const context = this.contexts.get(userId);
+    if (context?.directoryNavigationState) {
+      context.directoryNavigationState.awaitingInput = type;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  clearDirectoryNavigation(userId: string): void {
+    const context = this.contexts.get(userId);
+    if (context) {
+      delete context.directoryNavigationState;
+      this.contexts.set(userId, context);
+    }
+  }
+
+  hasDirectoryNavigation(userId: string): boolean {
+    return this.contexts.get(userId)?.directoryNavigationState !== undefined;
   }
 }

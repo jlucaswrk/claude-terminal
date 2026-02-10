@@ -1,10 +1,11 @@
 import { Semaphore } from './semaphore';
 import { AgentManager } from './agent-manager';
 import { ClaudeTerminal, type ClaudeResponse, type ToolUsage } from './terminal';
-import type { QueueTask, Output } from './types';
+import type { QueueTask, Output, ProgressCallbacks } from './types';
 import { PRIORITY_VALUES, DEFAULTS } from './types';
-import { executeCommand, formatBashResult, getFullOutputFilename } from './bash-executor';
-import { uploadToKapso } from './storage';
+import { executeCommand, formatBashResult } from './bash-executor';
+import { resolveWorkspace } from './workspace-resolver';
+import { TopicManager } from './topic-manager';
 
 /**
  * Tool-specific emojis for progress messages
@@ -22,35 +23,164 @@ const TOOL_EMOJI: Record<string, string> = {
 };
 
 /**
- * Type for WhatsApp send function
+ * Progress event tracked during SDK processing
  */
-export type SendWhatsAppFn = (to: string, text: string) => Promise<void>;
+export interface ProgressEvent {
+  type: 'tool' | 'bash_output';
+  timestamp: number;
+  data: {
+    toolName?: string;
+    toolInput?: Record<string, unknown>;
+    bashCommand?: string;
+    bashOutput?: string;
+    bashExitCode?: number;
+  };
+}
 
 /**
- * Type for WhatsApp image send function
+ * Local state for progress monitor (lives only during task processing)
  */
-export type SendWhatsAppImageFn = (to: string, imageUrl: string, caption?: string) => Promise<void>;
+export interface ProgressState {
+  messageId?: number;
+  events: ProgressEvent[];
+  textBuffer: string;
+  startTime: number;
+}
 
 /**
- * Type for WhatsApp media send function (generic for images, documents, audio, video)
+ * Telegram message character limit
  */
-export type SendWhatsAppMediaFn = (
-  to: string,
-  mediaId: string,
-  mediaType: 'image' | 'video' | 'audio' | 'document',
-  filename?: string,
-  caption?: string
-) => Promise<void>;
+export const TELEGRAM_MESSAGE_LIMIT = 4096;
 
 /**
- * Type for WhatsApp error with actions function
+ * Tool icons for progress display
  */
-export type SendErrorWithActionsFn = (to: string, agentName: string, error: string) => Promise<void>;
+const PROGRESS_TOOL_ICON: Record<string, string> = {
+  Bash: '🔧',
+  Read: '📖',
+  Write: '✍️',
+  Edit: '✏️',
+  Grep: '🔍',
+  Glob: '📂',
+  Task: '🤖',
+  WebFetch: '🌐',
+  WebSearch: '🔎',
+};
 
 /**
- * Type for Telegram send function
+ * Get icon for a tool name
  */
-export type SendTelegramFn = (chatId: number, text: string, threadId?: number) => Promise<void>;
+export function getToolIcon(toolName: string): string {
+  return PROGRESS_TOOL_ICON[toolName] || '🔨';
+}
+
+/**
+ * Escape special Markdown characters to prevent Telegram edit failures.
+ */
+export function escapeMarkdown(text: string): string {
+  return text
+    .replace(/\*/g, '\\*')
+    .replace(/_/g, '\\_')
+    .replace(/`/g, '\\`')
+    .replace(/\[/g, '\\[');
+}
+
+/**
+ * Format progress text for the live view message
+ */
+export function formatProgressText(state: ProgressState): string {
+  const elapsed = Math.round((Date.now() - state.startTime) / 1000);
+  let text = `🔄 Processando... (${elapsed}s)\n\n`;
+
+  for (const event of state.events) {
+    if (event.type === 'tool') {
+      const icon = getToolIcon(event.data.toolName!);
+      text += `${icon} ${event.data.toolName}`;
+
+      const input = event.data.toolInput;
+      if (event.data.toolName === 'Write' && input?.file_path) {
+        text += `: ${String(input.file_path).split('/').pop()}`;
+      } else if (event.data.toolName === 'Read' && input?.file_path) {
+        text += `: ${String(input.file_path).split('/').pop()}`;
+      } else if (event.data.toolName === 'Edit' && input?.file_path) {
+        text += `: ${String(input.file_path).split('/').pop()}`;
+      } else if (event.data.toolName === 'Bash' && input?.command) {
+        const cmd = String(input.command);
+        text += `: ${cmd.length > 40 ? cmd.substring(0, 40) + '...' : cmd}`;
+      } else if (event.data.toolName === 'Grep' && input?.pattern) {
+        text += `: ${String(input.pattern).substring(0, 30)}`;
+      }
+
+      text += '\n';
+    } else if (event.type === 'bash_output') {
+      const output = event.data.bashOutput || '';
+      const lines = output.split('\n').filter(l => l.trim());
+
+      if (lines.length > 0 && lines.length <= 10) {
+        const truncated = lines.map(l => l.length > 80 ? l.substring(0, 80) + '...' : l);
+        text += `  ${truncated.join('\n  ')}\n`;
+      } else if (lines.length > 10) {
+        const first5 = lines.slice(0, 5).map(l => l.length > 80 ? l.substring(0, 80) + '...' : l);
+        text += `  ${first5.join('\n  ')}\n`;
+        text += `  ... (${lines.length - 5} linhas omitidas)\n`;
+      }
+    }
+  }
+
+  if (state.textBuffer) {
+    text += '\n💬 Resposta:\n';
+    text += state.textBuffer.substring(0, 200);
+    if (state.textBuffer.length > 200) {
+      text += '...';
+    }
+  }
+
+  const escaped = escapeMarkdown(text);
+  if (escaped.length > TELEGRAM_MESSAGE_LIMIT) {
+    return escaped.substring(0, TELEGRAM_MESSAGE_LIMIT - 4) + '...';
+  }
+  return escaped;
+}
+
+/**
+ * Format the final message after processing completes
+ */
+export function formatFinalText(state: ProgressState, response: ClaudeResponse, agentName: string, agentEmoji: string): string {
+  const duration = Math.round((Date.now() - state.startTime) / 1000);
+
+  const toolCounts: Record<string, number> = {};
+  for (const event of state.events) {
+    if (event.type === 'tool' && event.data.toolName) {
+      toolCounts[event.data.toolName] = (toolCounts[event.data.toolName] || 0) + 1;
+    }
+  }
+
+  let header = `${agentEmoji} *${agentName}* (${duration}s)\n───\n`;
+
+  const toolEntries = Object.entries(toolCounts);
+  if (toolEntries.length > 0) {
+    const summary = toolEntries
+      .map(([tool, count]) => `${getToolIcon(tool)}${count}`)
+      .join(' ');
+    header += `${summary}\n\n`;
+  }
+
+  const full = header + escapeMarkdown(response.text);
+  if (full.length > TELEGRAM_MESSAGE_LIMIT) {
+    return full.substring(0, TELEGRAM_MESSAGE_LIMIT - 4) + '...';
+  }
+  return full;
+}
+
+/**
+ * Type for Telegram send function (returns message for progress tracking)
+ */
+export type SendTelegramFn = (chatId: number, text: string, threadId?: number) => Promise<{ message_id: number } | null>;
+
+/**
+ * Type for Telegram message edit function
+ */
+export type EditTelegramFn = (chatId: number | string, messageId: number, text: string) => Promise<boolean>;
 
 /**
  * Type for Telegram image send function
@@ -62,27 +192,6 @@ export type SendTelegramImageFn = (chatId: number, imageUrl: string, caption?: s
  * Returns a stop function to clear the interval
  */
 export type StartTypingIndicatorFn = (chatId: number, threadId?: number) => () => void;
-
-/**
- * Platform detection result
- */
-export type Platform = 'telegram' | 'whatsapp_group' | 'whatsapp_user';
-
-/**
- * Detect platform from replyTo value
- * - typeof replyTo === 'number' → Telegram
- * - typeof replyTo === 'string' && replyTo.includes('@g.us') → WhatsApp group
- * - typeof replyTo === 'string' → WhatsApp user
- */
-export function detectPlatform(replyTo: string | number | undefined, userId: string): Platform {
-  if (typeof replyTo === 'number') {
-    return 'telegram';
-  }
-  if (typeof replyTo === 'string' && replyTo.includes('@g.us')) {
-    return 'whatsapp_group';
-  }
-  return 'whatsapp_user';
-}
 
 /**
  * Result of task processing
@@ -215,13 +324,11 @@ export class QueueManager {
   private readonly semaphore: Semaphore;
   private readonly agentManager: AgentManager;
   private readonly terminal: ClaudeTerminal;
-  private readonly sendWhatsApp: SendWhatsAppFn;
-  private readonly sendWhatsAppImage?: SendWhatsAppImageFn;
-  private readonly sendWhatsAppMedia?: SendWhatsAppMediaFn;
-  private readonly sendErrorWithActions?: SendErrorWithActionsFn;
-  private readonly sendTelegram?: SendTelegramFn;
-  private readonly sendTelegramImage?: SendTelegramImageFn;
-  private readonly startTypingIndicator?: StartTypingIndicatorFn;
+  private readonly sendTelegram: SendTelegramFn;
+  private readonly editTelegram?: EditTelegramFn;
+  private readonly sendTelegramImage: SendTelegramImageFn;
+  private readonly startTypingIndicator: StartTypingIndicatorFn;
+  private readonly topicManager?: TopicManager;
   private activeCount: number = 0;
 
   // Store last errors for retry functionality
@@ -234,25 +341,21 @@ export class QueueManager {
     semaphore: Semaphore,
     agentManager: AgentManager,
     terminal: ClaudeTerminal,
-    sendWhatsApp: SendWhatsAppFn,
-    sendWhatsAppImage?: SendWhatsAppImageFn,
-    sendErrorWithActions?: SendErrorWithActionsFn,
-    sendWhatsAppMedia?: SendWhatsAppMediaFn,
-    sendTelegram?: SendTelegramFn,
-    sendTelegramImage?: SendTelegramImageFn,
-    startTypingIndicator?: StartTypingIndicatorFn
+    sendTelegram: SendTelegramFn,
+    sendTelegramImage: SendTelegramImageFn,
+    startTypingIndicator: StartTypingIndicatorFn,
+    editTelegram?: EditTelegramFn,
+    topicManager?: TopicManager
   ) {
     this.queue = new PriorityQueue();
     this.semaphore = semaphore;
     this.agentManager = agentManager;
     this.terminal = terminal;
-    this.sendWhatsApp = sendWhatsApp;
-    this.sendWhatsAppImage = sendWhatsAppImage;
-    this.sendErrorWithActions = sendErrorWithActions;
-    this.sendWhatsAppMedia = sendWhatsAppMedia;
     this.sendTelegram = sendTelegram;
     this.sendTelegramImage = sendTelegramImage;
     this.startTypingIndicator = startTypingIndicator;
+    this.editTelegram = editTelegram;
+    this.topicManager = topicManager;
   }
 
   /**
@@ -366,9 +469,7 @@ export class QueueManager {
    */
   private async processTask(task: QueueTask): Promise<ProcessingResult> {
     const { agentId, prompt, model, userId, images, replyTo, threadId } = task;
-    // Platform detection is handled by helper methods
     const targetDesc = this.getTargetDescription(replyTo);
-    const platform = detectPlatform(replyTo, userId);
 
     // Track active task for potential cancellation
     this.activeTasks.set(task.id, agentId);
@@ -379,6 +480,13 @@ export class QueueManager {
     let progressInterval: ReturnType<typeof setInterval> | null = null;
     let stopTyping: (() => void) | null = null;
     const startTime = Date.now();
+
+    // Telegram progress monitor state
+    const progressState: ProgressState = {
+      events: [],
+      textBuffer: '',
+      startTime,
+    };
 
     try {
       // Get agent info for notification
@@ -400,31 +508,36 @@ export class QueueManager {
         `processando - ${truncatedPrompt}...`
       );
 
-      // For Telegram: use typing indicator instead of text notification
-      // For WhatsApp: use text notification as before
-      if (platform === 'telegram' && typeof replyTo === 'number' && this.startTypingIndicator) {
-        stopTyping = this.startTypingIndicator(replyTo, threadId);
-      } else {
-        // WhatsApp: Notify user that task is starting
-        await this.notifyTaskStartPlatform(replyTo, userId, agent.name, model, prompt, threadId);
-      }
+      // For Telegram: send initial progress message and start live view
+      if (typeof replyTo === 'number' && this.editTelegram) {
+        const initMsg = await this.sendTelegram(replyTo, '🔄 Iniciando...', threadId);
+        if (initMsg) {
+          progressState.messageId = initMsg.message_id;
+        }
 
-      // Start progress update interval (every 30 seconds) - only for WhatsApp
-      // For Telegram, the typing indicator is sufficient
-      if (platform !== 'telegram') {
+        // Start typing indicator alongside progress
+        stopTyping = this.startTypingIndicator(replyTo, threadId);
+
+        // Start 1s progress update interval for Telegram live view
+        const chatId = replyTo;
+        let lastProgressText = '';
         progressInterval = setInterval(async () => {
-          if (lastToolName) {
-            const elapsed = this.formatElapsed(Date.now() - startTime);
-            const toolDesc = this.describeToolAction(lastToolName, lastToolInput);
-            const emoji = TOOL_EMOJI[lastToolName] || '🌐';
-            const message = `${emoji} *${agent.name}*: _${toolDesc}_ (${elapsed})`;
+          if (progressState.messageId) {
             try {
-              await this.sendResponse(replyTo, userId, message, threadId);
-            } catch (err) {
-              console.error('Failed to send progress update:', err);
+              const text = formatProgressText(progressState);
+              // Only edit if text actually changed (avoids Telegram "message not modified" error)
+              if (text !== lastProgressText) {
+                lastProgressText = text;
+                await this.editTelegram!(chatId, progressState.messageId, text);
+              }
+            } catch {
+              // Silently ignore edit failures
             }
           }
-        }, 30000);
+        }, 1000);
+      } else if (typeof replyTo === 'number') {
+        // Fallback: typing indicator only (no editTelegram available)
+        stopTyping = this.startTypingIndicator(replyTo, threadId);
       }
 
       // Progress callback to track current tool
@@ -433,11 +546,55 @@ export class QueueManager {
         lastToolInput = toolInput;
       };
 
+      // Build ProgressCallbacks for Telegram live view
+      const callbacks: ProgressCallbacks = {
+        onToolUse: (toolName: string, toolInput: Record<string, unknown>) => {
+          progressState.events.push({
+            type: 'tool',
+            timestamp: Date.now(),
+            data: { toolName, toolInput },
+          });
+          if (progressState.events.length > 10) {
+            progressState.events = progressState.events.slice(-10);
+          }
+        },
+        onBashOutput: (command: string, output: string, exitCode: number) => {
+          progressState.events.push({
+            type: 'bash_output',
+            timestamp: Date.now(),
+            data: { bashCommand: command, bashOutput: output, bashExitCode: exitCode },
+          });
+          if (progressState.events.length > 10) {
+            progressState.events = progressState.events.slice(-10);
+          }
+        },
+        onTextChunk: (chunk: string) => {
+          progressState.textBuffer = chunk;
+        },
+      };
+
       // Generate topic session key if threadId is present (for topic isolation)
       const topicKey = threadId ? `${userId}_${agentId}_${threadId}` : undefined;
 
-      // Execute the prompt via ClaudeTerminal (with agentId, workspace, progress callback, images, and optional topicKey)
-      const response = await this.terminal.send(prompt, model, userId, agentId, agent.workspace, onProgress, images, topicKey);
+      // Resolve workspace through hierarchy (topic → agent → sandbox)
+      let resolvedWorkspace = agent.workspace;
+      if (threadId) {
+        const topic = this.topicManager?.getTopicByThreadId(agentId, threadId);
+        if (topic) {
+          const resolution = resolveWorkspace(agent, topic);
+          if (resolution.error === 'workspace_not_found') {
+            // Workspace configured but not found - notify and skip
+            console.log(`[queue] Workspace not found for topic ${topic.id}: ${topic.workspace}`);
+            // Still use agent workspace as fallback
+            resolvedWorkspace = agent.workspace;
+          } else {
+            resolvedWorkspace = resolution.workspace;
+          }
+        }
+      }
+
+      // Execute the prompt via ClaudeTerminal
+      const response = await this.terminal.send(prompt, model, userId, agentId, resolvedWorkspace, onProgress, images, topicKey, callbacks);
 
       // Send images first (if any) - these are screenshots captured from tool_result
       if (response.images.length > 0) {
@@ -451,12 +608,29 @@ export class QueueManager {
         }
       }
 
-      // Send the text response with agent header
+      // Send/edit the text response with agent header
       if (response.text) {
         const agentEmoji = agent.emoji || '🤖';
-        const header = `${agentEmoji} *${agent.name}*\n───\n`;
-        const formattedResponse = header + response.text;
-        await this.sendResponse(replyTo, userId, formattedResponse, threadId);
+
+        // For Telegram with progress monitor: edit the existing message with final text
+        if (progressState.messageId && this.editTelegram && typeof replyTo === 'number') {
+          const finalText = formatFinalText(progressState, response, agent.name, agentEmoji);
+          let edited = false;
+          try {
+            edited = await this.editTelegram(replyTo, progressState.messageId, finalText);
+          } catch (editErr) {
+            console.error('[progress] Failed to edit final message:', editErr);
+          }
+          if (!edited) {
+            // Fallback: send as new message
+            const fallbackText = formatFinalText(progressState, response, agent.name, agentEmoji);
+            await this.sendResponse(replyTo, userId, fallbackText, threadId);
+          }
+        } else {
+          // Fallback: send as new message
+          const header = `${agentEmoji} *${agent.name}*\n───\n`;
+          await this.sendResponse(replyTo, userId, header + response.text, threadId);
+        }
       }
 
       // Send created files (documents, spreadsheets, etc.)
@@ -480,7 +654,6 @@ export class QueueManager {
       }
 
       // Create output record
-      // Note: summary is left empty to let AgentManager generate it from response text
       const output: Output = {
         id: crypto.randomUUID(),
         summary: '',
@@ -561,20 +734,18 @@ export class QueueManager {
     agent: { id: string; name: string; emoji?: string; workspace?: string }
   ): Promise<ProcessingResult> {
     const { agentId, prompt, userId, replyTo, threadId } = task;
-    const targetDesc = this.getTargetDescription(replyTo);
-    const platform = detectPlatform(replyTo, userId);
 
     // Track active task
     this.activeTasks.set(task.id, agentId);
 
     // Start typing indicator for Telegram
     let stopTyping: (() => void) | null = null;
-    if (platform === 'telegram' && typeof replyTo === 'number' && this.startTypingIndicator) {
+    if (typeof replyTo === 'number') {
       stopTyping = this.startTypingIndicator(replyTo, threadId);
     }
 
     try {
-      // Update agent status to processing (internal only, no WhatsApp message)
+      // Update agent status to processing
       const truncatedCmd = this.truncatePrompt(prompt, 30);
       this.agentManager.updateAgentStatus(
         agentId,
@@ -593,30 +764,6 @@ export class QueueManager {
       const formattedResult = formatBashResult(result);
       const header = `${agentEmoji} *${agent.name}*\n`;
       await this.sendResponse(replyTo, userId, header + formattedResult, threadId);
-
-      // If output was truncated and we have media capabilities, send full output as file
-      if (result.truncated && result.output) {
-        try {
-          const filename = getFullOutputFilename(prompt);
-          const fullOutput = `$ ${prompt}\n\n${result.output}\n\nExit code: ${result.exitCode}\nDuration: ${result.duration}ms`;
-          const buffer = Buffer.from(fullOutput, 'utf-8');
-
-          const mediaId = await uploadToKapso(buffer, filename, 'text/plain');
-          if (mediaId) {
-            await this.sendMediaResponse(
-              replyTo,
-              userId,
-              mediaId,
-              'document',
-              filename,
-              '📎 Output completo',
-              threadId
-            );
-          }
-        } catch (err) {
-          console.error('Failed to upload full bash output:', err);
-        }
-      }
 
       // Create output record
       const output: Output = {
@@ -686,83 +833,7 @@ export class QueueManager {
   }
 
   /**
-   * Notify user when a task starts processing (legacy - string destination)
-   */
-  private async notifyTaskStart(
-    userId: string,
-    agentName: string,
-    model: string,
-    prompt: string
-  ): Promise<void> {
-    const truncatedPrompt = this.truncatePrompt(prompt, 30);
-    const message = `🔔 Agente *${agentName}* iniciou seu prompt: '${truncatedPrompt}...' (${model})`;
-
-    try {
-      await this.sendWhatsApp(userId, message);
-    } catch (error) {
-      console.error('Failed to send start notification:', error);
-    }
-  }
-
-  /**
-   * Notify user when a task starts processing (platform-aware)
-   */
-  private async notifyTaskStartPlatform(
-    replyTo: string | number | undefined,
-    userId: string,
-    agentName: string,
-    model: string,
-    prompt: string,
-    threadId?: number
-  ): Promise<void> {
-    const truncatedPrompt = this.truncatePrompt(prompt, 30);
-    const message = `🔔 Agente *${agentName}* iniciou seu prompt: '${truncatedPrompt}...' (${model})`;
-
-    try {
-      await this.sendResponse(replyTo, userId, message, threadId);
-    } catch (error) {
-      console.error('Failed to send start notification:', error);
-    }
-  }
-
-  /**
-   * Notify user when a task fails (with recovery buttons) - legacy string destination
-   */
-  private async notifyTaskError(
-    sendTo: string,
-    userId: string,
-    agentId: string,
-    errorMessage: string,
-    prompt: string,
-    model: 'haiku' | 'opus' | 'sonnet'
-  ): Promise<void> {
-    const agent = this.agentManager.getAgent(agentId);
-    const agentName = agent?.name || 'Unknown';
-
-    // Store error context for retry functionality (always use userId for error tracking)
-    this.lastErrors.set(userId, { agentId, prompt, model });
-
-    // Try to send error with action buttons (Flow 11: Error Recovery)
-    if (this.sendErrorWithActions) {
-      try {
-        await this.sendErrorWithActions(sendTo, agentName, errorMessage);
-        return;
-      } catch (error) {
-        console.error('Failed to send error with actions, falling back to plain text:', error);
-      }
-    }
-
-    // Fallback to plain text message
-    const message = `❌ Erro no agente *${agentName}*: ${this.truncatePrompt(errorMessage, 100)}`;
-    try {
-      await this.sendWhatsApp(sendTo, message);
-    } catch (error) {
-      console.error('Failed to send error notification:', error);
-    }
-  }
-
-  /**
-   * Notify user when a task fails (with recovery buttons) - platform-aware
+   * Notify user when a task fails - Telegram-only
    */
   private async notifyTaskErrorPlatform(
     replyTo: string | number | undefined,
@@ -779,20 +850,6 @@ export class QueueManager {
     // Store error context for retry functionality (always use userId for error tracking)
     this.lastErrors.set(userId, { agentId, prompt, model });
 
-    const platform = detectPlatform(replyTo, userId);
-
-    // For WhatsApp, try to send error with action buttons (Flow 11: Error Recovery)
-    if (platform !== 'telegram' && this.sendErrorWithActions) {
-      const sendTo = (typeof replyTo === 'string' ? replyTo : userId);
-      try {
-        await this.sendErrorWithActions(sendTo, agentName, errorMessage);
-        return;
-      } catch (error) {
-        console.error('Failed to send error with actions, falling back to plain text:', error);
-      }
-    }
-
-    // Fallback to plain text message (also used for Telegram)
     const message = `❌ Erro no agente *${agentName}*: ${this.truncatePrompt(errorMessage, 100)}`;
     try {
       await this.sendResponse(replyTo, userId, message, threadId);
@@ -816,12 +873,7 @@ export class QueueManager {
   }
 
   /**
-   * Send a message to the appropriate platform based on replyTo type
-   *
-   * Platform detection:
-   * - typeof replyTo === 'number' → Telegram
-   * - typeof replyTo === 'string' && replyTo.includes('@g.us') → WhatsApp group
-   * - typeof replyTo === 'string' → WhatsApp user
+   * Send a message via Telegram
    */
   private async sendResponse(
     replyTo: string | number | undefined,
@@ -829,24 +881,15 @@ export class QueueManager {
     text: string,
     threadId?: number
   ): Promise<void> {
-    const platform = detectPlatform(replyTo, userId);
-
-    if (platform === 'telegram' && typeof replyTo === 'number') {
-      if (this.sendTelegram) {
-        await this.sendTelegram(replyTo, text, threadId);
-      } else {
-        console.warn('Telegram send function not configured, falling back to WhatsApp');
-        await this.sendWhatsApp(userId, text);
-      }
+    if (typeof replyTo === 'number') {
+      await this.sendTelegram(replyTo, text, threadId);
     } else {
-      // WhatsApp (user or group)
-      const sendTo = (typeof replyTo === 'string' ? replyTo : userId);
-      await this.sendWhatsApp(sendTo, text);
+      console.warn(`[queue] Cannot send to non-Telegram target: ${replyTo || userId}`);
     }
   }
 
   /**
-   * Send an image to the appropriate platform based on replyTo type
+   * Send an image via Telegram
    */
   private async sendImageResponse(
     replyTo: string | number | undefined,
@@ -855,23 +898,13 @@ export class QueueManager {
     caption?: string,
     threadId?: number
   ): Promise<void> {
-    const platform = detectPlatform(replyTo, userId);
-
-    if (platform === 'telegram' && typeof replyTo === 'number') {
-      if (this.sendTelegramImage) {
-        await this.sendTelegramImage(replyTo, imageUrl, caption, threadId);
-      } else if (this.sendWhatsAppImage) {
-        console.warn('Telegram image function not configured, falling back to WhatsApp');
-        await this.sendWhatsAppImage(userId, imageUrl, caption);
-      }
-    } else if (this.sendWhatsAppImage) {
-      const sendTo = (typeof replyTo === 'string' ? replyTo : userId);
-      await this.sendWhatsAppImage(sendTo, imageUrl, caption);
+    if (typeof replyTo === 'number') {
+      await this.sendTelegramImage(replyTo, imageUrl, caption, threadId);
     }
   }
 
   /**
-   * Send media to the appropriate platform based on replyTo type
+   * Send media via Telegram (as text with file info, since Telegram media needs additional handling)
    */
   private async sendMediaResponse(
     replyTo: string | number | undefined,
@@ -882,16 +915,8 @@ export class QueueManager {
     caption?: string,
     threadId?: number
   ): Promise<void> {
-    const platform = detectPlatform(replyTo, userId);
-
-    if (platform === 'telegram' && typeof replyTo === 'number') {
-      // For Telegram, we currently only support text - media would need additional handling
-      if (this.sendTelegram) {
-        await this.sendTelegram(replyTo, `📎 *${filename || 'file'}*${caption ? `\n${caption}` : ''}`, threadId);
-      }
-    } else if (this.sendWhatsAppMedia) {
-      const sendTo = (typeof replyTo === 'string' ? replyTo : userId);
-      await this.sendWhatsAppMedia(sendTo, mediaId, mediaType, filename, caption);
+    if (typeof replyTo === 'number') {
+      await this.sendTelegram(replyTo, `📎 *${filename || 'file'}*${caption ? `\n${caption}` : ''}`, threadId);
     }
   }
 
@@ -899,15 +924,7 @@ export class QueueManager {
    * Get the target for logging purposes
    */
   private getTargetDescription(replyTo: string | number | undefined): string {
-    const platform = detectPlatform(replyTo, '');
-    switch (platform) {
-      case 'telegram':
-        return 'telegram';
-      case 'whatsapp_group':
-        return 'group';
-      default:
-        return 'user';
-    }
+    return typeof replyTo === 'number' ? 'telegram' : 'unknown';
   }
 
   /**

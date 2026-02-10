@@ -107,14 +107,14 @@ export class Semaphore {
         next();
       }
       this.permits = 0;
-      (this as { maxPermits: number }).maxPermits = 0;
+      (this as unknown as { maxPermits: number }).maxPermits = 0;
       return;
     }
 
     // Switching from unbounded to bounded
     if (this.isUnbounded()) {
       this.permits = newMax;
-      (this as { maxPermits: number }).maxPermits = newMax;
+      (this as unknown as { maxPermits: number }).maxPermits = newMax;
       return;
     }
 
@@ -134,7 +134,7 @@ export class Semaphore {
       this.permits = Math.max(0, this.permits + diff);
     }
 
-    (this as { maxPermits: number }).maxPermits = newMax;
+    (this as unknown as { maxPermits: number }).maxPermits = newMax;
   }
 
   /**

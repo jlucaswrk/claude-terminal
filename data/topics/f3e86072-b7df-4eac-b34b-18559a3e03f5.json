@@ -1,0 +1,17 @@
+{
+  "agentId": "f3e86072-b7df-4eac-b34b-18559a3e03f5",
+  "topics": [
+    {
+      "id": "2413eb27-5f38-4cbd-926e-b64c86cdf4ac",
+      "agentId": "f3e86072-b7df-4eac-b34b-18559a3e03f5",
+      "telegramTopicId": 9,
+      "type": "ralph",
+      "name": "Tópico #9",
+      "emoji": "🔄",
+      "status": "active",
+      "messageCount": 0,
+      "createdAt": "2026-02-06T12:45:58.246Z",
+      "lastActivity": "2026-02-06T12:45:58.246Z"
+    }
+  ]
+}

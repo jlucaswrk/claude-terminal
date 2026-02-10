@@ -18,6 +18,8 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/node-telegram-bot-api": "^0.64.13"
+    "@types/node-telegram-bot-api": "^0.64.13",
+    "@types/uuid": "^11.0.0",
+    "typescript": "^5.9.3"
   }
 }

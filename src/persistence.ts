@@ -261,6 +261,7 @@ export class PersistenceService {
       emoji: topic.emoji,
       sessionId: topic.sessionId,
       loopId: topic.loopId,
+      workspace: topic.workspace,
       status: topic.status,
       messageCount: topic.messageCount ?? 0,
       createdAt: topic.createdAt.toISOString(),
@@ -281,6 +282,7 @@ export class PersistenceService {
       emoji: data.emoji,
       sessionId: data.sessionId,
       loopId: data.loopId,
+      workspace: data.workspace,
       status: data.status,
       messageCount: data.messageCount ?? 0,
       createdAt: new Date(data.createdAt),
@@ -303,7 +305,6 @@ export class PersistenceService {
         mode: agent.mode,
         emoji: agent.emoji,
         workspace: agent.workspace,
-        groupId: agent.groupId,
         modelMode: agent.modelMode,
         telegramChatId: agent.telegramChatId,
         mainSessionId: agent.mainSessionId,
@@ -362,7 +363,6 @@ export class PersistenceService {
           mode: agent.mode || 'conversational',
           emoji: agent.emoji,
           workspace: agent.workspace,
-          groupId: agent.groupId,
           // Backward compatibility: default to 'selection' for old agents without modelMode
           modelMode: agent.modelMode || 'selection',
           telegramChatId: agent.telegramChatId,
@@ -935,6 +935,7 @@ export class PersistenceService {
         prompt: iter.prompt,
         response: iter.response,
         completionPromiseFound: iter.completionPromiseFound,
+        promiseType: iter.promiseType,
         timestamp: iter.timestamp.toISOString(),
         duration: iter.duration,
       })),
@@ -963,6 +964,7 @@ export class PersistenceService {
         prompt: iter.prompt,
         response: iter.response,
         completionPromiseFound: iter.completionPromiseFound,
+        promiseType: iter.promiseType ?? null,
         timestamp: new Date(iter.timestamp),
         duration: iter.duration,
       })),
@@ -1024,6 +1026,31 @@ export class PersistenceService {
    */
   getPreferencesFilePath(): string {
     return this.preferencesFile;
+  }
+
+  /**
+   * Add a workspace to the user's recent workspaces list.
+   * Deduplicates and keeps only the last 5 entries (most recent first).
+   */
+  addRecentWorkspace(userId: string, workspace: string): void {
+    const prefs = this.loadUserPreferences(userId);
+    if (!prefs) return;
+
+    let recent = prefs.recentWorkspaces || [];
+    recent = recent.filter(w => w !== workspace);
+    recent.unshift(workspace);
+    recent = recent.slice(0, 5);
+
+    prefs.recentWorkspaces = recent;
+    this.saveUserPreferences(prefs);
+  }
+
+  /**
+   * Get recent workspaces for a user
+   */
+  getRecentWorkspaces(userId: string): string[] {
+    const prefs = this.loadUserPreferences(userId);
+    return prefs?.recentWorkspaces || [];
   }
 
   // ============================================

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test';
-import { QueueManager, SendWhatsAppFn, StartTypingIndicatorFn } from '../queue-manager';
+import { QueueManager, type SendTelegramFn, type SendTelegramImageFn, type StartTypingIndicatorFn } from '../queue-manager';
 import { Semaphore } from '../semaphore';
 import { AgentManager } from '../agent-manager';
 import { ClaudeTerminal } from '../terminal';
@@ -53,17 +53,17 @@ describe('QueueManager - Task Cancellation and Position', () => {
   let semaphore: Semaphore;
   let agentManager: AgentManager;
   let terminal: MockClaudeTerminal;
-  let sendWhatsApp: SendWhatsAppFn;
-  let whatsAppMessages: Array<{ to: string; text: string }>;
+  let mockSendTelegram: SendTelegramFn;
+  let mockSendTelegramImage: SendTelegramImageFn;
+  let mockStartTypingIndicator: StartTypingIndicatorFn;
   let queueManager: QueueManager;
 
   beforeEach(() => {
     semaphore = new Semaphore(1); // Use 1 permit to test queuing
     terminal = new MockClaudeTerminal();
-    whatsAppMessages = [];
-    sendWhatsApp = async (to: string, text: string) => {
-      whatsAppMessages.push({ to, text });
-    };
+    mockSendTelegram = async () => {};
+    mockSendTelegramImage = async () => {};
+    mockStartTypingIndicator = () => () => {};
 
     const persistenceService = new MockPersistenceService() as unknown as PersistenceService;
     agentManager = new AgentManager(persistenceService);
@@ -72,7 +72,9 @@ describe('QueueManager - Task Cancellation and Position', () => {
       semaphore,
       agentManager,
       terminal as unknown as ClaudeTerminal,
-      sendWhatsApp
+      mockSendTelegram,
+      mockSendTelegramImage,
+      mockStartTypingIndicator
     );
   });
 
@@ -280,7 +282,6 @@ describe('QueueManager - Typing Indicator Integration', () => {
   let semaphore: Semaphore;
   let agentManager: AgentManager;
   let terminal: MockClaudeTerminal;
-  let sendWhatsApp: SendWhatsAppFn;
   let queueManager: QueueManager;
   let typingStarted: number[];
   let typingStopped: number;
@@ -291,9 +292,7 @@ describe('QueueManager - Typing Indicator Integration', () => {
     typingStarted = [];
     typingStopped = 0;
 
-    sendWhatsApp = async () => {};
-
-    const startTypingIndicator: StartTypingIndicatorFn = (chatId: number) => {
+    const mockStartTypingIndicator: StartTypingIndicatorFn = (chatId: number) => {
       typingStarted.push(chatId);
       return () => {
         typingStopped++;
@@ -307,13 +306,9 @@ describe('QueueManager - Typing Indicator Integration', () => {
       semaphore,
       agentManager,
       terminal as unknown as ClaudeTerminal,
-      sendWhatsApp,
-      undefined, // sendWhatsAppImage
-      undefined, // sendErrorWithActions
-      undefined, // sendWhatsAppMedia
-      async () => {}, // sendTelegram
-      undefined, // sendTelegramImage
-      startTypingIndicator
+      async () => {},
+      async () => {},
+      mockStartTypingIndicator
     );
   });
 
@@ -355,17 +350,17 @@ describe('QueueManager - Typing Indicator Integration', () => {
     expect(typingStopped).toBeGreaterThan(0);
   });
 
-  test('does not use typing indicator for WhatsApp tasks', async () => {
+  test('does not use typing indicator for non-Telegram tasks', async () => {
     terminal.setDelay('test', 20);
 
-    const agent = agentManager.createAgent('user1', 'WhatsAppAgent');
+    const agent = agentManager.createAgent('user1', 'NonTelegramAgent');
 
     queueManager.enqueue({
       agentId: agent.id,
       prompt: 'test',
       model: 'haiku',
       userId: 'user1',
-      replyTo: 'whatsapp-user-id', // string indicates WhatsApp
+      // No replyTo or non-number replyTo means no typing indicator
     });
 
     // Wait for task to complete
@@ -383,7 +378,7 @@ describe('QueueManager - Typing Indicator Integration', () => {
       clearSession: () => {},
     };
 
-    const startTypingIndicator: StartTypingIndicatorFn = (chatId: number) => {
+    const errorStartTypingIndicator: StartTypingIndicatorFn = (chatId: number) => {
       typingStarted.push(chatId);
       return () => {
         typingStopped++;
@@ -398,12 +393,8 @@ describe('QueueManager - Typing Indicator Integration', () => {
       errorAgentManager,
       errorTerminal as unknown as ClaudeTerminal,
       async () => {},
-      undefined,
-      undefined,
-      undefined,
       async () => {},
-      undefined,
-      startTypingIndicator
+      errorStartTypingIndicator
     );
 
     const agent = errorAgentManager.createAgent('user1', 'ErrorAgent');
@@ -436,7 +427,9 @@ describe('QueueManager - Queue Feedback', () => {
       semaphore,
       agentManager,
       terminal as unknown as ClaudeTerminal,
-      async () => {}
+      async () => {},
+      async () => {},
+      () => () => {}
     );
 
     const agent = agentManager.createAgent('user1', 'TestAgent');

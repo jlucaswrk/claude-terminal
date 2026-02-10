@@ -1,7 +1,9 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { uploadBase64Image, uploadFileToKapso, getWhatsAppMediaType } from './storage';
+import { getMimeType, getMediaType } from './storage';
 import { TitleExtractor } from './title-extractor';
+import { basename } from 'path';
+import type { ProgressCallbacks } from './types';
 
 export type Model = 'haiku' | 'sonnet' | 'opus';
 
@@ -119,7 +121,8 @@ export class ClaudeTerminal {
     workspace?: string,
     onProgress?: ProgressCallback,
     images?: ImageInput[],
-    topicKey?: string  // Optional: use this as session key instead of userId_agentId
+    topicKey?: string,  // Optional: use this as session key instead of userId_agentId
+    callbacks?: ProgressCallbacks
   ): Promise<ClaudeResponse> {
     // If topicKey provided, use it; otherwise fall back to agent-level session
     const sessionKey = topicKey || getSessionKey(userId, agentId);
@@ -130,7 +133,7 @@ export class ClaudeTerminal {
     // Build prompt - string for text only, or AsyncIterable for images
     type ContentBlock = { type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
 
-    let promptInput: string | AsyncIterable<{ type: 'user'; message: { role: 'user'; content: ContentBlock[] }; parent_tool_use_id: null; session_id: string }>;
+    let promptInput: any;
 
     if (images && images.length > 0) {
       // Build content array with images first, then text
@@ -171,29 +174,26 @@ export class ClaudeTerminal {
         // Keep essential tools for terminal functionality
         tools: ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep'],
         // MCP servers for web access
-        mcpServers: [
-          {
-            name: 'firecrawl',
+        mcpServers: {
+          firecrawl: {
             command: 'npx',
             args: ['-y', 'firecrawl-mcp'],
             env: {
               FIRECRAWL_API_KEY: 'fc-d147bf869b0e49ef8407dffbbc017020',
             },
           },
-          {
-            name: 'browser',
+          browser: {
             command: 'npx',
             args: ['@browsermcp/mcp@latest'],
           },
-          {
-            name: 'auggie',
+          auggie: {
             command: 'auggie',
             args: ['--mcp', '--mcp-auto-workspace', '--augment-token-file', '/Users/lucas/.augment/session.json'],
           },
-        ],
+        },
         // Allow execution without permission prompts
         permissionMode: 'bypassPermissions',
-        dangerouslySkipPermissions: true,
+        allowDangerouslySkipPermissions: true,
         // Resume existing session if available
         ...(existingSessionId && { resume: existingSessionId }),
         // Set working directory if workspace provided
@@ -209,11 +209,12 @@ export class ClaudeTerminal {
 
     for await (const event of result) {
       // Debug: log all event types
-      console.log(`[event] type=${event.type}${event.subtype ? ` subtype=${event.subtype}` : ''}`);
+      const eventAny = event as any;
+      console.log(`[event] type=${event.type}${eventAny.subtype ? ` subtype=${eventAny.subtype}` : ''}`);
 
       // Capture session ID from init event
-      if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-        newSessionId = event.session_id as string;
+      if (event.type === 'system' && eventAny.subtype === 'init' && eventAny.session_id) {
+        newSessionId = eventAny.session_id as string;
       }
 
       // Capture tool_use events for Write tool to track created files
@@ -237,6 +238,11 @@ export class ClaudeTerminal {
               onProgress(block.name, toolInput);
             }
 
+            // Granular progress callback
+            if (callbacks?.onToolUse) {
+              callbacks.onToolUse(block.name, toolInput);
+            }
+
             // Special handling for Write tool to track created files
             if (block.name === 'Write' && block.input?.file_path) {
               const filePath = block.input.file_path as string;
@@ -247,17 +253,28 @@ export class ClaudeTerminal {
             }
           }
 
-          // Check for tool_result with image (screenshots)
-          if (block.type === 'tool_result' && Array.isArray(block.content)) {
-            for (const item of block.content) {
-              if (item.type === 'image' && item.source?.type === 'base64') {
-                try {
-                  const imageData = `data:${item.source.media_type};base64,${item.source.data}`;
-                  const imageUrl = await uploadBase64Image(imageData, 'screenshot.png');
-                  outputImages.push(imageUrl);
-                  console.log(`[image] Uploaded screenshot`);
-                } catch (err) {
-                  console.error('Failed to upload image:', err);
+          // Check for tool_result (bash outputs and images)
+          if (block.type === 'tool_result') {
+            // Bash output callback: match tool_result to its tool_use
+            if (callbacks?.onBashOutput && block.tool_use_id) {
+              const toolUse = content.find((b: any) => b.type === 'tool_use' && b.id === block.tool_use_id);
+              if (toolUse?.name === 'Bash') {
+                const command = (toolUse.input?.command as string) || '';
+                const output = typeof block.content === 'string'
+                  ? block.content
+                  : Array.isArray(block.content)
+                    ? block.content.filter((i: any) => i.type === 'text').map((i: any) => i.text).join('')
+                    : '';
+                const exitCode = block.is_error ? 1 : 0;
+                callbacks.onBashOutput(command, output, exitCode);
+              }
+            }
+
+            // Screenshot capture
+            if (Array.isArray(block.content)) {
+              for (const item of block.content) {
+                if (item.type === 'image' && item.source?.type === 'base64') {
+                  console.log(`[image] Screenshot detected (no upload service)`);
                 }
               }
             }
@@ -266,8 +283,14 @@ export class ClaudeTerminal {
       }
 
       // Get the final result
-      if (event.type === 'result' && event.result) {
-        response = event.result as string;
+      if (event.type === 'result' && eventAny.result) {
+        response = eventAny.result as string;
+
+        // Text chunk callback (fires with the final text)
+        if (callbacks?.onTextChunk) {
+          callbacks.onTextChunk(response);
+        }
+
         // Also try to get session_id from result
         if ((event as any).session_id) {
           newSessionId = (event as any).session_id;
@@ -275,20 +298,21 @@ export class ClaudeTerminal {
       }
     }
 
-    // Upload created files to Kapso
+    // Track created files (detect metadata)
     const files: CreatedFile[] = [];
     for (const filePath of createdFilePaths) {
       try {
         if (existsSync(filePath)) {
-          const { mediaId, filename, mimeType } = await uploadFileToKapso(filePath);
-          const mediaType = getWhatsAppMediaType(mimeType);
-          files.push({ path: filePath, mediaId, filename, mimeType, mediaType });
-          console.log(`[file] Uploaded ${filename} (${mediaType})`);
+          const filename = basename(filePath);
+          const mimeType = getMimeType(filename);
+          const mediaType = getMediaType(mimeType);
+          files.push({ path: filePath, mediaId: '', filename, mimeType, mediaType });
+          console.log(`[file] Detected ${filename} (${mediaType})`);
         } else {
           console.warn(`[file] File not found after creation: ${filePath}`);
         }
       } catch (err) {
-        console.error(`Failed to upload file ${filePath}:`, err);
+        console.error(`Failed to process file ${filePath}:`, err);
       }
     }
 

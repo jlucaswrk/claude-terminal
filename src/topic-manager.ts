@@ -9,7 +9,7 @@
  * - Sync between local state and Telegram
  */
 
-import { v4 as uuidv4 } from 'uuid';
+// Use built-in crypto.randomUUID() instead of uuid package
 import type { AgentTopic, TopicType, TopicStatus, AgentTopicsFile } from './types';
 import { PersistenceService } from './persistence';
 import {
@@ -43,6 +43,7 @@ export interface CreateTopicOptions {
   emoji?: string;
   sessionId?: string;
   loopId?: string;
+  workspace?: string;
   iconColor?: number;
   skipTelegramCreation?: boolean;
 }
@@ -162,6 +163,7 @@ export class TopicManager {
       emoji,
       sessionId,
       loopId,
+      workspace,
       iconColor,
       skipTelegramCreation = false,
     } = options;
@@ -209,7 +211,7 @@ export class TopicManager {
     // Create local topic object
     const now = new Date();
     const topic: AgentTopic = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       agentId,
       telegramTopicId: telegramTopicId ?? 0,
       type,
@@ -217,6 +219,7 @@ export class TopicManager {
       emoji: emoji ?? getTopicEmojiForType(type),
       sessionId,
       loopId,
+      workspace,
       status: 'active',
       messageCount: 0,
       createdAt: now,
@@ -481,6 +484,23 @@ export class TopicManager {
   }
 
   /**
+   * Update topic workspace
+   */
+  updateTopicWorkspace(agentId: string, topicId: string, workspace: string | undefined): void {
+    const topic = this.getTopic(agentId, topicId);
+    if (!topic) return;
+
+    const updatedTopic: AgentTopic = {
+      ...topic,
+      workspace,
+      lastActivity: new Date(),
+    };
+
+    this.updateTopic(agentId, updatedTopic);
+    console.log(`[topic-manager] Updated workspace for topic ${topicId}: ${workspace || '(cleared)'}`);
+  }
+
+  /**
    * Increment the message count for a topic
    *
    * @param agentId - The agent ID
@@ -695,7 +715,7 @@ export class TopicManager {
     // Create local topic object with correct emoji for the type
     const now = new Date();
     const topic: AgentTopic = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       agentId,
       telegramTopicId: threadId,
       type,
